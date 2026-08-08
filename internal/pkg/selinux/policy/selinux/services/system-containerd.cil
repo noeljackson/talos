@@ -80,6 +80,11 @@
 (type unconfined_container_t)
 (call system_container_p (unconfined_container_t))
 
+; Extension system containers execute binaries and map executable libraries
+; from their immutable extension rootfs.
+(allow system_container_p bin_exec_t (file (entrypoint execute execute_no_trans)))
+(allow system_container_p lib_t (file (execute)))
+
 ; logs
 (allow sys_containerd_t system_t (fs_classes (rw)))
 

@@ -1395,6 +1395,25 @@ var SystemExtensionSELinuxLabeledPaths = []SELinuxLabeledPath{
 	{KubeletCredentialProviderBinDir, KubeletCredentialProviderSELinuxLabel},
 }
 
+// ExtensionServiceSELinuxLabeledPaths is the set of paths inside an extension
+// service container rootfs whose labels are owned by Talos at final image
+// composition. These paths are interpreted in the container's namespace.
+var ExtensionServiceSELinuxLabeledPaths = []SELinuxLabeledPath{
+	{"/bin", SystemExtensionBinSELinuxLabel},
+	{"/sbin", SystemExtensionBinSELinuxLabel},
+	{"/usr/bin", SystemExtensionBinSELinuxLabel},
+	{"/usr/sbin", SystemExtensionBinSELinuxLabel},
+	{"/usr/local/bin", SystemExtensionBinSELinuxLabel},
+	{"/usr/local/sbin", SystemExtensionBinSELinuxLabel},
+	{"/usr/local/libexec", SystemExtensionBinSELinuxLabel},
+	{"/lib", SystemExtensionLibSELinuxLabel},
+	{"/lib64", SystemExtensionLibSELinuxLabel},
+	{"/usr/lib", SystemExtensionLibSELinuxLabel},
+	{"/usr/lib64", SystemExtensionLibSELinuxLabel},
+	{"/usr/local/lib", SystemExtensionLibSELinuxLabel},
+	{"/usr/local/lib64", SystemExtensionLibSELinuxLabel},
+}
+
 // DefaultDroppedCapabilities is the default set of capabilities to drop.
 var DefaultDroppedCapabilities = map[string]struct{}{
 	"cap_sys_boot":   {},
