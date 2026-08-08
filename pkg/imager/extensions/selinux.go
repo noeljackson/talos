@@ -47,12 +47,25 @@ func (builder *Builder) applySystemExtensionSELinuxLabels(extensionList []*exten
 }
 
 func systemExtensionSELinuxLabel(path string) (string, bool) {
+	labeledPaths := constants.SystemExtensionSELinuxLabeledPaths
+
+	if containerPath, ok := strings.CutPrefix(path, constants.ExtensionServiceRootfsPath+"/"); ok {
+		containerName, innerPath, ok := strings.Cut(containerPath, "/")
+
+		if !ok || containerName == "" || innerPath == "" {
+			return "", false
+		}
+
+		path = "/" + innerPath
+		labeledPaths = constants.ExtensionServiceSELinuxLabeledPaths
+	}
+
 	var (
 		label       string
 		matchedSize int
 	)
 
-	for _, labeledPath := range constants.SystemExtensionSELinuxLabeledPaths {
+	for _, labeledPath := range labeledPaths {
 		if path != labeledPath.Path && !strings.HasPrefix(path, labeledPath.Path+"/") {
 			continue
 		}
