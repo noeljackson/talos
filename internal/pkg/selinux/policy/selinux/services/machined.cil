@@ -30,6 +30,8 @@
 (context lib_t (system_u object_r lib_t (systemLow systemLow)))
 (filecon "/usr/lib(/.*)?" any lib_t)
 (filecon "/usr/lib64" any lib_t)
+(filecon "/usr/local/lib(/.*)?" any lib_t)
+(filecon "/usr/local/lib64(/.*)?" any lib_t)
 (filecon "/lib" any lib_t)
 (filecon "/lib64" any lib_t)
 (allow system_p lib_t (file (execute)))
@@ -45,6 +47,9 @@
 (context bin_exec_t (system_u object_r bin_exec_t (systemLow systemLow)))
 (filecon "/usr/bin(/.*)?" any bin_exec_t)
 (filecon "/usr/sbin" any bin_exec_t)
+(filecon "/usr/local/bin(/.*)?" any bin_exec_t)
+(filecon "/usr/local/sbin(/.*)?" any bin_exec_t)
+(filecon "/usr/local/libexec(/.*)?" any bin_exec_t)
 (filecon "/bin" any bin_exec_t)
 (filecon "/sbin" any bin_exec_t)
 ; Typically machined executes LVM, cryptsetup and similar utilities

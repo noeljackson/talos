@@ -194,6 +194,12 @@ const (
 	// OptSELinuxLabel is the SELinux label to be set for /opt overlay mount.
 	OptSELinuxLabel = "system_u:object_r:opt_t:s0"
 
+	// SystemExtensionBinSELinuxLabel is the SELinux label for executable system extension paths.
+	SystemExtensionBinSELinuxLabel = "system_u:object_r:bin_exec_t:s0"
+
+	// SystemExtensionLibSELinuxLabel is the SELinux label for library system extension paths.
+	SystemExtensionLibSELinuxLabel = "system_u:object_r:lib_t:s0"
+
 	// RootMountPoint is the label of the partition to use for mounting at
 	// the root path.
 	RootMountPoint = "/"
@@ -334,6 +340,9 @@ const (
 
 	// KubeletCredentialProviderBinDir is the path to the directory where kubelet credential provider binaries are stored.
 	KubeletCredentialProviderBinDir = "/usr/local/lib/kubelet/credentialproviders"
+
+	// KubeletCredentialProviderSELinuxLabel is the SELinux label for kubelet credential provider binaries.
+	KubeletCredentialProviderSELinuxLabel = "system_u:object_r:k8s_credentialproviders_t:s0"
 
 	// KubeletCredentialProviderConfig is the path to the kubelet credential provider config.
 	KubeletCredentialProviderConfig = KubernetesConfigBaseDir + "/" + "kubelet-credentialproviderconfig.yaml"
@@ -1370,6 +1379,17 @@ var Overlays = []SELinuxLabeledPath{
 	{KubernetesConfigBaseDir, KubernetesConfigSELinuxLabel},
 	{"/usr/libexec/kubernetes", KubeletPluginsSELinuxLabel},
 	{"/opt", OptSELinuxLabel},
+}
+
+// SystemExtensionSELinuxLabeledPaths is the set of system extension paths whose
+// labels are owned by Talos at final image composition. More-specific paths win.
+var SystemExtensionSELinuxLabeledPaths = []SELinuxLabeledPath{
+	{"/usr/local/bin", SystemExtensionBinSELinuxLabel},
+	{"/usr/local/sbin", SystemExtensionBinSELinuxLabel},
+	{"/usr/local/libexec", SystemExtensionBinSELinuxLabel},
+	{"/usr/local/lib", SystemExtensionLibSELinuxLabel},
+	{"/usr/local/lib64", SystemExtensionLibSELinuxLabel},
+	{KubeletCredentialProviderBinDir, KubeletCredentialProviderSELinuxLabel},
 }
 
 // DefaultDroppedCapabilities is the default set of capabilities to drop.

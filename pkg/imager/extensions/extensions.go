@@ -56,6 +56,10 @@ func (builder *Builder) Build(ctx context.Context) error {
 		return err
 	}
 
+	if err = builder.applySystemExtensionSELinuxLabels(extensionsList); err != nil {
+		return err
+	}
+
 	extensionPathsWithKernelModules := findExtensionsWithKernelModules(extensionsList, builder.Quirks)
 
 	if len(extensionPathsWithKernelModules) > 0 {
