@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/siderolabs/talos/internal/pkg/extensions"
+	internalselinux "github.com/siderolabs/talos/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
@@ -20,7 +21,7 @@ func (builder *Builder) applySystemExtensionSELinuxLabels(extensionList []*exten
 	}
 
 	for _, ext := range extensionList {
-		if err := filepath.WalkDir(ext.RootfsPath(), func(path string, _ fs.DirEntry, err error) error {
+		if err := filepath.WalkDir(ext.RootfsPath(), func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -31,8 +32,20 @@ func (builder *Builder) applySystemExtensionSELinuxLabels(extensionList []*exten
 			}
 
 			extensionPath := "/" + filepath.ToSlash(relativePath)
+			if relativePath == "." {
+				extensionPath = "/"
+			}
 
-			label, ok := systemExtensionSELinuxLabel(extensionPath)
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+
+			label, ok, labelErr := systemExtensionSELinuxLabel(extensionPath, info.Mode())
+			if labelErr != nil {
+				return labelErr
+			}
+
 			if ok {
 				builder.XAttrsMap[path] = label
 			}
@@ -46,20 +59,28 @@ func (builder *Builder) applySystemExtensionSELinuxLabels(extensionList []*exten
 	return nil
 }
 
-func systemExtensionSELinuxLabel(path string) (string, bool) {
-	labeledPaths := constants.SystemExtensionSELinuxLabeledPaths
-
+func systemExtensionSELinuxLabel(path string, mode fs.FileMode) (string, bool, error) {
 	if containerPath, ok := strings.CutPrefix(path, constants.ExtensionServiceRootfsPath+"/"); ok {
-		containerName, innerPath, ok := strings.Cut(containerPath, "/")
+		containerName, innerPath, hasInnerPath := strings.Cut(containerPath, "/")
 
-		if !ok || containerName == "" || innerPath == "" {
-			return "", false
+		if containerName == "" {
+			return "", false, nil
 		}
 
-		path = "/" + innerPath
-		labeledPaths = constants.ExtensionServiceSELinuxLabeledPaths
+		path = "/"
+		if hasInnerPath && innerPath != "" {
+			path += innerPath
+		}
+
+		if label, ok := labelFromOwnedPaths(path, constants.ExtensionServiceSELinuxLabeledPaths); ok {
+			return label, true, nil
+		}
 	}
 
+	return internalselinux.LookupFileContext(path, mode)
+}
+
+func labelFromOwnedPaths(path string, labeledPaths []constants.SELinuxLabeledPath) (string, bool) {
 	var (
 		label       string
 		matchedSize int

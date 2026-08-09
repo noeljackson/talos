@@ -1384,17 +1384,6 @@ var Overlays = []SELinuxLabeledPath{
 	{"/opt", OptSELinuxLabel},
 }
 
-// SystemExtensionSELinuxLabeledPaths is the set of system extension paths whose
-// labels are owned by Talos at final image composition. More-specific paths win.
-var SystemExtensionSELinuxLabeledPaths = []SELinuxLabeledPath{
-	{"/usr/local/bin", SystemExtensionBinSELinuxLabel},
-	{"/usr/local/sbin", SystemExtensionBinSELinuxLabel},
-	{"/usr/local/libexec", SystemExtensionBinSELinuxLabel},
-	{"/usr/local/lib", SystemExtensionLibSELinuxLabel},
-	{"/usr/local/lib64", SystemExtensionLibSELinuxLabel},
-	{KubeletCredentialProviderBinDir, KubeletCredentialProviderSELinuxLabel},
-}
-
 // ExtensionServiceSELinuxLabeledPaths is the set of paths inside an extension
 // service container rootfs whose labels are owned by Talos at final image
 // composition. These paths are interpreted in the container's namespace.
