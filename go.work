@@ -7,6 +7,7 @@ use (
 	./tools
 	./tools/docgen
 	./tools/gotagsrewrite
+	./tools/labeled-squashfs
 	./tools/redactgen
 	./tools/structprotogen
 )

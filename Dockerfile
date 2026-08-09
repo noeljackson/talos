@@ -524,6 +524,17 @@ FROM machined-build-${TARGETARCH} AS machined-build
 FROM scratch AS machined
 COPY --from=machined-build /machined /machined
 
+# The labeled-squashfs target builds a build-time helper that walks the rootfs,
+# resolves each path's SELinux context against file_contexts, and invokes
+# mksquashfs with the labels supplied as pseudo-file definitions. This avoids
+# relying on fakeroot to propagate fake security.selinux xattrs to mksquashfs.
+
+FROM base AS labeled-squashfs-build
+ARG GO_BUILDFLAGS
+ARG GO_LDFLAGS
+RUN --mount=type=cache,target=/.cache,id=talos/.cache go build ${GO_BUILDFLAGS} -ldflags "${GO_LDFLAGS}" -o /labeled-squashfs github.com/siderolabs/talos/tools/labeled-squashfs
+RUN chmod +x /labeled-squashfs
+
 # The talosctl targets build the talosctl binaries.
 
 FROM base AS talosctl-linux-amd64-build
@@ -980,8 +991,10 @@ RUN find /rootfs -print0 \
     | xargs -0r touch --no-dereference --date="@${SOURCE_DATE_EPOCH}"
 ARG ZSTD_COMPRESSION_LEVEL
 COPY --from=selinux-generate /policy/file_contexts /file_contexts
-COPY ./hack/labeled-squashfs.sh /
-RUN fakeroot /labeled-squashfs.sh /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL}
+COPY ./hack/validate-squashfs-labels.sh /
+RUN --mount=from=labeled-squashfs-build,source=/labeled-squashfs,target=/usr/local/bin/labeled-squashfs \
+    labeled-squashfs /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL} \
+    && /validate-squashfs-labels.sh /rootfs.sqsh
 
 FROM rootfs-base-amd64 AS rootfs-squashfs-amd64
 RUN rm -rf /rootfs/usr/share/spdx/*
@@ -991,8 +1004,10 @@ RUN find /rootfs -print0 \
     | xargs -0r touch --no-dereference --date="@${SOURCE_DATE_EPOCH}"
 ARG ZSTD_COMPRESSION_LEVEL
 COPY --from=selinux-generate /policy/file_contexts /file_contexts
-COPY ./hack/labeled-squashfs.sh /
-RUN fakeroot /labeled-squashfs.sh /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL}
+COPY ./hack/validate-squashfs-labels.sh /
+RUN --mount=from=labeled-squashfs-build,source=/labeled-squashfs,target=/usr/local/bin/labeled-squashfs \
+    labeled-squashfs /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL} \
+    && /validate-squashfs-labels.sh /rootfs.sqsh
 
 FROM scratch AS squashfs-arm64
 COPY --from=rootfs-squashfs-arm64 /rootfs.sqsh /
@@ -1114,9 +1129,12 @@ COPY --from=installer-base-image / /
 # 'installer-base' does not contain boot assets or talos itself.
 FROM installer-base-image-squashed AS installer-base
 ARG TAG
+ARG SHA
 ENV VERSION=${TAG}
 LABEL "alpha.talos.dev/version"="${VERSION}"
-LABEL org.opencontainers.image.source=https://github.com/siderolabs/talos
+LABEL org.opencontainers.image.source=https://github.com/siderolabs/talos \
+      org.opencontainers.image.revision="${SHA}" \
+      org.opencontainers.image.version="${VERSION}"
 ENTRYPOINT ["/bin/installer"]
 
 # Imager can be thought of as an extended installer.
@@ -1153,9 +1171,12 @@ COPY --from=imager-image / /
 
 FROM imager-image-squashed AS imager
 ARG TAG
+ARG SHA
 ENV VERSION=${TAG}
 LABEL "alpha.talos.dev/version"="${VERSION}"
-LABEL org.opencontainers.image.source=https://github.com/siderolabs/talos
+LABEL org.opencontainers.image.source=https://github.com/siderolabs/talos \
+      org.opencontainers.image.revision="${SHA}" \
+      org.opencontainers.image.version="${VERSION}"
 ENTRYPOINT ["/bin/imager"]
 
 FROM imager AS iso-amd64-build
@@ -1284,6 +1305,8 @@ WORKDIR /src/pkg/machinery
 RUN --mount=type=cache,target=/.cache,id=talos/.cache,sharing=locked go tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint run --config ../../.golangci.yml
 COPY ./hack/cloud-image-uploader /src/hack/cloud-image-uploader
 WORKDIR /src/hack/cloud-image-uploader
+RUN --mount=type=cache,target=/.cache,id=talos/.cache,sharing=locked go tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint run --config ../../.golangci.yml
+WORKDIR /src/tools/labeled-squashfs
 RUN --mount=type=cache,target=/.cache,id=talos/.cache,sharing=locked go tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint run --config ../../.golangci.yml
 WORKDIR /src
 RUN --mount=type=cache,target=/.cache,id=talos/.cache go tool github.com/siderolabs/importvet/cmd/importvet github.com/siderolabs/talos/...
