@@ -92,6 +92,11 @@
 ; initramfs init before switching root
 (allow initramfs_t device_t (fs_classes (rw)))
 (allow initramfs_t rootfs_t (fs_classes (ro)))
+; OverlayFS performs lower-layer permission checks with the credentials it
+; stashed when the initramfs composed the immutable system-extension mount.
+; The caller's own domain is checked separately, so this only authorizes the
+; trusted compositor credential to complete the lower executable lookup.
+(allow initramfs_t system_f (file (execute)))
 (allow initramfs_t self (process_classes (full)))
 (allow kernel_t initramfs_t (fd (use)))
 ; Make machined go into proper context
