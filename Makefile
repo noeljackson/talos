@@ -378,6 +378,10 @@ installer-base: ## Builds the container image for the installer-base and outputs
 imager: ## Builds the container image for the imager and outputs it to the registry.
 	@$(MAKE) registry-$@
 
+.PHONY: enforcing-boot-smoke
+enforcing-boot-smoke: ## Builds and boots an enforcing amd64 UKI from the selected imager image.
+	@./hack/test/enforcing-boot.sh $(REGISTRY_AND_USERNAME)/imager$(IMAGE_NAME_SUFFIX):$(IMAGE_TAG_IN)
+
 .PHONY: talos
 talos: ## Builds the Talos container image and outputs it to the registry.
 	@$(MAKE) registry-$@
