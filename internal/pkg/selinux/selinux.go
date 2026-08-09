@@ -8,6 +8,7 @@ package selinux
 import (
 	"bytes"
 	_ "embed"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -19,12 +20,35 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/siderolabs/talos/internal/pkg/containermode"
+	"github.com/siderolabs/talos/internal/pkg/selinux/filecontext"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/xfs"
 )
 
 //go:embed policy/policy.33
 var policy []byte
+
+//go:embed policy/file_contexts
+var fileContexts []byte
+
+var defaultFileContextMatcher = sync.OnceValues(func() (*filecontext.Matcher, error) {
+	return filecontext.Parse(bytes.NewReader(fileContexts))
+})
+
+// LookupFileContext resolves the canonical Talos SELinux context for path and
+// mode. The same resolver is used for every filesystem assembled into a Talos
+// image so overlay layers cannot replace correctly labeled base directories
+// with unlabeled ones.
+func LookupFileContext(path string, mode fs.FileMode) (string, bool, error) {
+	matcher, err := defaultFileContextMatcher()
+	if err != nil {
+		return "", false, err
+	}
+
+	context, ok := matcher.Lookup(path, mode)
+
+	return context, ok, nil
+}
 
 // IsEnabled checks if SELinux is enabled on the system by reading
 // the kernel command line. It returns true if SELinux is enabled,

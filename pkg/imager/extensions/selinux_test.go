@@ -5,9 +5,9 @@
 package extensions //nolint:testpackage // test the final-composition helper directly
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,6 +59,8 @@ func TestApplySystemExtensionSELinuxLabels(t *testing.T) {
 
 	require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext}))
 
+	assert.Equal(t, "system_u:object_r:rootfs_t:s0", builder.XAttrsMap[rootfsPath])
+	assert.Equal(t, "system_u:object_r:usr_t:s0", builder.XAttrsMap[filepath.Join(rootfsPath, "usr")])
 	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[filepath.Dir(binPath)])
 	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[binPath])
 	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[symlinkPath])
@@ -66,9 +68,9 @@ func TestApplySystemExtensionSELinuxLabels(t *testing.T) {
 	assert.Equal(t, constants.KubeletCredentialProviderSELinuxLabel, builder.XAttrsMap[credentialProviderPath])
 	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[containerBinPath])
 	assert.Equal(t, constants.SystemExtensionLibSELinuxLabel, builder.XAttrsMap[containerLibPath])
-	assert.Equal(t, "artifact_u:object_r:artifact_t:s0", builder.XAttrsMap[containerEtcPath])
-	assert.NotContains(t, builder.XAttrsMap, containerRootPath)
-	assert.Equal(t, "artifact_u:object_r:artifact_t:s0", builder.XAttrsMap[outsidePath])
+	assert.Equal(t, constants.EtcSelinuxLabel, builder.XAttrsMap[containerEtcPath])
+	assert.Equal(t, "system_u:object_r:rootfs_t:s0", builder.XAttrsMap[containerRootPath])
+	assert.Equal(t, "system_u:object_r:usr_t:s0", builder.XAttrsMap[outsidePath])
 }
 
 func TestApplySystemExtensionSELinuxLabelsInitializesMap(t *testing.T) {
@@ -82,22 +84,38 @@ func TestApplySystemExtensionSELinuxLabelsInitializesMap(t *testing.T) {
 	builder := &Builder{}
 
 	require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext}))
+	assert.Equal(t, "system_u:object_r:rootfs_t:s0", builder.XAttrsMap[rootfsPath])
 	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[binPath])
 }
 
 func TestSystemExtensionSELinuxLabelUsesPathBoundariesAndSpecificity(t *testing.T) {
 	testCases := map[string]struct {
 		path  string
+		mode  fs.FileMode
 		label string
 		ok    bool
 	}{
+		"extension root": {
+			path:  "/",
+			mode:  fs.ModeDir,
+			label: "system_u:object_r:rootfs_t:s0",
+			ok:    true,
+		},
+		"top-level usr": {
+			path:  "/usr",
+			mode:  fs.ModeDir,
+			label: "system_u:object_r:usr_t:s0",
+			ok:    true,
+		},
 		"direct path specificity": {
 			path:  "/usr/local/lib/kubelet/credentialproviders/helper",
 			label: constants.KubeletCredentialProviderSELinuxLabel,
 			ok:    true,
 		},
-		"direct path boundary": {
-			path: "/usr/local/binary/runtime",
+		"direct generic path": {
+			path:  "/usr/local/binary/runtime",
+			label: "system_u:object_r:usr_t:s0",
+			ok:    true,
 		},
 		"nested executable": {
 			path:  "/usr/local/lib/containers/tailscale/usr/local/bin/containerboot",
@@ -109,14 +127,32 @@ func TestSystemExtensionSELinuxLabelUsesPathBoundariesAndSpecificity(t *testing.
 			label: constants.SystemExtensionLibSELinuxLabel,
 			ok:    true,
 		},
-		"nested path does not inherit outer library label": {
-			path: "/usr/local/lib/containers/tailscale/etc/tailscale/config",
+		"nested generic path uses container namespace": {
+			path:  "/usr/local/lib/containers/tailscale/etc/tailscale/config",
+			label: constants.EtcSelinuxLabel,
+			ok:    true,
 		},
-		"nested executable path boundary": {
-			path: "/usr/local/lib/containers/tailscale/usr/local/binary/containerboot",
+		"nested generic executable path": {
+			path:  "/usr/local/lib/containers/tailscale/usr/local/binary/containerboot",
+			label: "system_u:object_r:usr_t:s0",
+			ok:    true,
 		},
 		"container root": {
-			path: "/usr/local/lib/containers/tailscale",
+			path:  "/usr/local/lib/containers/tailscale",
+			mode:  fs.ModeDir,
+			label: "system_u:object_r:rootfs_t:s0",
+			ok:    true,
+		},
+		"file-specific context": {
+			path:  "/usr/bin/init",
+			label: "system_u:object_r:init_exec_t:s0",
+			ok:    true,
+		},
+		"file-specific context respects type": {
+			path:  "/usr/bin/init",
+			mode:  fs.ModeDir,
+			label: constants.SystemExtensionBinSELinuxLabel,
+			ok:    true,
 		},
 		"missing container name": {
 			path: "/usr/local/lib/containers//usr/local/bin/containerboot",
@@ -125,24 +161,12 @@ func TestSystemExtensionSELinuxLabelUsesPathBoundariesAndSpecificity(t *testing.
 
 	for name, testCase := range testCases {
 		t.Run(name, func(t *testing.T) {
-			label, ok := systemExtensionSELinuxLabel(testCase.path)
+			label, ok, err := systemExtensionSELinuxLabel(testCase.path, testCase.mode)
+			require.NoError(t, err)
 			assert.Equal(t, testCase.ok, ok)
 			assert.Equal(t, testCase.label, label)
 		})
 	}
-}
-
-func TestSystemExtensionSELinuxLabelsMatchFileContexts(t *testing.T) {
-	contents, err := os.ReadFile(filepath.Join("..", "..", "..", "internal", "pkg", "selinux", "policy", "file_contexts"))
-	require.NoError(t, err)
-
-	fileContexts := string(contents)
-
-	for _, labeledPath := range constants.SystemExtensionSELinuxLabeledPaths {
-		assert.Contains(t, fileContexts, labeledPath.Path+"(/.*)?\t"+labeledPath.Label)
-	}
-
-	assert.Equal(t, 1, strings.Count(fileContexts, constants.KubeletCredentialProviderBinDir+"(/.*)?\t"+constants.KubeletCredentialProviderSELinuxLabel))
 }
 
 func TestExtensionSystemContainerPolicyAllowsLabeledExecutablesAndLibraries(t *testing.T) {
@@ -153,4 +177,11 @@ func TestExtensionSystemContainerPolicyAllowsLabeledExecutablesAndLibraries(t *t
 
 	assert.Contains(t, policy, "(allow system_container_p bin_exec_t (file (entrypoint execute execute_no_trans)))")
 	assert.Contains(t, policy, "(allow system_container_p lib_t (file (execute)))")
+}
+
+func TestInitramfsOverlayCredentialCanCheckImmutableExecutables(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "..", "internal", "pkg", "selinux", "policy", "selinux", "services", "machined.cil"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(contents), "(allow initramfs_t system_f (file (execute)))")
 }
