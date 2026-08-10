@@ -6,6 +6,7 @@ package services
 
 import (
 	"github.com/containerd/containerd/v2/pkg/oci"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/siderolabs/gen/xslices"
 )
 
@@ -22,4 +23,10 @@ func (svc *Extension) GetOCIOptions() ([]oci.SpecOpts, error) {
 // PromotionEndpoints exposes promotionEndpoints for tests.
 func PromotionEndpoints(selfEndpoints, votingMemberEndpoints, discoveredEndpoints []string) []string {
 	return promotionEndpoints(xslices.ToSetFunc(selfEndpoints, normalizeEtcdEndpoint), votingMemberEndpoints, discoveredEndpoints)
+}
+
+// EnsureExtensionRootfsMountpoints exposes the extension rootfs preparation
+// contract to external tests.
+func EnsureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
+	return ensureExtensionRootfsMountpoints(rootfsPath, mounts)
 }
