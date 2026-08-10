@@ -16,9 +16,11 @@ import (
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
+	pathrs "github.com/cyphar/filepath-securejoin/pathrs-lite"
 	"github.com/hashicorp/go-envparse"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/siderolabs/gen/maps"
+	"golang.org/x/sys/unix"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/events"
@@ -86,6 +88,13 @@ func (svc *Extension) PreFunc(ctx context.Context, r runtime.Runtime) error {
 }
 
 func ensureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
+	rootfs, err := os.Open(rootfsPath)
+	if err != nil {
+		return fmt.Errorf("error opening extension rootfs: %w", err)
+	}
+
+	defer rootfs.Close() //nolint:errcheck
+
 	mountpoints := append([]extensionRootfsMountpoint{}, extensionRootfsImplicitMountpoints...)
 
 	for _, containerMount := range mounts {
@@ -113,7 +122,7 @@ func ensureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) e
 	}
 
 	for _, mountpoint := range mountpoints {
-		if err := ensureExtensionRootfsMountpoint(rootfsPath, mountpoint); err != nil {
+		if err := ensureExtensionRootfsMountpoint(rootfs, mountpoint); err != nil {
 			return err
 		}
 	}
@@ -133,7 +142,7 @@ func extensionRootfsMountpointIsRuntimeManaged(destination string) bool {
 	return false
 }
 
-func ensureExtensionRootfsMountpoint(rootfsPath string, mountpoint extensionRootfsMountpoint) error {
+func ensureExtensionRootfsMountpoint(rootfs *os.File, mountpoint extensionRootfsMountpoint) error {
 	if !filepath.IsAbs(mountpoint.destination) {
 		return fmt.Errorf("extension rootfs mountpoint %q is not absolute", mountpoint.destination)
 	}
@@ -143,58 +152,67 @@ func ensureExtensionRootfsMountpoint(rootfsPath string, mountpoint extensionRoot
 		return fmt.Errorf("extension rootfs mountpoint %q targets the rootfs", mountpoint.destination)
 	}
 
-	currentPath := rootfsPath
-	components := strings.Split(relativePath, string(os.PathSeparator))
-
-	for _, component := range components[:len(components)-1] {
-		currentPath = filepath.Join(currentPath, component)
-
-		info, err := os.Lstat(currentPath)
-		switch {
-		case err == nil:
-			if !info.IsDir() {
-				return fmt.Errorf("extension rootfs mountpoint parent %q is not a directory", currentPath)
-			}
-		case errors.Is(err, os.ErrNotExist):
-			if err = os.Mkdir(currentPath, 0o755); err != nil {
-				return fmt.Errorf("error creating extension rootfs mountpoint parent %q: %w", currentPath, err)
-			}
-		default:
-			return fmt.Errorf("error inspecting extension rootfs mountpoint parent %q: %w", currentPath, err)
-		}
-	}
-
-	path := filepath.Join(currentPath, components[len(components)-1])
-	info, err := os.Lstat(path)
+	handle, err := pathrs.OpenatInRoot(rootfs, relativePath)
 	switch {
 	case err == nil:
-		switch {
-		case mountpoint.directory && !info.IsDir():
-			return fmt.Errorf("extension rootfs mountpoint %q is not a directory", mountpoint.destination)
-		case !mountpoint.directory && !info.Mode().IsRegular():
-			return fmt.Errorf("extension rootfs mountpoint %q is not a regular file", mountpoint.destination)
-		}
+		defer handle.Close() //nolint:errcheck
 
-		return nil
+		return validateExtensionRootfsMountpoint(handle, mountpoint)
 	case !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("error inspecting extension rootfs mountpoint %q: %w", mountpoint.destination, err)
 	}
 
 	if mountpoint.directory {
-		if err = os.Mkdir(path, 0o755); err != nil {
+		handle, err = pathrs.MkdirAllHandle(rootfs, relativePath, 0o755)
+		if err != nil {
 			return fmt.Errorf("error creating extension rootfs directory mountpoint %q: %w", mountpoint.destination, err)
 		}
+		defer handle.Close() //nolint:errcheck
 
-		return nil
+		return validateExtensionRootfsMountpoint(handle, mountpoint)
 	}
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	parentPath := filepath.Dir(relativePath)
+	parent, err := pathrs.MkdirAllHandle(rootfs, parentPath, 0o755)
+	if err != nil {
+		return fmt.Errorf("error creating extension rootfs mountpoint parent for %q: %w", mountpoint.destination, err)
+	}
+	defer parent.Close() //nolint:errcheck
+
+	fileDescriptor, err := unix.Openat(
+		int(parent.Fd()),
+		filepath.Base(relativePath),
+		unix.O_CLOEXEC|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_WRONLY,
+		0o644,
+	)
 	if err != nil {
 		return fmt.Errorf("error creating extension rootfs file mountpoint %q: %w", mountpoint.destination, err)
 	}
 
-	if err = file.Close(); err != nil {
+	if err = unix.Close(fileDescriptor); err != nil {
 		return fmt.Errorf("error closing extension rootfs file mountpoint %q: %w", mountpoint.destination, err)
+	}
+
+	handle, err = pathrs.OpenatInRoot(rootfs, relativePath)
+	if err != nil {
+		return fmt.Errorf("error reopening extension rootfs file mountpoint %q: %w", mountpoint.destination, err)
+	}
+	defer handle.Close() //nolint:errcheck
+
+	return validateExtensionRootfsMountpoint(handle, mountpoint)
+}
+
+func validateExtensionRootfsMountpoint(handle *os.File, mountpoint extensionRootfsMountpoint) error {
+	info, err := handle.Stat()
+	if err != nil {
+		return fmt.Errorf("error inspecting extension rootfs mountpoint %q: %w", mountpoint.destination, err)
+	}
+
+	switch {
+	case mountpoint.directory && !info.IsDir():
+		return fmt.Errorf("extension rootfs mountpoint %q is not a directory", mountpoint.destination)
+	case !mountpoint.directory && !info.Mode().IsRegular():
+		return fmt.Errorf("extension rootfs mountpoint %q is not a regular file", mountpoint.destination)
 	}
 
 	return nil

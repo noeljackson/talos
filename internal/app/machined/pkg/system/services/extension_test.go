@@ -121,18 +121,35 @@ func TestEnsureExtensionRootfsMountpoints(t *testing.T) {
 		assert.Contains(t, err.Error(), "is not absolute")
 	})
 
-	t.Run("rejects symlinked parents without touching their targets", func(t *testing.T) {
+	t.Run("follows absolute symlinks with container root semantics", func(t *testing.T) {
+		rootfsPath := t.TempDir()
+		directorySource := t.TempDir()
+
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfsPath, "var"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(rootfsPath, "run"), 0o755))
+		require.NoError(t, os.Symlink("/run", filepath.Join(rootfsPath, "var/run")))
+
+		require.NoError(t, services.EnsureExtensionRootfsMountpoints(rootfsPath, []specs.Mount{
+			{Source: directorySource, Destination: "/var/run/tailscale", Type: "bind"},
+		}))
+
+		assert.DirExists(t, filepath.Join(rootfsPath, "run/tailscale"))
+		info, err := os.Lstat(filepath.Join(rootfsPath, "var/run"))
+		require.NoError(t, err)
+		assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	})
+
+	t.Run("does not follow absolute symlinks outside the container root", func(t *testing.T) {
 		rootfsPath := t.TempDir()
 		outsidePath := t.TempDir()
 		directorySource := t.TempDir()
 
 		require.NoError(t, os.Symlink(outsidePath, filepath.Join(rootfsPath, "var")))
-
 		err := services.EnsureExtensionRootfsMountpoints(rootfsPath, []specs.Mount{
 			{Source: directorySource, Destination: "/var/lib/extension", Type: "bind"},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "parent")
+
 		assert.NoDirExists(t, filepath.Join(outsidePath, "lib"))
 	})
 }
