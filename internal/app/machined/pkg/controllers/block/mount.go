@@ -760,6 +760,15 @@ func (ctrl *MountController) handleOverlayMountOperation(
 		return fmt.Errorf("failed to mount %q: %w", mountRequest.Metadata().ID(), err)
 	}
 
+	// Overlay upper layers persist across upgrades and can shadow correctly
+	// labeled files from the new image. Restore the policy-owned per-path
+	// contexts before publishing the mount to any service.
+	if err = selinux.RestoreFileContexts(mountTarget); err != nil {
+		manager.Unmount() //nolint:errcheck
+
+		return fmt.Errorf("failed to restore file contexts for %q: %w", mountRequest.Metadata().ID(), err)
+	}
+
 	if err = ctrl.updateTargetSettings(mountTarget, volumeStatus.TypedSpec().Filesystem, volumeStatus.TypedSpec().MountSpec); err != nil {
 		manager.Unmount() //nolint:errcheck
 
