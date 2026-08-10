@@ -119,10 +119,8 @@ func ProbeWithCallback(disk string, options options.ProbeOptions, callback func(
 
 			options.Logf("sd-boot: found UKI files: %v", xslices.Map(ukiFiles, filepath.Base))
 
-			// If we booted of UKI/Kernel+Initramfs/ISO Talos installer will always be run which
-			// sets the `LoaderEntryDefault` to the UKI file name, so either for reboot with Kexec or upgrade
-			// we will always have the UKI file name in the `LoaderEntryDefault`
-			// and we can use it to determine the default entry.
+			// LoaderEntryDefault is the persistent sd-boot default. It is not necessarily the
+			// entry running now, because an operator can select a different entry at boot.
 			loaderEntryDefault, err := ReadVariable(LoaderEntryDefaultName)
 			if err != nil {
 				return err
@@ -130,10 +128,8 @@ func ProbeWithCallback(disk string, options options.ProbeOptions, callback func(
 
 			options.Logf("sd-boot: LoaderEntryDefault: %s", loaderEntryDefault)
 
-			// If we booted of a Disk image, only `LoaderEntrySelected` will be set until we do an upgrade
-			// which will set the `LoaderEntryDefault` to the UKI file name.
-			// So for reboot with Kexec we will have to read the `LoaderEntrySelected`
-			// upgrades will always have `LoaderEntryDefault` set to the UKI file name.
+			// LoaderEntrySelected is the entry selected by sd-boot for this boot. It can be
+			// stale after kexec, where sd-boot did not participate in the current boot.
 			loaderEntrySelected, err := ReadVariable(LoaderEntrySelectedName)
 			if err != nil {
 				return err
@@ -141,22 +137,33 @@ func ProbeWithCallback(disk string, options options.ProbeOptions, callback func(
 
 			options.Logf("sd-boot: LoaderEntrySelected: %s", loaderEntrySelected)
 
+			loaderEntryOneShot, err := ReadVariable(LoaderEntryOneShotName)
+			if err != nil {
+				return err
+			}
+
+			options.Logf("sd-boot: LoaderEntryOneShot: %s", loaderEntryOneShot)
+
+			loaderEntryRebootReason, err := ReadVariable(LoaderEntryRebootReasonName)
+			if err != nil {
+				return err
+			}
+
+			options.Logf("sd-boot: LoaderEntryRebootReason: %s", loaderEntryRebootReason)
+
 			if loaderEntrySelected == "" && loaderEntryDefault == "" {
 				return errors.New("sd-boot: no LoaderEntryDefault or LoaderEntrySelected found, cannot continue")
 			}
 
-			var (
-				bootEntry   string
-				bootEntryOk bool
+			bootEntry, bootEntryOk := findBootedUKIFile(
+				ukiFiles,
+				loaderEntryDefault,
+				loaderEntrySelected,
+				loaderEntryOneShot,
+				loaderEntryRebootReason,
 			)
-
-			// first try to find the default entry, then the selected one
-			bootEntry, bootEntryOk = findMatchingUKIFile(ukiFiles, loaderEntryDefault)
 			if !bootEntryOk {
-				bootEntry, bootEntryOk = findMatchingUKIFile(ukiFiles, loaderEntrySelected)
-				if !bootEntryOk {
-					return errors.New("sd-boot: no valid boot entry found matching LoaderEntryDefault or LoaderEntrySelected")
-				}
+				return errors.New("sd-boot: no valid boot entry found matching LoaderEntrySelected or LoaderEntryDefault")
 			}
 
 			options.Logf("sd-boot: found boot entry: %s", bootEntry)
@@ -560,4 +567,24 @@ func findMatchingUKIFile(ukiFiles []string, entry string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func findBootedUKIFile(ukiFiles []string, defaultEntry, selectedEntry, oneShotEntry, rebootReason string) (string, bool) {
+	// A kexec reboot bypasses sd-boot, so LoaderEntrySelected can describe an older
+	// boot. In that case the installer-updated default is the running entry.
+	if rebootReason == "reboot" && oneShotEntry == "kexec reboot" {
+		if entry, ok := findMatchingUKIFile(ukiFiles, defaultEntry); ok {
+			return entry, true
+		}
+
+		return findMatchingUKIFile(ukiFiles, selectedEntry)
+	}
+
+	// For a firmware boot, LoaderEntrySelected is the entry actually running and
+	// may intentionally differ from the persistent default after manual selection.
+	if entry, ok := findMatchingUKIFile(ukiFiles, selectedEntry); ok {
+		return entry, true
+	}
+
+	return findMatchingUKIFile(ukiFiles, defaultEntry)
 }
