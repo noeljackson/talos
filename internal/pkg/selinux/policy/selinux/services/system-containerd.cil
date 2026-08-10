@@ -48,6 +48,18 @@
 (allow system_container_p sys_containerd_t (fd (use)))
 (allow system_container_p sys_containerd_t (fifo_file (append getattr ioctl map open read rename setattr watch write)))
 
+; Machined composes extension-service overlay rootfs mounts in init_t before
+; system containerd enters unconfined_container_t. File-backed mprotect checks
+; the overlay file descriptor's stashed creator credential, so extension
+; services need the same narrow fd-use edge as direct init_t children.
+(allow unconfined_container_t init_t (fd (use)))
+
+; Extension services opt into host state explicitly through their OCI bind
+; mounts. Permit the shared extension domain to use the writable /var and /run
+; surfaces once those paths are present in its mount namespace.
+(allow unconfined_container_t ephemeral_t (fs_classes (rw)))
+(allow unconfined_container_t run_t (fs_classes (rw)))
+
 (allow sys_containerd_t system_container_p (key (view read write search link setattr create)))
 
 ; Shim sockets

@@ -4,7 +4,10 @@
 
 package services
 
-import "github.com/containerd/containerd/v2/pkg/oci"
+import (
+	"github.com/containerd/containerd/v2/pkg/oci"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
+)
 
 // GetOCIOptions gets all OCI options from an Extension.
 func (svc *Extension) GetOCIOptions() ([]oci.SpecOpts, error) {
@@ -14,4 +17,10 @@ func (svc *Extension) GetOCIOptions() ([]oci.SpecOpts, error) {
 	}
 
 	return svc.getOCIOptions(envVars, svc.Spec.Container.Mounts), nil
+}
+
+// EnsureExtensionRootfsMountpoints exposes the extension rootfs preparation
+// contract to external tests.
+func EnsureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
+	return ensureExtensionRootfsMountpoints(rootfsPath, mounts)
 }
