@@ -165,3 +165,76 @@ func TestFindMatchingUKIFile(t *testing.T) {
 		require.Equal(t, test.expectedFile, foundFile)
 	}
 }
+
+func TestFindBootedUKIFile(t *testing.T) {
+	t.Parallel()
+
+	existingFiles := []string{
+		"/EFI/Linux/Talos-old.efi",
+		"/EFI/Linux/Talos-current.efi",
+	}
+
+	for _, test := range []struct {
+		name          string
+		defaultEntry  string
+		selectedEntry string
+		oneShotEntry  string
+		rebootReason  string
+		expectedEntry string
+		expectedFound bool
+	}{
+		{
+			name:          "manual_selection_uses_selected_entry",
+			defaultEntry:  "Talos-old.efi",
+			selectedEntry: "Talos-current.efi",
+			expectedEntry: "Talos-current.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "kexec_uses_installer_updated_default",
+			defaultEntry:  "Talos-current.efi",
+			selectedEntry: "Talos-old.efi",
+			oneShotEntry:  "kexec reboot",
+			rebootReason:  "reboot",
+			expectedEntry: "Talos-current.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "missing_selected_entry_falls_back_to_default",
+			defaultEntry:  "Talos-current.efi",
+			selectedEntry: "Talos-missing.efi",
+			expectedEntry: "Talos-current.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "missing_kexec_default_falls_back_to_selected",
+			defaultEntry:  "Talos-missing.efi",
+			selectedEntry: "Talos-current.efi",
+			oneShotEntry:  "kexec reboot",
+			rebootReason:  "reboot",
+			expectedEntry: "Talos-current.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "no_matching_entry",
+			defaultEntry:  "Talos-missing-default.efi",
+			selectedEntry: "Talos-missing-selected.efi",
+			expectedFound: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			entry, found := sdboot.FindBootedUKIFile(
+				existingFiles,
+				test.defaultEntry,
+				test.selectedEntry,
+				test.oneShotEntry,
+				test.rebootReason,
+			)
+
+			require.Equal(t, test.expectedFound, found)
+			require.Equal(t, test.expectedEntry, entry)
+		})
+	}
+}

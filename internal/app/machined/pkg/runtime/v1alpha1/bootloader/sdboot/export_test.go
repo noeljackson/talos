@@ -6,6 +6,7 @@ package sdboot
 
 // exported for testing only.
 var (
+	FindBootedUKIFile   = findBootedUKIFile
 	FindMatchingUKIFile = findMatchingUKIFile
 	GenerateNextUKIName = generateNextUKIName
 )
