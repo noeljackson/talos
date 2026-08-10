@@ -27,6 +27,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/runner/restart"
 	"github.com/siderolabs/talos/internal/pkg/capability"
 	"github.com/siderolabs/talos/internal/pkg/environment"
+	internalextensions "github.com/siderolabs/talos/internal/pkg/extensions"
 	"github.com/siderolabs/talos/internal/pkg/mount/v3"
 	"github.com/siderolabs/talos/pkg/conditions"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -41,16 +42,6 @@ type Extension struct {
 	Spec extservices.Spec
 
 	overlayUnmounter func() error
-}
-
-type extensionRootfsMountpoint struct {
-	destination string
-	directory   bool
-}
-
-var extensionRootfsImplicitMountpoints = []extensionRootfsMountpoint{
-	{destination: "/etc/hosts"},
-	{destination: "/etc/resolv.conf"},
 }
 
 // ID implements the Service interface.
@@ -86,118 +77,33 @@ func (svc *Extension) PreFunc(ctx context.Context, r runtime.Runtime) error {
 }
 
 func ensureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
-	mountpoints := append([]extensionRootfsMountpoint{}, extensionRootfsImplicitMountpoints...)
+	mountpoints := internalextensions.ImplicitServiceRootfsMountpoints()
 
 	for _, containerMount := range mounts {
-		if extensionRootfsMountpointIsRuntimeManaged(containerMount.Destination) {
+		if internalextensions.ServiceRootfsMountpointIsRuntimeManaged(containerMount.Destination) {
 			continue
 		}
 
 		sourceInfo, err := os.Stat(containerMount.Source)
 		switch {
 		case err == nil:
-			mountpoints = append(mountpoints, extensionRootfsMountpoint{
-				destination: containerMount.Destination,
-				directory:   sourceInfo.IsDir(),
+			mountpoints = append(mountpoints, internalextensions.ServiceRootfsMountpoint{
+				Destination: containerMount.Destination,
+				Directory:   sourceInfo.IsDir(),
 			})
 		case errors.Is(err, os.ErrNotExist):
 			// Runner creates absent mount sources as directories, so prepare the
 			// destination with the same shape before runc sees the rootfs.
-			mountpoints = append(mountpoints, extensionRootfsMountpoint{
-				destination: containerMount.Destination,
-				directory:   true,
+			mountpoints = append(mountpoints, internalextensions.ServiceRootfsMountpoint{
+				Destination: containerMount.Destination,
+				Directory:   true,
 			})
 		default:
 			return fmt.Errorf("error inspecting extension mount source %q: %w", containerMount.Source, err)
 		}
 	}
 
-	for _, mountpoint := range mountpoints {
-		if err := ensureExtensionRootfsMountpoint(rootfsPath, mountpoint); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func extensionRootfsMountpointIsRuntimeManaged(destination string) bool {
-	cleaned := filepath.Clean(destination)
-
-	for _, path := range []string{"/dev", "/proc", "/sys"} {
-		if cleaned == path || strings.HasPrefix(cleaned, path+string(os.PathSeparator)) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func ensureExtensionRootfsMountpoint(rootfsPath string, mountpoint extensionRootfsMountpoint) error {
-	if !filepath.IsAbs(mountpoint.destination) {
-		return fmt.Errorf("extension rootfs mountpoint %q is not absolute", mountpoint.destination)
-	}
-
-	relativePath := strings.TrimPrefix(filepath.Clean(mountpoint.destination), string(os.PathSeparator))
-	if relativePath == "" || relativePath == "." {
-		return fmt.Errorf("extension rootfs mountpoint %q targets the rootfs", mountpoint.destination)
-	}
-
-	currentPath := rootfsPath
-	components := strings.Split(relativePath, string(os.PathSeparator))
-
-	for _, component := range components[:len(components)-1] {
-		currentPath = filepath.Join(currentPath, component)
-
-		info, err := os.Lstat(currentPath)
-		switch {
-		case err == nil:
-			if !info.IsDir() {
-				return fmt.Errorf("extension rootfs mountpoint parent %q is not a directory", currentPath)
-			}
-		case errors.Is(err, os.ErrNotExist):
-			if err = os.Mkdir(currentPath, 0o755); err != nil {
-				return fmt.Errorf("error creating extension rootfs mountpoint parent %q: %w", currentPath, err)
-			}
-		default:
-			return fmt.Errorf("error inspecting extension rootfs mountpoint parent %q: %w", currentPath, err)
-		}
-	}
-
-	path := filepath.Join(currentPath, components[len(components)-1])
-	info, err := os.Lstat(path)
-	switch {
-	case err == nil:
-		switch {
-		case mountpoint.directory && !info.IsDir():
-			return fmt.Errorf("extension rootfs mountpoint %q is not a directory", mountpoint.destination)
-		case !mountpoint.directory && !info.Mode().IsRegular():
-			return fmt.Errorf("extension rootfs mountpoint %q is not a regular file", mountpoint.destination)
-		}
-
-		return nil
-	case !errors.Is(err, os.ErrNotExist):
-		return fmt.Errorf("error inspecting extension rootfs mountpoint %q: %w", mountpoint.destination, err)
-	}
-
-	if mountpoint.directory {
-		if err = os.Mkdir(path, 0o755); err != nil {
-			return fmt.Errorf("error creating extension rootfs directory mountpoint %q: %w", mountpoint.destination, err)
-		}
-
-		return nil
-	}
-
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("error creating extension rootfs file mountpoint %q: %w", mountpoint.destination, err)
-	}
-
-	if err = file.Close(); err != nil {
-		return fmt.Errorf("error closing extension rootfs file mountpoint %q: %w", mountpoint.destination, err)
-	}
-
-	return nil
+	return internalextensions.EnsureServiceRootfsMountpoints(rootfsPath, mountpoints)
 }
 
 // PostFunc implements the Service interface.

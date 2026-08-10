@@ -88,6 +88,71 @@ func TestApplySystemExtensionSELinuxLabelsInitializesMap(t *testing.T) {
 	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[binPath])
 }
 
+func TestApplySystemExtensionSELinuxLabelsPreparesDeclaredMountpointsInContainerRoot(t *testing.T) {
+	rootfsPath := t.TempDir()
+	configPath := filepath.Join(rootfsPath, "usr/local/etc/containers/tailscale.yaml")
+	serviceRootfsPath := filepath.Join(rootfsPath, "usr/local/lib/containers/tailscale")
+	entrypointPath := filepath.Join(serviceRootfsPath, "usr/local/bin/containerboot")
+	tailscaleRunPath := filepath.Join(serviceRootfsPath, "run/tailscale")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(entrypointPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(serviceRootfsPath, "var"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(serviceRootfsPath, "run"), 0o755))
+	require.NoError(t, os.Symlink("/run", filepath.Join(serviceRootfsPath, "var/run")))
+	require.NoError(t, os.WriteFile(configPath, []byte(`name: tailscale
+restart: always
+container:
+  entrypoint: /usr/local/bin/containerboot
+  mounts:
+    - source: /var/run/tailscale
+      destination: /var/run/tailscale
+      type: bind
+`), 0o644))
+	require.NoError(t, os.WriteFile(entrypointPath, []byte("containerboot"), 0o755))
+
+	ext := &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "tailscale", extensionsapi.Manifest{})}
+	builder := &Builder{}
+
+	require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext}))
+	assert.DirExists(t, tailscaleRunPath)
+	assert.Equal(t, constants.RunSelinuxLabel, builder.XAttrsMap[tailscaleRunPath])
+	assert.Equal(t, constants.EtcSelinuxLabel, builder.XAttrsMap[filepath.Join(serviceRootfsPath, "etc/hosts")])
+
+	info, err := os.Lstat(filepath.Join(serviceRootfsPath, "var/run"))
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+}
+
+func TestApplySystemExtensionSELinuxLabelsRejectsMountpointSymlinkEscape(t *testing.T) {
+	rootfsPath := t.TempDir()
+	outsidePath := t.TempDir()
+	configPath := filepath.Join(rootfsPath, "usr/local/etc/containers/escaped.yaml")
+	serviceRootfsPath := filepath.Join(rootfsPath, "usr/local/lib/containers/escaped")
+	entrypointPath := filepath.Join(serviceRootfsPath, "usr/local/bin/service")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(entrypointPath), 0o755))
+	require.NoError(t, os.Symlink(outsidePath, filepath.Join(serviceRootfsPath, "var")))
+	require.NoError(t, os.WriteFile(configPath, []byte(`name: escaped
+restart: always
+container:
+  entrypoint: /usr/local/bin/service
+  mounts:
+    - source: /var/lib/escaped
+      destination: /var/lib/escaped
+      type: bind
+`), 0o644))
+	require.NoError(t, os.WriteFile(entrypointPath, []byte("service"), 0o755))
+
+	ext := &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "escaped", extensionsapi.Manifest{})}
+	builder := &Builder{}
+
+	err := builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext})
+	require.Error(t, err)
+	assert.NoDirExists(t, filepath.Join(outsidePath, "lib"))
+}
+
 func TestApplySystemExtensionSELinuxLabelsUsesDeclaredServiceEntrypoint(t *testing.T) {
 	rootfsPath := t.TempDir()
 	configPath := filepath.Join(rootfsPath, "usr/local/etc/containers/nydus.yaml")
@@ -219,6 +284,18 @@ func TestSystemExtensionSELinuxLabelUsesPathBoundariesAndSpecificity(t *testing.
 		"nested library": {
 			path:  "/usr/local/lib/containers/tailscale/usr/lib/libtailscale.so",
 			label: constants.SystemExtensionLibSELinuxLabel,
+			ok:    true,
+		},
+		"nested runtime state": {
+			path:  "/usr/local/lib/containers/tailscale/run/tailscale",
+			mode:  fs.ModeDir,
+			label: constants.RunSelinuxLabel,
+			ok:    true,
+		},
+		"nested persistent state": {
+			path:  "/usr/local/lib/containers/tailscale/var/lib/tailscale",
+			mode:  fs.ModeDir,
+			label: constants.EphemeralSelinuxLabel,
 			ok:    true,
 		},
 		"nested generic path uses container namespace": {
