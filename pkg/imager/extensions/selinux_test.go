@@ -88,6 +88,100 @@ func TestApplySystemExtensionSELinuxLabelsInitializesMap(t *testing.T) {
 	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[binPath])
 }
 
+func TestApplySystemExtensionSELinuxLabelsUsesDeclaredServiceEntrypoint(t *testing.T) {
+	rootfsPath := t.TempDir()
+	configPath := filepath.Join(rootfsPath, "usr/local/etc/containers/nydus.yaml")
+	serviceLibPath := filepath.Join(rootfsPath, "usr/local/lib/containers/nydus/usr/local/lib")
+	serviceRootfsPath := filepath.Join(rootfsPath, "usr/local/lib/containers/nydus")
+	entrypointPath := filepath.Join(serviceLibPath, "ld-linux-x86-64.so.2")
+	adjacentLibraryPath := filepath.Join(serviceLibPath, "libc.so.6")
+	executableArgumentPath := filepath.Join(serviceRootfsPath, "containerd-nydus-grpc")
+	dataArgumentPath := filepath.Join(serviceRootfsPath, "config.toml")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o755))
+	require.NoError(t, os.MkdirAll(serviceLibPath, 0o755))
+	require.NoError(t, os.WriteFile(configPath, []byte(`name: nydus
+restart: always
+container:
+  entrypoint: /usr/local/lib/ld-linux-x86-64.so.2
+  args:
+    - --library-path
+    - /usr/local/lib
+    - /containerd-nydus-grpc
+    - /config.toml
+`), 0o644))
+	require.NoError(t, os.WriteFile(entrypointPath, []byte("loader"), 0o755))
+	require.NoError(t, os.WriteFile(adjacentLibraryPath, []byte("library"), 0o755))
+	require.NoError(t, os.WriteFile(executableArgumentPath, []byte("executable"), 0o755))
+	require.NoError(t, os.WriteFile(dataArgumentPath, []byte("data"), 0o644))
+
+	ext := &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "test", extensionsapi.Manifest{})}
+	builder := &Builder{}
+
+	require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext}))
+	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[entrypointPath])
+	assert.Equal(t, constants.SystemExtensionLibSELinuxLabel, builder.XAttrsMap[adjacentLibraryPath])
+	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[executableArgumentPath])
+	assert.NotEqual(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[dataArgumentPath])
+}
+
+func TestApplySystemExtensionSELinuxLabelsUsesMountedServiceEntrypoint(t *testing.T) {
+	configRootfsPath := t.TempDir()
+	providerRootfsPath := t.TempDir()
+	configPath := filepath.Join(configRootfsPath, "usr/local/etc/containers/iscsid.yaml")
+	serviceRootfsPath := filepath.Join(configRootfsPath, "usr/local/lib/containers/iscsid")
+	entrypointPath := filepath.Join(providerRootfsPath, "usr/local/lib/iscsid")
+	adjacentLibraryPath := filepath.Join(providerRootfsPath, "usr/local/lib/libiscsi.so")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o755))
+	require.NoError(t, os.MkdirAll(serviceRootfsPath, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(entrypointPath), 0o755))
+	require.NoError(t, os.WriteFile(configPath, []byte(`name: iscsid
+restart: always
+container:
+  entrypoint: /usr/local/lib/iscsid
+  mounts:
+    - source: /usr/local/lib
+      destination: /usr/local/lib
+      type: bind
+`), 0o644))
+	require.NoError(t, os.WriteFile(entrypointPath, []byte("iscsid"), 0o755))
+	require.NoError(t, os.WriteFile(adjacentLibraryPath, []byte("library"), 0o755))
+
+	configExt := &internalextensions.Extension{Extension: extensionsapi.New(configRootfsPath, "config", extensionsapi.Manifest{})}
+	providerExt := &internalextensions.Extension{Extension: extensionsapi.New(providerRootfsPath, "provider", extensionsapi.Manifest{})}
+	builder := &Builder{}
+
+	require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{configExt, providerExt}))
+	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[entrypointPath])
+	assert.Equal(t, constants.SystemExtensionLibSELinuxLabel, builder.XAttrsMap[adjacentLibraryPath])
+}
+
+func TestApplySystemExtensionSELinuxLabelsRejectsMissingServiceEntrypoint(t *testing.T) {
+	rootfsPath := t.TempDir()
+	configPath := filepath.Join(rootfsPath, "usr/local/etc/containers/missing.yaml")
+	serviceRootfsPath := filepath.Join(rootfsPath, "usr/local/lib/containers/missing")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o755))
+	require.NoError(t, os.MkdirAll(serviceRootfsPath, 0o755))
+	require.NoError(t, os.WriteFile(configPath, []byte(`name: missing
+restart: always
+container:
+  entrypoint: /usr/local/lib/missing
+  mounts:
+    - source: /usr/local/lib
+      destination: /usr/local/lib
+      type: bind
+`), 0o644))
+
+	ext := &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "test", extensionsapi.Manifest{})}
+	builder := &Builder{}
+
+	err := builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absent from the service rootfs and mounted extension sources")
+}
+
 func TestSystemExtensionSELinuxLabelUsesPathBoundariesAndSpecificity(t *testing.T) {
 	testCases := map[string]struct {
 		path  string
@@ -177,6 +271,9 @@ func TestExtensionSystemContainerPolicyAllowsLabeledExecutablesAndLibraries(t *t
 
 	assert.Contains(t, policy, "(allow system_container_p bin_exec_t (file (entrypoint execute execute_no_trans)))")
 	assert.Contains(t, policy, "(allow system_container_p lib_t (file (execute)))")
+	assert.Contains(t, policy, "(allow unconfined_container_t init_t (fd (use)))")
+	assert.Contains(t, policy, "(allow unconfined_container_t ephemeral_t (fs_classes (rw)))")
+	assert.Contains(t, policy, "(allow unconfined_container_t run_t (fs_classes (rw)))")
 }
 
 func TestInitramfsOverlayCredentialCanCheckImmutableExecutables(t *testing.T) {
