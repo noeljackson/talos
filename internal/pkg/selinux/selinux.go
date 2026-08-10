@@ -8,6 +8,8 @@ package selinux
 import (
 	"bytes"
 	_ "embed"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -213,6 +215,53 @@ func SetLabelRecursive(dir string, label string, excludeLabels ...string) error 
 
 	return filepath.Walk(dir, func(path string, _ os.FileInfo, err error) error {
 		return SetLabel(path, label, excludeLabels...)
+	})
+}
+
+// RestoreFileContexts recursively restores the canonical Talos SELinux
+// contexts below root. Symlinks are labeled but never followed.
+func RestoreFileContexts(root string) error {
+	if !IsEnabled() {
+		return nil
+	}
+
+	return restoreFileContexts(root, LookupFileContext, SetLabel)
+}
+
+func restoreFileContexts(
+	root string,
+	lookup func(string, fs.FileMode) (string, bool, error),
+	setLabel func(string, string, ...string) error,
+) error {
+	return filepath.Walk(root, func(path string, info fs.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
+
+			return fmt.Errorf("failed to walk %q: %w", path, walkErr)
+		}
+
+		label, ok, err := lookup(path, info.Mode())
+		if err != nil {
+			return fmt.Errorf("failed to look up file context for %q: %w", path, err)
+		}
+
+		if !ok {
+			return nil
+		}
+
+		if err = setLabel(path, label); err != nil {
+			// Runtime-created entries may disappear while a tree is being
+			// inspected. A replacement will inherit the policy-owned context.
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+
+			return fmt.Errorf("failed to restore file context for %q: %w", path, err)
+		}
+
+		return nil
 	})
 }
 

@@ -75,8 +75,8 @@ func (suite *SELinuxSuite) getLabel(nodeCtx context.Context, pid int32) string {
 }
 
 // TestFileMountLabels reads labels of runtime-created files and mounts from xattrs
-// to ensure SELinux labels for files are set when they are created and FS's are mounted with correct labels.
-// FIXME: cancel the test in case system was upgraded.
+// to ensure SELinux labels for files are set when they are created and filesystems are mounted with correct labels.
+// Persistent overlay contexts are restored before services start, so the same contract applies after an upgrade.
 func (suite *SELinuxSuite) TestFileMountLabels() {
 	workers := suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeWorker)
 	controlplanes := suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeControlPlane)
@@ -104,6 +104,7 @@ func (suite *SELinuxSuite) TestFileMountLabels() {
 		"/usr/libexec/kubernetes":         constants.KubeletPluginsSELinuxLabel,
 		"/opt":                            constants.OptSELinuxLabel,
 		"/opt/cni":                        "system_u:object_r:cni_plugin_t:s0",
+		"/opt/cni/bin/loopback":           "system_u:object_r:cni_plugin_t:s0",
 		"/opt/containerd":                 "system_u:object_r:containerd_plugin_t:s0",
 		// Directories
 		"/var/lib/containerd":           "system_u:object_r:containerd_state_t:s0",
