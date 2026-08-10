@@ -1388,6 +1388,8 @@ var Overlays = []SELinuxLabeledPath{
 // service container rootfs whose labels are owned by Talos at final image
 // composition. These paths are interpreted in the container's namespace.
 var ExtensionServiceSELinuxLabeledPaths = []SELinuxLabeledPath{
+	{"/run", RunSelinuxLabel},
+	{"/var", EphemeralSelinuxLabel},
 	{"/bin", SystemExtensionBinSELinuxLabel},
 	{"/sbin", SystemExtensionBinSELinuxLabel},
 	{"/usr/bin", SystemExtensionBinSELinuxLabel},

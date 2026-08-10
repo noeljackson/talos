@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	pathrs "github.com/cyphar/filepath-securejoin/pathrs-lite"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.yaml.in/yaml/v4"
 
@@ -24,6 +25,12 @@ import (
 func (builder *Builder) applySystemExtensionSELinuxLabels(extensionList []*extensions.Extension) error {
 	if builder.XAttrsMap == nil {
 		builder.XAttrsMap = map[string]string{}
+	}
+
+	for _, ext := range extensionList {
+		if err := prepareExtensionServiceRootfsMountpoints(ext, extensionList); err != nil {
+			return fmt.Errorf("error preparing extension-service rootfs mountpoints for extension %q: %w", ext.Manifest.Metadata.Name, err)
+		}
 	}
 
 	for _, ext := range extensionList {
@@ -69,6 +76,109 @@ func (builder *Builder) applySystemExtensionSELinuxLabels(extensionList []*exten
 	}
 
 	return nil
+}
+
+func prepareExtensionServiceRootfsMountpoints(ext *extensions.Extension, extensionList []*extensions.Extension) error {
+	configPath := filepath.Join(ext.RootfsPath(), strings.TrimPrefix(constants.ExtensionServiceConfigPath, "/"))
+
+	entries, err := os.ReadDir(configPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("error reading extension-service configs: %w", err)
+	}
+
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+
+		configFilePath := filepath.Join(configPath, entry.Name())
+		spec, err := loadExtensionServiceSpec(configFilePath)
+		if err != nil {
+			return err
+		}
+
+		if err = spec.Validate(); err != nil {
+			return fmt.Errorf("invalid extension-service config %q: %w", configFilePath, err)
+		}
+
+		serviceRootfsPath := filepath.Join(
+			ext.RootfsPath(),
+			strings.TrimPrefix(constants.ExtensionServiceRootfsPath, "/"),
+			spec.Name,
+		)
+
+		mountpoints := extensions.ImplicitServiceRootfsMountpoints()
+
+		for _, mount := range spec.Container.Mounts {
+			if extensions.ServiceRootfsMountpointIsRuntimeManaged(mount.Destination) {
+				continue
+			}
+
+			directory, err := extensionServiceMountSourceIsDirectory(mount.Source, extensionList)
+			if err != nil {
+				return fmt.Errorf("error inspecting source for mount destination %q in extension-service config %q: %w", mount.Destination, configFilePath, err)
+			}
+
+			mountpoints = append(mountpoints, extensions.ServiceRootfsMountpoint{
+				Destination: mount.Destination,
+				Directory:   directory,
+			})
+		}
+
+		if err = extensions.EnsureServiceRootfsMountpoints(serviceRootfsPath, mountpoints); err != nil {
+			return fmt.Errorf("invalid mountpoint in extension-service config %q: %w", configFilePath, err)
+		}
+	}
+
+	return nil
+}
+
+func extensionServiceMountSourceIsDirectory(source string, extensionList []*extensions.Extension) (bool, error) {
+	cleaned := filepath.Clean(source)
+	if !filepath.IsAbs(cleaned) {
+		return false, fmt.Errorf("mount source %q is not absolute", source)
+	}
+
+	found := false
+	directory := true
+
+	for _, candidateExtension := range extensionList {
+		rootfs, err := os.Open(candidateExtension.RootfsPath())
+		if err != nil {
+			return false, fmt.Errorf("error opening extension rootfs: %w", err)
+		}
+
+		handle, err := pathrs.OpenatInRoot(rootfs, strings.TrimPrefix(cleaned, "/"))
+		_ = rootfs.Close()
+
+		switch {
+		case err == nil:
+			info, statErr := handle.Stat()
+			_ = handle.Close()
+			if statErr != nil {
+				return false, fmt.Errorf("error inspecting extension mount source %q: %w", source, statErr)
+			}
+
+			found = true
+			directory = info.IsDir()
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		default:
+			return false, fmt.Errorf("error inspecting extension mount source %q: %w", source, err)
+		}
+	}
+
+	if !found {
+		// Extension-service runtime creates absent bind-mount sources as
+		// directories, so final image composition gives the destination the
+		// same shape before assigning its canonical SELinux label.
+		return true, nil
+	}
+
+	return directory, nil
 }
 
 func (builder *Builder) applyExtensionServiceEntrypointSELinuxLabels(ext *extensions.Extension, extensionList []*extensions.Extension) error {
