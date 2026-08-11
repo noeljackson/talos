@@ -56,8 +56,9 @@
 (allow pod_containerd_t installer_t (key (view read write search link setattr create)))
 
 ; CRI containerd snapshots are labeled containerd_state_t rather than
-; system_var_t. Permit only the installer domain to use that snapshot entrypoint.
-(allow installer_t containerd_state_t (file (entrypoint)))
+; system_var_t. Permit only the installer domain to enter, map, and execute
+; same-domain tools from that snapshot.
+(allow installer_t containerd_state_t (file (entrypoint execute execute_no_trans)))
 
 ; /boot(/EFI)
 (allow installer_t foreign_fs_t (fs_classes (rw)))
