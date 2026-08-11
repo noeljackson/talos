@@ -2005,6 +2005,14 @@ spec:
         - name: talosctl-cni-bundle
           conditions:
             - only-on-schedule
+        - name: images-essential-enforcing
+          command: images-essential
+          environment:
+            PLATFORM: linux/amd64,linux/arm64
+            IMAGER_ARGS: "--extra-kernel-arg=console=ttyS0 --extra-kernel-arg=enforcing=1"
+            TAG_SUFFIX_OUT: -enforcing
+            IMAGE_REGISTRY: registry.dev.siderolabs.io
+            PUSH: true
         - name: e2e-cilium
           command: e2e-qemu
           withSudo: true
@@ -2014,6 +2022,20 @@ spec:
             WITH_CUSTOM_CNI: cilium
             WITH_FIREWALL: accept
             WITH_CONFIG_PATCH: "@hack/test/patches/cilium-no-kubeproxy.yaml"
+            IMAGE_REGISTRY: registry.dev.siderolabs.io
+        - name: e2e-cilium-strict-enforcing
+          command: e2e-qemu
+          withSudo: true
+          environment:
+            GITHUB_STEP_NAME: ${{ github.job}}-e2e-cilium-strict-enforcing
+            SHORT_INTEGRATION_TEST: yes
+            WITH_CUSTOM_CNI: cilium
+            WITH_FIREWALL: accept
+            CILIUM_INSTALL_TYPE: strict
+            WITH_CONFIG_PATCH: "@hack/test/patches/cilium-kubeproxy.yaml"
+            WITH_ENFORCING: true
+            TAG_SUFFIX_IN: -enforcing
+            EXTRA_TEST_ARGS: -talos.enforcing
             IMAGE_REGISTRY: registry.dev.siderolabs.io
         - name: e2e-cilium-strict
           command: e2e-qemu

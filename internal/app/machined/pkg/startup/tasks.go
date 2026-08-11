@@ -25,6 +25,24 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 )
 
+type systemDirectory struct {
+	path  string
+	perm  os.FileMode
+	label string
+}
+
+var systemDirectories = []systemDirectory{
+	{constants.SystemEtcPath, 0o700, constants.EtcSelinuxLabel},
+	{constants.SystemVarPath, 0o700, constants.SystemVarSelinuxLabel},
+	{constants.StateMountPoint, 0o700, ""},
+	{constants.SystemRunPath, 0o751, "system_u:object_r:system_run_t:s0"},
+	{"/system/run/containerd", 0o711, "system_u:object_r:sys_containerd_run_t:s0"},
+	{"/run/containerd", 0o711, "system_u:object_r:pod_containerd_run_t:s0"},
+	// Cilium's hostPath must be created before CRI. Otherwise CRI assigns its
+	// pod-containerd runtime label and the Cilium pod cannot safely own state.
+	{constants.CiliumRuntimePath, 0o755, constants.CiliumRuntimeSelinuxLabel},
+}
+
 // LogMode prints the current mode.
 func LogMode(ctx context.Context, log *zap.Logger, rt runtime.Runtime, next NextTaskFunc) error {
 	log.Info("platform information", zap.Stringer("mode", rt.State().Platform().Mode()))
@@ -35,18 +53,7 @@ func LogMode(ctx context.Context, log *zap.Logger, rt runtime.Runtime, next Next
 
 // SetupSystemDirectories creates system default directories.
 func SetupSystemDirectories(ctx context.Context, log *zap.Logger, rt runtime.Runtime, next NextTaskFunc) error {
-	for _, dir := range []struct {
-		path  string
-		perm  os.FileMode
-		label string
-	}{
-		{constants.SystemEtcPath, 0o700, constants.EtcSelinuxLabel},
-		{constants.SystemVarPath, 0o700, constants.SystemVarSelinuxLabel},
-		{constants.StateMountPoint, 0o700, ""},
-		{constants.SystemRunPath, 0o751, "system_u:object_r:system_run_t:s0"},
-		{"/system/run/containerd", 0o711, "system_u:object_r:sys_containerd_run_t:s0"},
-		{"/run/containerd", 0o711, "system_u:object_r:pod_containerd_run_t:s0"},
-	} {
+	for _, dir := range systemDirectories {
 		if err := os.MkdirAll(dir.path, dir.perm); err != nil {
 			return fmt.Errorf("setupSystemDirectories: %w", err)
 		}
