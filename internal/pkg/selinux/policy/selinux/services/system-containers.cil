@@ -43,6 +43,21 @@
 (allow installer_t system_var_t (file (entrypoint execute execute_no_trans)))
 (allow installer_t system_var_t (fs_classes (rw)))
 
+; LifecycleService runs the installer from the CRI containerd system namespace.
+; Keep this separate from pod_p: only the installer domain may cross from the
+; pod containerd, and the normal Kubernetes pod domains gain no system-container
+; access. These edges mirror the runc launch contract for system containerd.
+(allow pod_containerd_t installer_t (process2 (nnp_transition nosuid_transition)))
+(allow pod_containerd_t installer_t (process (transition)))
+(allow pod_containerd_t installer_t (fs_classes (rw)))
+(allow installer_t pod_containerd_t (fd (use)))
+(allow installer_t pod_containerd_t (fifo_file (append getattr ioctl map open read rename setattr watch write)))
+(allow pod_containerd_t installer_t (key (view read write search link setattr create)))
+
+; CRI containerd snapshots are labeled containerd_state_t rather than
+; system_var_t. Permit only the installer domain to use that snapshot entrypoint.
+(allow installer_t containerd_state_t (file (entrypoint)))
+
 ; /boot(/EFI)
 (allow installer_t foreign_fs_t (fs_classes (rw)))
 (allow installer_t unlabeled_t (fs_classes (rw)))
