@@ -50,6 +50,7 @@
 (allow pod_containerd_t installer_t (process2 (nnp_transition nosuid_transition)))
 (allow pod_containerd_t installer_t (process (transition)))
 (allow pod_containerd_t installer_t (fs_classes (rw)))
+(allow pod_containerd_t installer_t (process_classes (full)))
 (allow installer_t pod_containerd_t (fd (use)))
 (allow installer_t pod_containerd_t (fifo_file (append getattr ioctl map open read rename setattr watch write)))
 (allow pod_containerd_t installer_t (key (view read write search link setattr create)))
