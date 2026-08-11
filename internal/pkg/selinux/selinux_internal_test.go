@@ -40,6 +40,16 @@ func TestLookupFileContextForPersistentOverlays(t *testing.T) {
 	}
 }
 
+func TestCiliumRuntimePolicyAllowsKubeletHostPathSetup(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/kubelet.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(policy), "(allow kubelet_t cilium_runtime_t (fs_classes (rw)))")
+	assert.NotContains(t, string(policy), "(allow kubelet_t pod_containerd_run_t")
+}
+
 func TestRestoreFileContextsRepairsStaleOverlayWithoutFollowingSymlinks(t *testing.T) {
 	t.Parallel()
 
