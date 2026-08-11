@@ -43,6 +43,11 @@
 ; TODO: label more precisely?
 (allow kubelet_t run_t (fs_classes (rw)))
 
+; Kubelet implements hostPath DirectoryOrCreate before the Cilium pods start.
+; Permit it to create only beneath machined's dedicated Cilium runtime type;
+; do not grant kubelet access to generic pod-containerd runtime state.
+(allow kubelet_t cilium_runtime_t (fs_classes (rw)))
+
 ; Communication with init via pipes and sockets
 (allow kubelet_t init_t (fd (use)))
 (allow kubelet_t init_t (fifo_file (write)))
