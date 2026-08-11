@@ -203,6 +203,17 @@ function build_registry_mirrors {
 function install_and_run_cilium_cni_tests {
   get_kubeconfig
 
+  CILIUM_SELINUX_ARGS=()
+
+  if [[ "${WITH_ENFORCING:-false}" == "true" ]]; then
+    # Talos owns this dedicated domain and precreates its runtime hostPath.
+    # OpenShift's default spc_t is not a Talos policy type.
+    CILIUM_SELINUX_ARGS=(
+      --set=securityContext.seLinuxOptions.type=cilium_t
+      --set=envoy.securityContext.seLinuxOptions.type=cilium_t
+    )
+  fi
+
   case "${WITH_KUBESPAN:-false}" in
     true)
       CILIUM_NODE_ENCRYPTION=false
@@ -225,7 +236,8 @@ function install_and_run_cilium_cni_tests {
         --set=cgroup.autoMount.enabled=false \
         --set=cgroup.hostRoot=/sys/fs/cgroup \
         --set=k8sServiceHost=localhost \
-        --set=k8sServicePort=13336
+        --set=k8sServicePort=13336 \
+        "${CILIUM_SELINUX_ARGS[@]}"
       ;;
     *)
       # explicitly setting kubeProxyReplacement=disabled since by the time cilium cli runs talos
@@ -237,7 +249,8 @@ function install_and_run_cilium_cni_tests {
         --set=securityContext.capabilities.ciliumAgent="{CHOWN,KILL,NET_ADMIN,NET_RAW,IPC_LOCK,SYS_ADMIN,SYS_RESOURCE,DAC_OVERRIDE,FOWNER,SETGID,SETUID}" \
         --set=securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
         --set=cgroup.autoMount.enabled=false \
-        --set=cgroup.hostRoot=/sys/fs/cgroup
+        --set=cgroup.hostRoot=/sys/fs/cgroup \
+        "${CILIUM_SELINUX_ARGS[@]}"
       ;;
   esac
 

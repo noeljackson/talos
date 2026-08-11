@@ -710,6 +710,14 @@ const (
 	// RunSelinuxLabel is the SELinux label for the run directory.
 	RunSelinuxLabel = "system_u:object_r:run_t:s0"
 
+	// CiliumRuntimePath is the host runtime directory shared by the Cilium
+	// agent and Envoy. It must exist before CRI prepares either hostPath.
+	CiliumRuntimePath = RunPath + "/cilium"
+
+	// CiliumRuntimeSelinuxLabel confines Cilium's shared host runtime state to
+	// the dedicated Cilium domain instead of granting pods generic /run access.
+	CiliumRuntimeSelinuxLabel = "system_u:object_r:cilium_runtime_t:s0"
+
 	// VarSystemOverlaysPath is the path where overlay mounts are created.
 	VarSystemOverlaysPath = "/var/system/overlays"
 

@@ -23,6 +23,14 @@
 
 (allow pod_containerd_t pod_containerd_run_t (fs_classes (rw)))
 
+; Cilium uses a shared host runtime directory for agent state and Envoy
+; sockets. It is created by machined before CRI, so it does not inherit the
+; pod-containerd runtime label used for shim-created paths.
+(type cilium_runtime_t)
+(call system_f (cilium_runtime_t))
+(allow cilium_runtime_t tmpfs_t (filesystem (associate)))
+(allow pod_containerd_t cilium_runtime_t (fs_classes (rw)))
+
 ; Transition to pod contexts
 (allow pod_containerd_t pod_p (process2 (nnp_transition nosuid_transition)))
 (allow pod_containerd_t pod_p (process (transition)))
@@ -173,6 +181,11 @@
 
 (type pod_t)
 (call pod_p (pod_t))
+(type cilium_t)
+(call pod_p (cilium_t))
+; Only the Cilium agent and Envoy use this shared hostPath. Do not grant all
+; pod domains access to generic /run or pod-containerd runtime paths.
+(allow cilium_t cilium_runtime_t (fs_classes (rw)))
 (typeattribute not_containerd_exec_t)
 (typeattributeset not_containerd_exec_t (not containerd_exec_t))
 (typetransition pod_containerd_t containerd_state_t process pod_t)
