@@ -256,6 +256,36 @@ function install_and_run_cilium_cni_tests {
 
   ${CILIUM_CLI} status --wait --wait-duration=10m
 
+  if [[ "${WITH_ENFORCING:-false}" == "true" ]]; then
+    # A Ready Cilium pod proves networking, but it does not prove that CRI
+    # honored the requested SELinux domain. Verify the running host processes
+    # so a disabled CRI SELinux integration cannot pass this gate as pod_t.
+    CILIUM_NODE_IPS=$(${KUBECTL} get pods -n kube-system \
+      -l 'k8s-app in (cilium,cilium-envoy)' \
+      -o jsonpath='{range .items[*]}{.status.hostIP}{"\n"}{end}' | sort -u)
+
+    while IFS= read -r node_ip; do
+      [[ -n "${node_ip}" ]] || continue
+
+      ${TALOSCTL} -n "${node_ip}" processes | awk '
+        /cilium-agent|cilium-envoy/ {
+          found = 1
+          if ($0 !~ /system_u:system_r:cilium_t:s0/) {
+            print "unexpected Cilium SELinux process label: " $0 > "/dev/stderr"
+            bad = 1
+          }
+        }
+        END {
+          if (!found) {
+            print "no Cilium host processes found" > "/dev/stderr"
+            exit 1
+          }
+          exit bad
+        }
+      '
+    done <<< "${CILIUM_NODE_IPS}"
+  fi
+
   # ref: https://github.com/cilium/cilium-cli/releases/tag/v0.16.14
   ${KUBECTL} delete ns --ignore-not-found cilium-test-1 cilium-test-ccnp1 cilium-test-ccnp2
 
