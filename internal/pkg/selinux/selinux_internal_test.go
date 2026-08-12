@@ -82,6 +82,18 @@ func TestOverlayCompositorMayCompleteCNILowerExecuteCheck(t *testing.T) {
 	assert.NotContains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (file (execute_no_trans")
 }
 
+func TestCRIContainerdMayDeliverKataShimLogsToTalosSyslogd(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// Kata shim v2 initializes its required system logger before VM creation.
+	// Talos syslogd runs in init_t; keep this edge to datagram delivery only.
+	assert.Contains(t, string(policy), "(allow pod_containerd_t init_t (unix_dgram_socket (sendto)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t init_t (unix_dgram_socket (all)))")
+}
+
 func TestCRIContainerdMaySetPodOverlayMountContext(t *testing.T) {
 	t.Parallel()
 

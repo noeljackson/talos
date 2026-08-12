@@ -297,3 +297,7 @@
 ; CRI containerd should talk machined API to call machine.ImageService/Verify API
 (allow pod_containerd_t machine_socket_t (fs_classes (rw)))
 (allow pod_containerd_t init_t (unix_stream_socket (connectto)))
+; Kata shim v2 always connects to the host syslog socket while loading its
+; runtime configuration. Talos syslogd owns /dev/log in init_t, so allow only
+; Unix-datagram delivery from the CRI containerd domain to that service.
+(allow pod_containerd_t init_t (unix_dgram_socket (sendto)))
