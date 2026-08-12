@@ -1,6 +1,9 @@
 ; Pod (CRI) containerd
 (type pod_containerd_t)
 (call service_p (pod_containerd_t containerd_exec_t))
+; CRI containerd allocates MCS categories and must supervise the labeled pod
+; roots and processes it creates. Pod domains themselves remain constrained.
+(typeattributeset mcs_exempt_p pod_containerd_t)
 
 (type pod_containerd_socket_t)
 (call system_socket_f (pod_containerd_socket_t))
@@ -39,6 +42,19 @@
 (allow pod_containerd_t containerd_state_t (fs_classes (rw)))
 (allow pod_containerd_t containerd_state_t (file (entrypoint execute execute_no_trans)))
 (allow pod_containerd_t containerd_state_t (fs_classes (relabelto relabelfrom)))
+; CRI supplies a per-pod mount context when SELinux handling is enabled. The
+; root overlay, /dev tmpfs, and /dev/pts devpts superblocks and their mountpoint
+; objects start in their native domains. runc relabels both the superblock and
+; mountpoint to the configured ephemeral context.
+; Its proc and sysfs mounts deliberately omit the mount label, while mqueue is
+; mounted unlabeled and labels only its mountpoint, so no other filesystem
+; domains belong in this relabel contract.
+(allow pod_containerd_t fs_t (fs_classes (relabelfrom)))
+(allow pod_containerd_t tmpfs_t (fs_classes (relabelfrom)))
+(allow pod_containerd_t devpts_t (fs_classes (relabelfrom)))
+(allow pod_containerd_t ephemeral_t (fs_classes (relabelfrom relabelto)))
+(allow ephemeral_t tmpfs_t (filesystem (associate)))
+(allow ephemeral_t devpts_t (filesystem (associate)))
 
 ; Manage procfs & processes
 (allow pod_containerd_t pod_p (fs_classes (rw)))
@@ -186,11 +202,32 @@
 ; Only the Cilium agent and Envoy use this shared hostPath. Do not grant all
 ; pod domains access to generic /run or pod-containerd runtime paths.
 (allow cilium_t cilium_runtime_t (fs_classes (rw)))
+; Cilium's install-cni-binaries init container populates Talos's dedicated CNI
+; binary tree before the agent starts.
+(allow cilium_t cni_plugin_t (fs_classes (rw)))
+; Talos mounts bpffs. Cilium owns its maps, programs, and perf-event readers,
+; but it does not receive generic host-namespace or /run access.
+(allow cilium_t bpf_t (fs_classes (rw)))
+(allow cilium_t self (perf_event (all)))
+(allow cilium_t containerd_p (bpf (prog_run)))
+(allow pod_containerd_t cilium_t (unix_stream_socket (connectto)))
+; The Cilium agent enumerates the standard host /run/netns directory to enter
+; pod network namespaces. It does not need write access to generic /run.
+(allow cilium_t run_t (dir (getattr open read search)))
 (typeattribute not_containerd_exec_t)
 (typeattributeset not_containerd_exec_t (not containerd_exec_t))
-(typetransition pod_containerd_t containerd_state_t process pod_t)
+; Keep the runc helper in pod_containerd_t. CRI's explicit process label moves
+; only the container entrypoint into a pod domain with the same MCS categories
+; as its rootfs. An automatic transition on either snapshot label would move
+; runc itself to pod_t at systemLow before it can apply that exact label.
 (allow pod_p containerd_state_t (fs_classes (rw)))
 (allow pod_p containerd_state_t (file (entrypoint execute execute_no_trans)))
+; With a CRI mount label, executable files in the pod rootfs are ephemeral_t
+; instead of containerd_state_t. Permit the same bounded entry transition from
+; that labeled rootfs; the requested process label still selects specialized
+; pod domains such as cilium_t.
+(allow pod_containerd_t ephemeral_t (file (execute execute_no_trans)))
+(allow pod_p ephemeral_t (file (entrypoint execute)))
 
 ; ; allow configuring CNI
 ; (allow pod_p cni_conf_t (fs_classes (rw)))

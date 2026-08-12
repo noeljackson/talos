@@ -347,6 +347,10 @@ hack-test-%: ## Runs the specified script in ./hack/test with well known environ
 generate: ## Generates code from protobuf service definitions and machinery config.
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/$(ARCH) EMBED_TARGET=embed-abbrev
 
+.PHONY: generate-selinux
+generate-selinux: ## Regenerates only the compiled SELinux policy embedded in init.
+	@$(MAKE) local-selinux-generate DEST=./internal/pkg/selinux PLATFORM=linux/$(ARCH)
+
 .PHONY: docs
 docs: ## Generates the documentation for machine config, and talosctl.
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/amd64
@@ -602,6 +606,30 @@ $(ARTIFACTS)/cilium: $(ARTIFACTS)
 	@chmod +x $(ARTIFACTS)/cilium
 
 external-artifacts: $(ARTIFACTS)/kubectl $(ARTIFACTS)/kubestr $(ARTIFACTS)/helm $(ARTIFACTS)/cilium
+
+.PHONY: e2e-qemu-cilium-enforcing-readiness e2e-qemu-cilium-enforcing-focused e2e-qemu-cilium-enforcing-full
+
+# These targets deliberately require an explicit image tag. Reusing an image
+# while the source tree is dirty must never silently select a different tag.
+e2e-qemu-cilium-enforcing-readiness:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		CILIUM_TEST_MODE=readiness QEMU_CONTROLPLANES=1 QEMU_WORKERS=1
+
+e2e-qemu-cilium-enforcing-focused:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@test -n "$(CILIUM_CONNECTIVITY_TEST)" || (echo "set CILIUM_CONNECTIVITY_TEST to an exact test/scenario selector" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		CILIUM_TEST_MODE=focused CILIUM_CONNECTIVITY_TEST='$(CILIUM_CONNECTIVITY_TEST)' \
+		QEMU_CONTROLPLANES=1 QEMU_WORKERS=1
+
+e2e-qemu-cilium-enforcing-full:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		CILIUM_TEST_MODE=full QEMU_CONTROLPLANES=3 QEMU_WORKERS=2
 
 e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 external-artifacts ## Runs the E2E test for the specified platform (e.g. e2e-docker).
 	@$(MAKE) hack-test-$@ \

@@ -50,6 +50,62 @@ func TestCiliumRuntimePolicyAllowsKubeletHostPathSetup(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow kubelet_t pod_containerd_run_t")
 }
 
+func TestCiliumDomainMayInstallCNIBinaries(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(policy), "(allow cilium_t cni_plugin_t (fs_classes (rw)))")
+	assert.Contains(t, string(policy), "(allow cilium_t bpf_t (fs_classes (rw)))")
+	assert.Contains(t, string(policy), "(allow cilium_t self (perf_event (all)))")
+	assert.Contains(t, string(policy), "(allow cilium_t containerd_p (bpf (prog_run)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t cilium_t (unix_stream_socket (connectto)))")
+	assert.Contains(t, string(policy), "(allow cilium_t run_t (dir (getattr open read search)))")
+}
+
+func TestCRIContainerdMaySetPodOverlayMountContext(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(policy), "(allow pod_containerd_t fs_t (fs_classes (relabelfrom)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t tmpfs_t (fs_classes (relabelfrom)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t devpts_t (fs_classes (relabelfrom)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t ephemeral_t (fs_classes (relabelfrom relabelto)))")
+	assert.Contains(t, string(policy), "(allow ephemeral_t tmpfs_t (filesystem (associate)))")
+	assert.Contains(t, string(policy), "(allow ephemeral_t devpts_t (filesystem (associate)))")
+	assert.NotContains(t, string(policy), "(typetransition pod_containerd_t ephemeral_t process pod_t)")
+	assert.NotContains(t, string(policy), "(typetransition pod_containerd_t containerd_state_t process pod_t)")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t ephemeral_t (file (execute execute_no_trans)))")
+	assert.Contains(t, string(policy), "(allow pod_p ephemeral_t (file (entrypoint execute)))")
+	assert.Contains(t, string(policy), "(typeattributeset mcs_exempt_p pod_containerd_t)")
+
+	machinedPolicy, err := os.ReadFile("policy/selinux/services/machined.cil")
+	require.NoError(t, err)
+	assert.Contains(t, string(machinedPolicy), "(typeattributeset mcs_exempt_p init_t)")
+
+	kubeletPolicy, err := os.ReadFile("policy/selinux/services/kubelet.cil")
+	require.NoError(t, err)
+	assert.Contains(t, string(kubeletPolicy), "(typeattributeset mcs_exempt_p kubelet_t)")
+}
+
+func TestCRIContainerLabelsHaveUpstreamMCSRange(t *testing.T) {
+	t.Parallel()
+
+	mcs, err := os.ReadFile("policy/selinux/common/mcs.cil")
+	require.NoError(t, err)
+	roles, err := os.ReadFile("policy/selinux/immutable/roles.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(mcs), "(category c0)")
+	assert.Contains(t, string(mcs), "(category c1023)")
+	assert.Contains(t, string(mcs), "(sensitivitycategory s0 (range c0 c1023))")
+	assert.Contains(t, string(mcs), "(level systemHigh (s0 (range c0 c1023)))")
+	assert.Contains(t, string(roles), "(userrange system_u (systemLow systemHigh))")
+}
+
 func TestRestoreFileContextsRepairsStaleOverlayWithoutFollowingSymlinks(t *testing.T) {
 	t.Parallel()
 

@@ -1,0 +1,7 @@
+# Base contexts consumed by github.com/opencontainers/selinux. Talos does not
+# Containerd allocates a unique MCS level from this base for pods that do not
+# specify seLinuxOptions. Kubernetes may replace its type and level for pods
+# such as Cilium that declare a dedicated SELinux domain.
+process = "system_u:system_r:pod_t:s0"
+file = "system_u:object_r:ephemeral_t:s0"
+ro_file = "system_u:object_r:ephemeral_t:s0"
