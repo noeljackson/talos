@@ -422,6 +422,12 @@ FROM build-go AS base
 COPY ./cmd ./cmd
 COPY ./pkg ./pkg
 COPY ./internal ./internal
+# The init binary embeds policy.33 from the Go source tree. Always replace the
+# checked-in generated blob with the policy compiled from this exact build's
+# CIL inputs so an omitted `make generate-selinux` cannot produce a stale OS
+# image. The repository consistency check still requires the generated blob to
+# be committed for review and reproducibility.
+COPY --link --from=selinux-generate / /internal/pkg/selinux/
 COPY --link --from=embed / ./
 RUN --mount=type=cache,target=/.cache,id=talos/.cache go list all >/dev/null
 WORKDIR /src/pkg/machinery

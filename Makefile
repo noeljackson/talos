@@ -351,6 +351,10 @@ generate: ## Generates code from protobuf service definitions and machinery conf
 generate-selinux: ## Regenerates only the compiled SELinux policy embedded in init.
 	@$(MAKE) local-selinux-generate DEST=./internal/pkg/selinux PLATFORM=linux/$(ARCH)
 
+.PHONY: check-selinux-policy-generated
+check-selinux-policy-generated: ## Verifies that the checked-in compiled SELinux policy matches its CIL sources.
+	@./hack/test/selinux-policy-generated.sh
+
 .PHONY: docs
 docs: ## Generates the documentation for machine config, and talosctl.
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/amd64
@@ -554,7 +558,7 @@ fmt: ## Formats the source code and protobuf files.
 lint-%: ## Runs the specified linter. Valid options are go, protobuf, and markdown (e.g. lint-go).
 	@$(MAKE) target-lint-$* PLATFORM=linux/$(ARCH)
 
-lint: ## Runs linters on go, vulncheck, deadcode, protobuf, and markdown file types.
+lint: check-selinux-policy-generated ## Runs linters on go, vulncheck, deadcode, protobuf, and markdown file types.
 	@$(MAKE) lint-go lint-vulncheck lint-deadcode lint-protobuf lint-markdown
 
 check-dirty: ## Verifies that source tree is not dirty
