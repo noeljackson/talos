@@ -265,6 +265,15 @@ function install_and_run_cilium_cni_tests {
   ${CILIUM_CLI} status --wait --wait-duration=10m
 
   if [[ "${WITH_ENFORCING:-false}" == "true" ]]; then
+    # A first start does not exercise Cilium's persistent host paths after a
+    # new pod receives projected configuration. Roll both agents once so the
+    # enforcing gate catches MCS mismatches on projected ConfigMaps and stale
+    # CNI/BPF/runtime objects before an image reaches physical hardware.
+    ${KUBECTL} -n kube-system rollout restart daemonset/cilium daemonset/cilium-envoy
+    ${KUBECTL} -n kube-system rollout status daemonset/cilium --timeout=10m
+    ${KUBECTL} -n kube-system rollout status daemonset/cilium-envoy --timeout=10m
+    ${CILIUM_CLI} status --wait --wait-duration=10m
+
     # A Ready Cilium pod proves networking, but it does not prove that CRI
     # honored the requested SELinux domain. Verify the running host processes
     # so a disabled CRI SELinux integration cannot pass this gate as pod_t.

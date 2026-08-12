@@ -199,6 +199,12 @@
 (call pod_p (pod_t))
 (type cilium_t)
 (call pod_p (cilium_t))
+; Cilium is a node agent, not an isolated tenant workload. It intentionally
+; keeps one stable s0 domain while reading Kubernetes-projected configuration
+; and owning persistent CNI, BPF, and runtime host paths across pod restarts.
+; Exempt only this dedicated type from MCS category comparison; the ordinary
+; pod domains remain isolated and every object access still needs a type allow.
+(typeattributeset mcs_exempt_p cilium_t)
 ; Only the Cilium agent and Envoy use this shared hostPath. Do not grant all
 ; pod domains access to generic /run or pod-containerd runtime paths.
 (allow cilium_t cilium_runtime_t (fs_classes (rw)))
