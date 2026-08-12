@@ -65,6 +65,23 @@ func TestCiliumDomainMayInstallCNIBinaries(t *testing.T) {
 	assert.Contains(t, string(policy), "(typeattributeset mcs_exempt_p cilium_t)")
 }
 
+func TestOverlayCompositorMayCompleteCNILowerExecuteCheck(t *testing.T) {
+	t.Parallel()
+
+	machinedPolicy, err := os.ReadFile("policy/selinux/services/machined.cil")
+	require.NoError(t, err)
+	criPolicy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// OverlayFS checks the real CRI caller first, then the credential stashed by
+	// initramfs when it composed /opt. Both narrowly scoped edges are required.
+	assert.Contains(t, string(criPolicy), "(allow pod_containerd_t cni_plugin_t (file (execute_no_trans execute)))")
+	assert.Contains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (file (execute)))")
+	assert.NotContains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (fs_classes")
+	assert.NotContains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (file (entrypoint")
+	assert.NotContains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (file (execute_no_trans")
+}
+
 func TestCRIContainerdMaySetPodOverlayMountContext(t *testing.T) {
 	t.Parallel()
 
