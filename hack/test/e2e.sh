@@ -274,6 +274,29 @@ function install_and_run_cilium_cni_tests {
     ${KUBECTL} -n kube-system rollout status daemonset/cilium-envoy --timeout=10m
     ${CILIUM_CLI} status --wait --wait-duration=10m
 
+    # DaemonSet readiness does not exercise CRI invoking the installed CNI
+    # binaries. Launch one ordinary pod on every node after the restart so the
+    # gate covers the complete containerd -> loopback -> cilium-cni sandbox
+    # path, including OverlayFS lower-inode permission checks on /opt.
+    CILIUM_PROBE_IMAGE=$(${KUBECTL} -n kube-system get daemonset/cilium-envoy \
+      -o jsonpath='{.spec.template.spec.containers[0].image}')
+    mapfile -t CILIUM_PROBE_NODES < <(${KUBECTL} get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+    CILIUM_PROBE_INDEX=0
+
+    for node_name in "${CILIUM_PROBE_NODES[@]}"; do
+      CILIUM_PROBE_INDEX=$((CILIUM_PROBE_INDEX + 1))
+      probe_name="cni-exec-probe-${CILIUM_PROBE_INDEX}"
+      ${KUBECTL} -n kube-system run "${probe_name}" \
+        --image="${CILIUM_PROBE_IMAGE}" \
+        --restart=Never \
+        --overrides="$(printf '{\"spec\":{\"nodeName\":\"%s\"}}' "${node_name}")" \
+        --command -- /bin/sh -c 'sleep 300'
+      ${KUBECTL} -n kube-system wait pod/"${probe_name}" \
+        --for=condition=Ready --timeout=5m
+      ${KUBECTL} -n kube-system delete pod/"${probe_name}" \
+        --wait=true --timeout=2m
+    done
+
     # A Ready Cilium pod proves networking, but it does not prove that CRI
     # honored the requested SELinux domain. Verify the running host processes
     # so a disabled CRI SELinux integration cannot pass this gate as pod_t.

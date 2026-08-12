@@ -100,6 +100,12 @@
 ; The caller's own domain is checked separately, so this only authorizes the
 ; trusted compositor credential to complete the lower executable lookup.
 (allow initramfs_t system_f (file (execute)))
+; /opt is another overlay composed by initramfs. CRI containerd independently
+; passes the pod_containerd_t -> cni_plugin_t execute check, but OverlayFS also
+; rechecks the CNI binary's lower inode using the compositor's stashed
+; credential. Permit only that lower executable lookup; initramfs receives no
+; CNI directory, read, write, entrypoint, or execute_no_trans permission here.
+(allow initramfs_t cni_plugin_t (file (execute)))
 (allow initramfs_t self (process_classes (full)))
 (allow kernel_t initramfs_t (fd (use)))
 ; Make machined go into proper context
