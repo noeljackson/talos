@@ -62,6 +62,7 @@ func TestCiliumDomainMayInstallCNIBinaries(t *testing.T) {
 	assert.Contains(t, string(policy), "(allow cilium_t containerd_p (bpf (prog_run)))")
 	assert.Contains(t, string(policy), "(allow pod_containerd_t cilium_t (unix_stream_socket (connectto)))")
 	assert.Contains(t, string(policy), "(allow cilium_t run_t (dir (getattr open read search)))")
+	assert.Contains(t, string(policy), "(typeattributeset mcs_exempt_p cilium_t)")
 }
 
 func TestCRIContainerdMaySetPodOverlayMountContext(t *testing.T) {
