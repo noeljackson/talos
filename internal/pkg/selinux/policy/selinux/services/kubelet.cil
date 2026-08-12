@@ -1,5 +1,9 @@
 (type kubelet_t)
 (call pod_p (kubelet_t))
+; Kubelet runs at systemLow but must inspect and supervise every categorized
+; pod. Exempt only this host supervisor; ordinary pod domains remain subject
+; to the MCS dominance constraint.
+(typeattributeset mcs_exempt_p kubelet_t)
 ; FIXME: insecure as anyone with access to the pod containerd may obtain this domain
 (allow kubelet_t containerd_state_t (file (entrypoint execute execute_no_trans)))
 

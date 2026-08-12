@@ -2,6 +2,10 @@
 
 set -eou pipefail
 
+# Support archives can contain machine configuration and other sensitive
+# diagnostics. Keep every artifact private from the moment it is created.
+umask 077
+
 # shellcheck source=/dev/null
 source ./hack/test/e2e.sh
 
@@ -301,7 +305,7 @@ function create_cluster {
     --provisioner="${PROVISIONER}" \
     --name="${CLUSTER_NAME}" \
     --kubernetes-version="${KUBERNETES_VERSION}" \
-    --controlplanes=3 \
+    --controlplanes="${QEMU_CONTROLPLANES:-3}" \
     --workers="${QEMU_WORKERS:-2}" \
     --disk="${QEMU_SYSTEM_DISK_SIZE:-15360}" \
     --extra-disks="${QEMU_EXTRA_DISKS:-0}" \
@@ -336,11 +340,52 @@ function destroy_cluster() {
 
 trap destroy_cluster SIGINT EXIT
 
+case "${WITH_CUSTOM_CNI:-none}:${CILIUM_TEST_MODE:-integration}" in
+  cilium:readiness|cilium:full|cilium:integration)
+    if [[ -n "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+      echo "CILIUM_CONNECTIVITY_TEST is only valid with CILIUM_TEST_MODE=focused" >&2
+
+      exit 1
+    fi
+    ;;
+  cilium:focused)
+    if [[ -z "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+      echo "CILIUM_TEST_MODE=focused requires CILIUM_CONNECTIVITY_TEST" >&2
+
+      exit 1
+    fi
+    ;;
+  cilium:*)
+    echo "unknown CILIUM_TEST_MODE: ${CILIUM_TEST_MODE:-}" >&2
+
+    exit 1
+    ;;
+esac
+
+case "${INSTALLER_IMAGE}" in
+  127.0.0.1:*|localhost:*)
+    echo "INSTALLER_IMAGE must use a registry address reachable from the QEMU guests, not host loopback: ${INSTALLER_IMAGE}" >&2
+
+    exit 1
+    ;;
+esac
+
 create_cluster
 
 case "${WITH_CUSTOM_CNI:-none}" in
   cilium)
+    case "${CILIUM_TEST_MODE:-integration}" in
+      readiness)
+        CILIUM_SKIP_CONNECTIVITY_TEST=true
+        ;;
+      focused|full|integration) ;;
+    esac
+
     install_and_run_cilium_cni_tests
+
+    if [[ "${CILIUM_TEST_MODE:-integration}" != "integration" ]]; then
+      exit 0
+    fi
     ;;
   *)
     ;;

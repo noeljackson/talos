@@ -205,12 +205,18 @@ function install_and_run_cilium_cni_tests {
 
   CILIUM_SELINUX_ARGS=()
 
-  if [[ "${WITH_ENFORCING:-false}" == "true" ]]; then
+  if [[ "${WITH_CILIUM_SELINUX_LABELS:-${WITH_ENFORCING:-false}}" == "true" ]]; then
     # Talos owns this dedicated domain and precreates its runtime hostPath.
     # OpenShift's default spc_t is not a Talos policy type.
     CILIUM_SELINUX_ARGS=(
+      --set=podSecurityContext.seLinuxOptions.type=cilium_t
+      --set=podSecurityContext.seLinuxOptions.level=s0
       --set=securityContext.seLinuxOptions.type=cilium_t
+      --set=securityContext.seLinuxOptions.level=s0
+      --set=envoy.podSecurityContext.seLinuxOptions.type=cilium_t
+      --set=envoy.podSecurityContext.seLinuxOptions.level=s0
       --set=envoy.securityContext.seLinuxOptions.type=cilium_t
+      --set=envoy.securityContext.seLinuxOptions.level=s0
     )
   fi
 
@@ -235,6 +241,7 @@ function install_and_run_cilium_cni_tests {
         --set=securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
         --set=cgroup.autoMount.enabled=false \
         --set=cgroup.hostRoot=/sys/fs/cgroup \
+        --set=sysctlfix.enabled=false \
         --set=k8sServiceHost=localhost \
         --set=k8sServicePort=13336 \
         "${CILIUM_SELINUX_ARGS[@]}"
@@ -250,6 +257,7 @@ function install_and_run_cilium_cni_tests {
         --set=securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
         --set=cgroup.autoMount.enabled=false \
         --set=cgroup.hostRoot=/sys/fs/cgroup \
+        --set=sysctlfix.enabled=false \
         "${CILIUM_SELINUX_ARGS[@]}"
       ;;
   esac
@@ -283,7 +291,30 @@ function install_and_run_cilium_cni_tests {
           exit bad
         }
       '
+
+      CILIUM_AVC_COUNT=$(${TALOSCTL} -n "${node_ip}" dmesg | awk '
+        /type=AVC|avc: *denied/ { count++ }
+        END { print count + 0 }
+      ')
+
+      if [[ "${CILIUM_AVC_COUNT}" -ne 0 ]]; then
+        echo "SELinux reported ${CILIUM_AVC_COUNT} AVC denials on ${node_ip}" >&2
+
+        return 1
+      fi
     done <<< "${CILIUM_NODE_IPS}"
+  fi
+
+  if [[ "${CILIUM_SKIP_CONNECTIVITY_TEST:-false}" == "true" ]]; then
+    return
+  fi
+
+  if [[ -n "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+    CILIUM_CONNECTIVITY_JUNIT="${TMP}/cilium-connectivity.xml"
+    rm -f "${CILIUM_CONNECTIVITY_JUNIT}"
+
+    CILIUM_TEST_EXTRA_ARGS+=("--test=${CILIUM_CONNECTIVITY_TEST}")
+    CILIUM_TEST_EXTRA_ARGS+=("--junit-file=${CILIUM_CONNECTIVITY_JUNIT}")
   fi
 
   # ref: https://github.com/cilium/cilium-cli/releases/tag/v0.16.14
@@ -296,5 +327,16 @@ function install_and_run_cilium_cni_tests {
 
   # --external-target added, as default 'one.one.one.one' is buggy, and CloudFlare status is of course "all healthy"
   ${CILIUM_CLI} connectivity test --test-namespace cilium-test --external-target google.com --timeout=20m "${CILIUM_TEST_EXTRA_ARGS[@]}"
+
+  if [[ -n "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+    CILIUM_EXECUTED_TESTS=$(awk '/<testcase / && $0 !~ /status="skipped"/ { count++ } END { print count + 0 }' "${CILIUM_CONNECTIVITY_JUNIT}")
+
+    if [[ "${CILIUM_EXECUTED_TESTS}" -eq 0 ]]; then
+      echo "Cilium connectivity selector matched zero runnable tests: ${CILIUM_CONNECTIVITY_TEST}" >&2
+
+      return 1
+    fi
+  fi
+
   ${KUBECTL} delete ns cilium-test-1 cilium-test-ccnp1 cilium-test-ccnp2
 }
