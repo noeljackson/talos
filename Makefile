@@ -615,7 +615,8 @@ e2e-qemu-cilium-enforcing-readiness:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
-		CILIUM_TEST_MODE=readiness QEMU_CONTROLPLANES=1 QEMU_WORKERS=1
+		CILIUM_TEST_MODE=readiness QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
 e2e-qemu-cilium-enforcing-focused:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
@@ -623,13 +624,15 @@ e2e-qemu-cilium-enforcing-focused:
 	@$(MAKE) e2e-qemu \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=focused CILIUM_CONNECTIVITY_TEST='$(CILIUM_CONNECTIVITY_TEST)' \
-		QEMU_CONTROLPLANES=1 QEMU_WORKERS=1
+		QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
 e2e-qemu-cilium-enforcing-full:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
-		CILIUM_TEST_MODE=full QEMU_CONTROLPLANES=3 QEMU_WORKERS=2
+		CILIUM_TEST_MODE=full QEMU_CONTROLPLANES=3 QEMU_WORKERS=2 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
 e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 external-artifacts ## Runs the E2E test for the specified platform (e.g. e2e-docker).
 	@$(MAKE) hack-test-$@ \
