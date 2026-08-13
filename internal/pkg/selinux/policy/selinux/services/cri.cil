@@ -186,8 +186,11 @@
 (allow pod_containerd_t devpts_t (fs_classes (rw)))
 (allow pod_p devpts_t (fs_classes (rw)))
 
-; ; cilium
-; (allow pod_containerd_t pod_p (unix_stream_socket (connectto)))
+; Kata's CRI shim remains in the MCS-exempt pod_containerd_t domain while the
+; VMM runs under the sandbox pod_p label. Allow only the Unix stream peer
+; connection used by the shim to reach the VMM API socket; access to the
+; socket inode remains governed by the separately typed filesystem rules.
+(allow pod_containerd_t pod_p (unix_stream_socket (connectto)))
 
 ; pkg/flannel
 (allow pod_p cni_conf_t (fs_classes (rw)))
