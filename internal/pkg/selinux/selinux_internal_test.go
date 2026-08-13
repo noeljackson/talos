@@ -146,6 +146,24 @@ func TestKataPodDomainHasOnlyDedicatedHostHelperEntrypoints(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_t bin_exec_t (file (entrypoint")
 }
 
+func TestKataPodDomainMayStartVirtiofsd(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// Kata launches virtiofsd under the sandbox's MCS-scoped pod_t label. These
+	// are the three enforcing denials observed before the daemon exited: use of
+	// the inherited shim socket, syslog delivery, and private root mount setup.
+	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (read write)))")
+	assert.Contains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (sendto)))")
+	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (mounton)))")
+	assert.NotContains(t, string(policy), "(allow pod_p pod_containerd_t (unix_stream_socket")
+	assert.NotContains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (all)))")
+	assert.NotContains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (all)))")
+	assert.NotContains(t, string(policy), "(allow pod_t rootfs_t (fs_classes")
+}
+
 func TestCRIContainerdMaySetPodOverlayMountContext(t *testing.T) {
 	t.Parallel()
 

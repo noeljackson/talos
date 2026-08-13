@@ -216,6 +216,16 @@
 (allow pod_t kata_helper_exec_t (fs_classes (ro)))
 (allow pod_t kata_helper_exec_t (file (entrypoint execute)))
 
+; Kata applies the sandbox's MCS-scoped pod_t label to both the VMM and its
+; virtiofsd helper. virtiofsd inherits a stream socket opened by the CRI shim,
+; sends diagnostics to Talos syslogd, and mounts its private namespace root
+; before serving the shared directory. Permit only those observed startup
+; edges for the concrete workload domain; do not broaden the pod_p attribute
+; or either socket class.
+(allow pod_t pod_containerd_t (unix_stream_socket (read write)))
+(allow pod_t init_t (unix_dgram_socket (sendto)))
+(allow pod_t rootfs_t (dir (mounton)))
+
 (type cilium_t)
 (call pod_p (cilium_t))
 ; Cilium is a node agent, not an isolated tenant workload. It intentionally
