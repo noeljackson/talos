@@ -197,6 +197,22 @@
 
 (type pod_t)
 (call pod_p (pod_t))
+
+; Kata's host-side hypervisor helpers are launched by the CRI shim after it
+; requests the sandbox's pod_t process label. Keep their entrypoint surface
+; separate from generic bin_exec_t: ordinary pods may enter only these three
+; immutable extension binaries, not arbitrary host utilities.
+(type kata_helper_exec_t)
+(call system_f (kata_helper_exec_t))
+(context kata_helper_exec_t (system_u object_r kata_helper_exec_t (systemLow systemLow)))
+(filecon "/usr/local/bin/cloud-hypervisor" file kata_helper_exec_t)
+(filecon "/usr/local/bin/qemu-system-x86_64-snp-experimental" file kata_helper_exec_t)
+(filecon "/usr/local/libexec/virtiofsd" file kata_helper_exec_t)
+(allow pod_containerd_t kata_helper_exec_t (fs_classes (ro)))
+(allow pod_containerd_t kata_helper_exec_t (file (execute)))
+(allow pod_t kata_helper_exec_t (fs_classes (ro)))
+(allow pod_t kata_helper_exec_t (file (entrypoint execute)))
+
 (type cilium_t)
 (call pod_p (cilium_t))
 ; Cilium is a node agent, not an isolated tenant workload. It intentionally

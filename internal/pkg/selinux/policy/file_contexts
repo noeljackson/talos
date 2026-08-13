@@ -32,4 +32,7 @@
 /usr/bin/modprobe	--	system_u:object_r:modprobe_exec_t:s0
 /usr/bin/containerd	system_u:object_r:containerd_exec_t:s0
 /usr/bin/systemd-udevd	--	system_u:object_r:udev_exec_t:s0
+/usr/local/libexec/virtiofsd	--	system_u:object_r:kata_helper_exec_t:s0
+/usr/local/bin/cloud-hypervisor	--	system_u:object_r:kata_helper_exec_t:s0
 /usr/bin/containerd-shim-runc-v2	system_u:object_r:containerd_exec_t:s0
+/usr/local/bin/qemu-system-x86_64-snp-experimental	--	system_u:object_r:kata_helper_exec_t:s0
