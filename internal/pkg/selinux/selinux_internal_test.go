@@ -40,6 +40,25 @@ func TestLookupFileContextForPersistentOverlays(t *testing.T) {
 	}
 }
 
+func TestLookupFileContextForKataHostHelpers(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/usr/local/bin/cloud-hypervisor",
+		"/usr/local/bin/qemu-system-x86_64-snp-experimental",
+		"/usr/local/libexec/virtiofsd",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			context, ok, err := LookupFileContext(path, 0)
+			require.NoError(t, err)
+			require.True(t, ok, "LookupFileContext(%q) did not match", path)
+			assert.Equal(t, "system_u:object_r:kata_helper_exec_t:s0", context)
+		})
+	}
+}
+
 func TestCiliumRuntimePolicyAllowsKubeletHostPathSetup(t *testing.T) {
 	t.Parallel()
 
@@ -92,6 +111,26 @@ func TestCRIContainerdMayDeliverKataShimLogsToTalosSyslogd(t *testing.T) {
 	// Talos syslogd runs in init_t; keep this edge to datagram delivery only.
 	assert.Contains(t, string(policy), "(allow pod_containerd_t init_t (unix_dgram_socket (sendto)))")
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t init_t (unix_dgram_socket (all)))")
+}
+
+func TestKataPodDomainHasOnlyDedicatedHostHelperEntrypoints(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	for _, path := range []string{
+		"/usr/local/bin/cloud-hypervisor",
+		"/usr/local/bin/qemu-system-x86_64-snp-experimental",
+		"/usr/local/libexec/virtiofsd",
+	} {
+		assert.Contains(t, string(policy), `(filecon "`+path+`" file kata_helper_exec_t)`)
+	}
+
+	assert.Contains(t, string(policy), "(allow pod_containerd_t kata_helper_exec_t (file (execute)))")
+	assert.Contains(t, string(policy), "(allow pod_t kata_helper_exec_t (file (entrypoint execute)))")
+	assert.NotContains(t, string(policy), "(allow pod_p bin_exec_t (file (entrypoint")
+	assert.NotContains(t, string(policy), "(allow pod_t bin_exec_t (file (entrypoint")
 }
 
 func TestCRIContainerdMaySetPodOverlayMountContext(t *testing.T) {
