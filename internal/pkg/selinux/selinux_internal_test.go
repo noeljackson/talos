@@ -113,6 +113,19 @@ func TestCRIContainerdMayDeliverKataShimLogsToTalosSyslogd(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t init_t (unix_dgram_socket (all)))")
 }
 
+func TestCRIContainerdMayConnectToKataVMMSandboxSocket(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// The Kata shim supervises the sandbox from pod_containerd_t while the VMM
+	// adopts the sandbox pod_p label. Keep the required API-socket edge limited
+	// to peer connection; filesystem access is authorized separately.
+	assert.Contains(t, string(policy), "(allow pod_containerd_t pod_p (unix_stream_socket (connectto)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t pod_p (unix_stream_socket (all)))")
+}
+
 func TestKataPodDomainHasOnlyDedicatedHostHelperEntrypoints(t *testing.T) {
 	t.Parallel()
 
