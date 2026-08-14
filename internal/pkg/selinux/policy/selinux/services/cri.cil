@@ -216,14 +216,15 @@
 (allow pod_t kata_helper_exec_t (fs_classes (ro)))
 (allow pod_t kata_helper_exec_t (file (entrypoint execute)))
 
-; Cloud Hypervisor opens and locks the immutable guest root image directly;
-; the guest kernel is opened by the supervising shim. Keep this object
+; Cloud Hypervisor opens the immutable guest kernel and opens and locks the
+; immutable guest root image directly. Keep these exact boot artifacts
 ; separate from generic usr_t so the sandbox cannot read arbitrary host files
 ; under /usr.
 (type kata_guest_image_t)
 (call system_f (kata_guest_image_t))
 (context kata_guest_image_t (system_u object_r kata_guest_image_t (systemLow systemLow)))
 (filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)
 (allow pod_t kata_guest_image_t (file (read open lock)))
 
 ; Kata applies the sandbox's MCS-scoped pod_t label to both the VMM and its

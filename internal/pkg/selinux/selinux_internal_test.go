@@ -161,6 +161,7 @@ func TestKataPodDomainMayStartVirtiofsd(t *testing.T) {
 	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (read open mounton)))")
 	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_socket_t (sock_file (write)))")
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)`)
+	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), "(allow pod_t kata_guest_image_t (file (read open lock)))")
 	assert.Contains(t, string(policy), "(allow pod_t self (io_uring (allowed)))")
 	assert.NotContains(t, string(policy), "(allow pod_p pod_containerd_t (unix_stream_socket")
