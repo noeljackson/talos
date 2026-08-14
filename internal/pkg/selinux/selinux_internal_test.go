@@ -154,6 +154,29 @@ func TestHostAgentDomainsHaveBoundedReadOnlyIntrospection(t *testing.T) {
 	assert.NotContains(t, string(policy), "(dontaudit node_exporter_t")
 }
 
+func TestFalcoDomainHasBoundedLeastPrivilegedHostObserverAccess(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(policy), "(type falco_t)")
+	assert.Contains(t, string(policy), "(call pod_p (falco_t))")
+	assert.Contains(t, string(policy), "(typeattributeset mcs_exempt_p falco_t)")
+	assert.Contains(t, string(policy), "(allow falco_t any_p (dir (getattr open read search)))")
+	assert.Contains(t, string(policy), "(allow falco_t any_p (file (getattr open read)))")
+	assert.Contains(t, string(policy), "(allow falco_t any_p (lnk_file (getattr read)))")
+	assert.Contains(t, string(policy), "(allow falco_t any_p (unix_stream_socket (getattr)))")
+	assert.Contains(t, string(policy), "(allow falco_t any_p (unix_dgram_socket (getattr)))")
+	assert.Contains(t, string(policy), "(allow falco_t any_p (fifo_file (getattr)))")
+	assert.Contains(t, string(policy), "(allow falco_t self (perf_event (all)))")
+	assert.NotContains(t, string(policy), "(allow falco_t any_p (process")
+	assert.NotContains(t, string(policy), "(allow falco_t any_p (fs_classes (rw)))")
+	assert.NotContains(t, string(policy), "(allow falco_t any_p (unix_stream_socket (all)))")
+	assert.NotContains(t, string(policy), "(allow falco_t any_p (unix_dgram_socket (all)))")
+	assert.NotContains(t, string(policy), "(dontaudit falco_t")
+}
+
 func TestKataPodDomainHasOnlyDedicatedHostHelperEntrypoints(t *testing.T) {
 	t.Parallel()
 

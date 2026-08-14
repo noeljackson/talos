@@ -202,8 +202,8 @@
 (call pod_p (pod_t))
 
 ; containerd deliberately clears the requested SELinux process label for a
-; privileged CRI sandbox. Trusted privileged node agents such as Longhorn and
-; Falco therefore inherit pod_containerd_t while walking the host /proc tree.
+; privileged CRI sandbox. Trusted privileged node agents such as Longhorn
+; therefore inherit pod_containerd_t while walking the host /proc tree.
 ; Give that domain read-only process-metadata traversal, but no process,
 ; ptrace, signal, write, relabel, or generic host-filesystem access.
 (allow pod_containerd_t any_p (dir (getattr open read search)))
@@ -220,6 +220,24 @@
 (allow node_exporter_t init_t (file (getattr open read)))
 (allow node_exporter_t init_t (lnk_file (getattr read)))
 (allow node_exporter_t udev_run_t (file (getattr open read)))
+
+; Falco uses the modern eBPF driver with the chart's least-privileged
+; capability set. Keep it out of privileged pod_containerd_t so its host
+; observer contract has a dedicated, explicitly selected domain. Falco reads
+; process metadata across all MCS categories, inspects only socket and pipe
+; metadata while discovering runtimes, and owns only its own BPF perf events.
+; It receives no host-process control, socket I/O, filesystem write, ptrace,
+; relabel, or generic host-filesystem permission here.
+(type falco_t)
+(call pod_p (falco_t))
+(typeattributeset mcs_exempt_p falco_t)
+(allow falco_t any_p (dir (getattr open read search)))
+(allow falco_t any_p (file (getattr open read)))
+(allow falco_t any_p (lnk_file (getattr read)))
+(allow falco_t any_p (unix_stream_socket (getattr)))
+(allow falco_t any_p (unix_dgram_socket (getattr)))
+(allow falco_t any_p (fifo_file (getattr)))
+(allow falco_t self (perf_event (all)))
 
 ; Kata's host-side hypervisor helpers are launched by the CRI shim after it
 ; requests the sandbox's pod_t process label. Keep their entrypoint surface
