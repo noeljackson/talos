@@ -611,7 +611,7 @@ $(ARTIFACTS)/cilium: $(ARTIFACTS)
 
 external-artifacts: $(ARTIFACTS)/kubectl $(ARTIFACTS)/kubestr $(ARTIFACTS)/helm $(ARTIFACTS)/cilium
 
-.PHONY: e2e-qemu-cilium-enforcing-readiness e2e-qemu-cilium-enforcing-focused e2e-qemu-cilium-enforcing-full
+.PHONY: e2e-qemu-cilium-enforcing-readiness e2e-qemu-cilium-enforcing-kata-clh e2e-qemu-cilium-enforcing-focused e2e-qemu-cilium-enforcing-full
 
 # These targets deliberately require an explicit image tag. Reusing an image
 # while the source tree is dirty must never silently select a different tag.
@@ -620,6 +620,17 @@ e2e-qemu-cilium-enforcing-readiness:
 	@$(MAKE) e2e-qemu \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
+
+e2e-qemu-cilium-enforcing-kata-clh:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
+	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		WITH_UKI_BOOT=true E2E_UKI_PATH='$(E2E_UKI_PATH)' \
+		CILIUM_TEST_MODE=readiness KATA_CLH_TEST=true \
+		KATA_CLH_EXPECTED_TALOS_VERSION='$(IMAGE_TAG_IN)' QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
 e2e-qemu-cilium-enforcing-focused:

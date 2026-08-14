@@ -216,15 +216,29 @@
 (allow pod_t kata_helper_exec_t (fs_classes (ro)))
 (allow pod_t kata_helper_exec_t (file (entrypoint execute)))
 
+; Cloud Hypervisor opens and locks the immutable guest root image directly;
+; the guest kernel is opened by the supervising shim. Keep this object
+; separate from generic usr_t so the sandbox cannot read arbitrary host files
+; under /usr.
+(type kata_guest_image_t)
+(call system_f (kata_guest_image_t))
+(context kata_guest_image_t (system_u object_r kata_guest_image_t (systemLow systemLow)))
+(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)
+(allow pod_t kata_guest_image_t (file (read open lock)))
+
 ; Kata applies the sandbox's MCS-scoped pod_t label to both the VMM and its
-; virtiofsd helper. virtiofsd inherits a stream socket opened by the CRI shim,
-; sends diagnostics to Talos syslogd, and mounts its private namespace root
-; before serving the shared directory. Permit only those observed startup
-; edges for the concrete workload domain; do not broaden the pod_p attribute
-; or either socket class.
-(allow pod_t pod_containerd_t (unix_stream_socket (read write)))
+; virtiofsd helper. A complete permissive discovery run showed that virtiofsd
+; inherits and accepts the shim stream socket, opens and mounts its private
+; namespace root, and serves the separately typed socket inode. Cloud
+; Hypervisor connects to that socket, locks and reads the immutable guest
+; image, and creates an io_uring instance. Permit only those observed startup
+; edges for the concrete workload domain; do not broaden the pod_p attribute,
+; generic filesystem classes, or either socket class.
+(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto)))
 (allow pod_t init_t (unix_dgram_socket (sendto)))
-(allow pod_t rootfs_t (dir (mounton)))
+(allow pod_t rootfs_t (dir (read open mounton)))
+(allow pod_t pod_containerd_socket_t (sock_file (write)))
+(allow pod_t self (io_uring (allowed)))
 
 (type cilium_t)
 (call pod_p (cilium_t))
