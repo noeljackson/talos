@@ -192,6 +192,13 @@
 ; socket inode remains governed by the separately typed filesystem rules.
 (allow pod_containerd_t pod_p (unix_stream_socket (connectto)))
 
+; Opening an existing named TAP invokes Linux's selinux_tun_dev_open hook.
+; The hook relabels the TUN security SID to the caller and therefore checks
+; both relabelfrom and relabelto even when both SIDs are pod_containerd_t.
+; Keep this exception on the CRI shim's own TUN sockets; the shared network
+; policy continues to exclude relabel permissions from every other domain.
+(allow pod_containerd_t self (tun_socket (relabelfrom relabelto)))
+
 ; pkg/flannel
 (allow pod_p cni_conf_t (fs_classes (rw)))
 
