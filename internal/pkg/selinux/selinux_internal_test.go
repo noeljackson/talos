@@ -126,6 +126,34 @@ func TestCRIContainerdMayConnectToKataVMMSandboxSocket(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t pod_p (unix_stream_socket (all)))")
 }
 
+func TestHostAgentDomainsHaveBoundedReadOnlyIntrospection(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// containerd v2 clears an explicit process label for privileged CRI
+	// sandboxes. Those trusted host agents inherit pod_containerd_t, which may
+	// inspect process metadata but receives no process or write permission.
+	assert.Contains(t, string(policy), "(allow pod_containerd_t any_p (dir (getattr open read search)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t any_p (file (getattr open read)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t any_p (lnk_file (getattr read)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t any_p (process")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t any_p (fs_classes (rw)))")
+
+	// Non-privileged node-exporter receives its own explicitly selected domain.
+	// Generic pod_t must not inherit either host-process or udev access.
+	assert.Contains(t, string(policy), "(type node_exporter_t)")
+	assert.Contains(t, string(policy), "(call pod_p (node_exporter_t))")
+	assert.Contains(t, string(policy), "(allow node_exporter_t init_t (dir (getattr open read search)))")
+	assert.Contains(t, string(policy), "(allow node_exporter_t init_t (file (getattr open read)))")
+	assert.Contains(t, string(policy), "(allow node_exporter_t init_t (lnk_file (getattr read)))")
+	assert.Contains(t, string(policy), "(allow node_exporter_t udev_run_t (file (getattr open read)))")
+	assert.NotContains(t, string(policy), "(allow pod_t udev_run_t")
+	assert.NotContains(t, string(policy), "(dontaudit pod_containerd_t any_p")
+	assert.NotContains(t, string(policy), "(dontaudit node_exporter_t")
+}
+
 func TestKataPodDomainHasOnlyDedicatedHostHelperEntrypoints(t *testing.T) {
 	t.Parallel()
 
