@@ -225,9 +225,10 @@
 ; capability set. Keep it out of privileged pod_containerd_t so its host
 ; observer contract has a dedicated, explicitly selected domain. Falco reads
 ; process metadata across all MCS categories, owns only its own BPF perf events,
-; and queries the pod containerd CRI socket for the container metadata required
-; by its rules. The chart exposes only that socket on Talos workers. Keep the
-; socket path and peer domain exact: Falco receives no other socket I/O, host-
+; reads the host tracefs IDs required to attach its modern eBPF tracepoints, and
+; queries the pod containerd CRI socket for the container metadata required by
+; its rules. The chart exposes only the tracefs mount and that socket on Talos
+; workers. Keep both targets exact: Falco receives no other socket I/O, host-
 ; process control, filesystem write, ptrace, relabel, or generic host-filesystem
 ; permission here.
 (type falco_t)
@@ -240,6 +241,8 @@
 (allow falco_t any_p (unix_dgram_socket (getattr)))
 (allow falco_t any_p (fifo_file (getattr)))
 (allow falco_t self (perf_event (all)))
+(allow falco_t tracefs_t (dir (getattr open read search)))
+(allow falco_t tracefs_t (file (getattr open read)))
 (allow falco_t pod_containerd_socket_t (sock_file (write)))
 (allow falco_t pod_containerd_t (unix_stream_socket (connectto)))
 
