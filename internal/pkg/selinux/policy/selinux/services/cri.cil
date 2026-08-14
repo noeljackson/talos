@@ -201,6 +201,26 @@
 (type pod_t)
 (call pod_p (pod_t))
 
+; containerd deliberately clears the requested SELinux process label for a
+; privileged CRI sandbox. Trusted privileged node agents such as Longhorn and
+; Falco therefore inherit pod_containerd_t while walking the host /proc tree.
+; Give that domain read-only process-metadata traversal, but no process,
+; ptrace, signal, write, relabel, or generic host-filesystem access.
+(allow pod_containerd_t any_p (dir (getattr open read search)))
+(allow pod_containerd_t any_p (file (getattr open read)))
+(allow pod_containerd_t any_p (lnk_file (getattr read)))
+
+; node-exporter is not privileged, so keep its host-observer access out of the
+; generic pod_t domain. The workload selects this type explicitly and receives
+; only read-only access to Talos PID 1 process metadata and udev's block-device
+; records. The ordinary pod domains retain neither permission.
+(type node_exporter_t)
+(call pod_p (node_exporter_t))
+(allow node_exporter_t init_t (dir (getattr open read search)))
+(allow node_exporter_t init_t (file (getattr open read)))
+(allow node_exporter_t init_t (lnk_file (getattr read)))
+(allow node_exporter_t udev_run_t (file (getattr open read)))
+
 ; Kata's host-side hypervisor helpers are launched by the CRI shim after it
 ; requests the sandbox's pod_t process label. Keep their entrypoint surface
 ; separate from generic bin_exec_t: ordinary pods may enter only these three
