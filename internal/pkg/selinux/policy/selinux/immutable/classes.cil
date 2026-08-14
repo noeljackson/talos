@@ -373,7 +373,7 @@
 (class lockdown (integrity confidentiality))
 (class anon_inode ())
 (classcommon anon_inode file_common)
-(class io_uring (override_creds sqpoll cmd))
+(class io_uring (override_creds sqpoll cmd allowed))
 (class user_namespace (create))
 
 (classorder (

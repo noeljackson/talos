@@ -203,14 +203,24 @@ function build_registry_mirrors {
 function install_and_run_cilium_cni_tests {
   get_kubeconfig
 
+  if [[ "${KATA_CLH_TEST:-false}" == "true" ]]; then
+    assert_kata_clh_candidate >/dev/null
+  fi
+
   CILIUM_SELINUX_ARGS=()
 
-  if [[ "${WITH_ENFORCING:-false}" == "true" ]]; then
+  if [[ "${WITH_CILIUM_SELINUX_LABELS:-${WITH_ENFORCING:-false}}" == "true" ]]; then
     # Talos owns this dedicated domain and precreates its runtime hostPath.
     # OpenShift's default spc_t is not a Talos policy type.
     CILIUM_SELINUX_ARGS=(
+      --set=podSecurityContext.seLinuxOptions.type=cilium_t
+      --set=podSecurityContext.seLinuxOptions.level=s0
       --set=securityContext.seLinuxOptions.type=cilium_t
+      --set=securityContext.seLinuxOptions.level=s0
+      --set=envoy.podSecurityContext.seLinuxOptions.type=cilium_t
+      --set=envoy.podSecurityContext.seLinuxOptions.level=s0
       --set=envoy.securityContext.seLinuxOptions.type=cilium_t
+      --set=envoy.securityContext.seLinuxOptions.level=s0
     )
   fi
 
@@ -235,6 +245,7 @@ function install_and_run_cilium_cni_tests {
         --set=securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
         --set=cgroup.autoMount.enabled=false \
         --set=cgroup.hostRoot=/sys/fs/cgroup \
+        --set=sysctlfix.enabled=false \
         --set=k8sServiceHost=localhost \
         --set=k8sServicePort=13336 \
         "${CILIUM_SELINUX_ARGS[@]}"
@@ -250,11 +261,97 @@ function install_and_run_cilium_cni_tests {
         --set=securityContext.capabilities.cleanCiliumState="{NET_ADMIN,SYS_ADMIN,SYS_RESOURCE}" \
         --set=cgroup.autoMount.enabled=false \
         --set=cgroup.hostRoot=/sys/fs/cgroup \
+        --set=sysctlfix.enabled=false \
         "${CILIUM_SELINUX_ARGS[@]}"
       ;;
   esac
 
   ${CILIUM_CLI} status --wait --wait-duration=10m
+
+  if [[ "${WITH_ENFORCING:-false}" == "true" ]]; then
+    # A first start does not exercise Cilium's persistent host paths after a
+    # new pod receives projected configuration. Roll both agents once so the
+    # enforcing gate catches MCS mismatches on projected ConfigMaps and stale
+    # CNI/BPF/runtime objects before an image reaches physical hardware.
+    ${KUBECTL} -n kube-system rollout restart daemonset/cilium daemonset/cilium-envoy
+    ${KUBECTL} -n kube-system rollout status daemonset/cilium --timeout=10m
+    ${KUBECTL} -n kube-system rollout status daemonset/cilium-envoy --timeout=10m
+    ${CILIUM_CLI} status --wait --wait-duration=10m
+
+    # DaemonSet readiness does not exercise CRI invoking the installed CNI
+    # binaries. Launch one ordinary pod on every node after the restart so the
+    # gate covers the complete containerd -> loopback -> cilium-cni sandbox
+    # path, including OverlayFS lower-inode permission checks on /opt.
+    CILIUM_PROBE_IMAGE=$(${KUBECTL} -n kube-system get daemonset/cilium-envoy \
+      -o jsonpath='{.spec.template.spec.containers[0].image}')
+    mapfile -t CILIUM_PROBE_NODES < <(${KUBECTL} get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+    CILIUM_PROBE_INDEX=0
+
+    for node_name in "${CILIUM_PROBE_NODES[@]}"; do
+      CILIUM_PROBE_INDEX=$((CILIUM_PROBE_INDEX + 1))
+      probe_name="cni-exec-probe-${CILIUM_PROBE_INDEX}"
+      ${KUBECTL} -n kube-system run "${probe_name}" \
+        --image="${CILIUM_PROBE_IMAGE}" \
+        --restart=Never \
+        --overrides="$(printf '{\"spec\":{\"nodeName\":\"%s\"}}' "${node_name}")" \
+        --command -- /bin/sh -c 'sleep 300'
+      ${KUBECTL} -n kube-system wait pod/"${probe_name}" \
+        --for=condition=Ready --timeout=5m
+      ${KUBECTL} -n kube-system delete pod/"${probe_name}" \
+        --wait=true --timeout=2m
+    done
+
+    # A Ready Cilium pod proves networking, but it does not prove that CRI
+    # honored the requested SELinux domain. Verify the running host processes
+    # so a disabled CRI SELinux integration cannot pass this gate as pod_t.
+    CILIUM_NODE_IPS=$(${KUBECTL} get pods -n kube-system \
+      -l 'k8s-app in (cilium,cilium-envoy)' \
+      -o jsonpath='{range .items[*]}{.status.hostIP}{"\n"}{end}' | sort -u)
+
+    while IFS= read -r node_ip; do
+      [[ -n "${node_ip}" ]] || continue
+
+      ${TALOSCTL} -n "${node_ip}" processes | awk '
+        /cilium-agent|cilium-envoy/ {
+          found = 1
+          if ($0 !~ /system_u:system_r:cilium_t:s0/) {
+            print "unexpected Cilium SELinux process label: " $0 > "/dev/stderr"
+            bad = 1
+          }
+        }
+        END {
+          if (!found) {
+            print "no Cilium host processes found" > "/dev/stderr"
+            exit 1
+          }
+          exit bad
+        }
+      '
+
+      CILIUM_AVC_COUNT=$(${TALOSCTL} -n "${node_ip}" dmesg | awk '
+        /type=AVC|avc: *denied/ { count++ }
+        END { print count + 0 }
+      ')
+
+      if [[ "${CILIUM_AVC_COUNT}" -ne 0 ]]; then
+        echo "SELinux reported ${CILIUM_AVC_COUNT} AVC denials on ${node_ip}" >&2
+
+        return 1
+      fi
+    done <<< "${CILIUM_NODE_IPS}"
+  fi
+
+  if [[ "${CILIUM_SKIP_CONNECTIVITY_TEST:-false}" == "true" ]]; then
+    return
+  fi
+
+  if [[ -n "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+    CILIUM_CONNECTIVITY_JUNIT="${TMP}/cilium-connectivity.xml"
+    rm -f "${CILIUM_CONNECTIVITY_JUNIT}"
+
+    CILIUM_TEST_EXTRA_ARGS+=("--test=${CILIUM_CONNECTIVITY_TEST}")
+    CILIUM_TEST_EXTRA_ARGS+=("--junit-file=${CILIUM_CONNECTIVITY_JUNIT}")
+  fi
 
   # ref: https://github.com/cilium/cilium-cli/releases/tag/v0.16.14
   ${KUBECTL} delete ns --ignore-not-found cilium-test-1 cilium-test-ccnp1 cilium-test-ccnp2
@@ -266,5 +363,210 @@ function install_and_run_cilium_cni_tests {
 
   # --external-target added, as default 'one.one.one.one' is buggy, and CloudFlare status is of course "all healthy"
   ${CILIUM_CLI} connectivity test --test-namespace cilium-test --external-target google.com --timeout=20m "${CILIUM_TEST_EXTRA_ARGS[@]}"
+
+  if [[ -n "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+    CILIUM_EXECUTED_TESTS=$(awk '/<testcase / && $0 !~ /status="skipped"/ { count++ } END { print count + 0 }' "${CILIUM_CONNECTIVITY_JUNIT}")
+
+    if [[ "${CILIUM_EXECUTED_TESTS}" -eq 0 ]]; then
+      echo "Cilium connectivity selector matched zero runnable tests: ${CILIUM_CONNECTIVITY_TEST}" >&2
+
+      return 1
+    fi
+  fi
+
   ${KUBECTL} delete ns cilium-test-1 cilium-test-ccnp1 cilium-test-ccnp2
+}
+
+function assert_kata_clh_candidate {
+  local deadline
+  local extension_inventory
+  local node_ip
+  local node_name
+  local server_version
+  local service_inventory
+  local -a worker_nodes
+
+  deadline=$((SECONDS + 300))
+
+  while (( SECONDS < deadline )); do
+    mapfile -t worker_nodes < <(${KUBECTL} get nodes \
+      -l '!node-role.kubernetes.io/control-plane' \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+
+    [[ ${#worker_nodes[@]} -eq 1 ]] && break
+
+    sleep 2
+  done
+
+  if [[ ${#worker_nodes[@]} -ne 1 ]]; then
+    echo "expected exactly one QEMU worker for the kata-clh probe, found ${#worker_nodes[@]}" >&2
+
+    return 1
+  fi
+
+  node_name=${worker_nodes[0]}
+  node_ip=$(${KUBECTL} get node "${node_name}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+
+  if [[ -z ${node_ip} ]]; then
+    echo "kata-clh worker ${node_name} has no InternalIP" >&2
+
+    return 1
+  fi
+
+  if [[ -z "${KATA_CLH_EXPECTED_TALOS_VERSION:-}" ]]; then
+    echo "KATA_CLH_EXPECTED_TALOS_VERSION must identify the exact candidate" >&2
+
+    return 1
+  fi
+
+  server_version=$(${TALOSCTL} -n "${node_ip}" version --json)
+
+  if ! jq -es --arg expected "${KATA_CLH_EXPECTED_TALOS_VERSION}" \
+    'length == 1 and .[0].version.tag == $expected' <<< "${server_version}" >/dev/null; then
+    echo "kata-clh worker does not run the exact expected Talos version ${KATA_CLH_EXPECTED_TALOS_VERSION}" >&2
+
+    return 1
+  fi
+
+  extension_inventory=$(${TALOSCTL} -n "${node_ip}" get extensions -o json)
+
+  if ! jq -es '
+    def named($name): any(.[].spec.metadata.name?;
+      . == $name or endswith("/" + $name));
+    named("kata-containers")
+  ' <<< "${extension_inventory}" >/dev/null; then
+    echo "kata-clh worker is missing the kata-containers system extension" >&2
+
+    return 1
+  fi
+
+  deadline=$((SECONDS + 300))
+
+  while (( SECONDS < deadline )); do
+    service_inventory=$(${TALOSCTL} -n "${node_ip}" get services.v1alpha1.talos.dev -o json)
+
+    if jq -es '
+      def running($id): any(.[];
+        .metadata.id == $id and .spec.running == true);
+      def healthy($id): any(.[];
+        .metadata.id == $id and .spec.running == true and .spec.healthy == true);
+      healthy("containerd") and healthy("cri") and healthy("kubelet") and
+      running("ext-nydus-for-kata-tee")
+    ' <<< "${service_inventory}" >/dev/null; then
+      printf '%s %s\n' "${node_name}" "${node_ip}"
+
+      return 0
+    fi
+
+    sleep 2
+  done
+
+  echo "kata-clh worker did not satisfy the required service contract" >&2
+  ${TALOSCTL} -n "${node_ip}" services >&2 || true
+
+  return 1
+}
+
+function run_kata_clh_test {
+  local avc_count
+  local deadline
+  local node_ip
+  local node_name
+  local pod_state
+  local probe_name="kata-clh-enforcing-probe"
+  local runtime_class_name="kata-clh-enforcing"
+  local terminal_event
+
+  read -r node_name node_ip < <(assert_kata_clh_candidate)
+
+  ${KUBECTL} apply -f - <<EOF
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: ${runtime_class_name}
+handler: kata-clh
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${probe_name}
+spec:
+  nodeName: ${node_name}
+  restartPolicy: Never
+  runtimeClassName: ${runtime_class_name}
+  containers:
+    - name: probe
+      image: registry.k8s.io/pause:3.10
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+EOF
+
+  function dump_kata_clh_failure {
+    # These are structural QEMU test-cluster diagnostics. Emit the complete
+    # service, kernel, and audit buffers so a new failure cannot be hidden
+    # behind a stale classifier or a secondary record ceiling. Talos routes
+    # enforcing AVC records to auditd, so dmesg alone is not an SELinux
+    # oracle.
+    ${KUBECTL} describe pod "${probe_name}" || true
+    ${TALOSCTL} -n "${node_ip}" services || true
+    ${TALOSCTL} -n "${node_ip}" logs containerd || true
+    ${TALOSCTL} -n "${node_ip}" logs auditd || true
+    ${TALOSCTL} -n "${node_ip}" dmesg || true
+  }
+
+  deadline=$((SECONDS + 300))
+
+  while (( SECONDS < deadline )); do
+    pod_state=$(${KUBECTL} get pod "${probe_name}" -o json)
+
+    if jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' \
+      <<< "${pod_state}" >/dev/null; then
+      break
+    fi
+
+    terminal_event=$(${KUBECTL} get events \
+      --field-selector="involvedObject.kind=Pod,involvedObject.name=${probe_name}" \
+      -o json)
+
+    if jq -e 'any(.items[]?; .type == "Warning" and .reason == "FailedCreatePodSandBox")' \
+      <<< "${terminal_event}" >/dev/null; then
+      echo "kata-clh sandbox creation reported a terminal warning" >&2
+      dump_kata_clh_failure
+
+      return 1
+    fi
+
+    sleep 2
+  done
+
+  if ! jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' \
+    <<< "${pod_state}" >/dev/null; then
+    echo "kata-clh probe did not become Ready before the five-minute deadline" >&2
+    dump_kata_clh_failure
+
+    return 1
+  fi
+
+  avc_count=$(${TALOSCTL} -n "${node_ip}" logs auditd | awk '
+    /type=AVC|avc: *denied/ { count++ }
+    END { print count + 0 }
+  ')
+
+  if [[ ${avc_count} -ne 0 ]]; then
+    echo "SELinux reported ${avc_count} AVC denials after the kata-clh probe on ${node_name}" >&2
+    dump_kata_clh_failure
+
+    return 1
+  fi
+
+  ${KUBECTL} delete pod "${probe_name}" --wait=true --timeout=2m
+  ${KUBECTL} delete runtimeclass "${runtime_class_name}" --wait=true --timeout=2m
+
+  echo "kata-clh enforcing probe passed on ${node_name}: Ready with zero AVC denials"
 }

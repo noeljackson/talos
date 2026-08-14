@@ -422,6 +422,12 @@ FROM build-go AS base
 COPY ./cmd ./cmd
 COPY ./pkg ./pkg
 COPY ./internal ./internal
+# The init binary embeds policy.33 from the Go source tree. Always replace the
+# checked-in generated blob with the policy compiled from this exact build's
+# CIL inputs so an omitted `make generate-selinux` cannot produce a stale OS
+# image. The repository consistency check still requires the generated blob to
+# be committed for review and reproducibility.
+COPY --link --from=selinux-generate / /internal/pkg/selinux/
 COPY --link --from=embed / ./
 RUN --mount=type=cache,target=/.cache,id=talos/.cache go list all >/dev/null
 WORKDIR /src/pkg/machinery
@@ -783,7 +789,7 @@ END
 COPY ./hack/cleanup.sh /usr/bin/cleanup.sh
 RUN <<END
     cleanup.sh /rootfs
-    mkdir -pv /rootfs/{boot/EFI,etc/{iscsi,nvme,cri/conf.d/hosts},usr/lib/firmware,usr/etc,usr/local/share,usr/share/zoneinfo/Etc,mnt,system,opt,.extra}
+    mkdir -pv /rootfs/{boot/EFI,etc/{iscsi,nvme,cri/conf.d/hosts},usr/lib/firmware,usr/etc,usr/local/share,usr/share/{containers/selinux,zoneinfo/Etc},mnt,system,opt,.extra}
     mkdir -pv /rootfs/{etc/kubernetes/manifests,etc/cni/net.d,etc/ssl/certs,usr/libexec/kubernetes,/usr/local/lib/kubelet/credentialproviders,etc/selinux/targeted/contexts/files}
     mkdir -pv /rootfs/opt/{containerd/bin,containerd/lib}
 END
@@ -792,6 +798,7 @@ COPY --chmod=0644 hack/nfsmount.conf /rootfs/etc/nfsmount.conf
 COPY --chmod=0644 hack/containerd.toml /rootfs/etc/containerd/config.toml
 COPY --chmod=0644 hack/cri-containerd.toml /rootfs/etc/cri/containerd.toml
 COPY --chmod=0644 hack/cri-plugin.part /rootfs/etc/cri/conf.d/00-base.part
+COPY --chmod=0644 hack/selinux-containers-contexts /rootfs/usr/share/containers/selinux/contexts
 COPY --chmod=0644 hack/udevd/99-default.link /rootfs/usr/lib/systemd/network/
 COPY --chmod=0644 hack/udevd/40-vm-hotadd.rules hack/udevd/90-selinux.rules /rootfs/usr/lib/udev/rules.d/
 COPY --chmod=0644 hack/lvm.conf /rootfs/etc/lvm/lvm.conf
@@ -869,7 +876,7 @@ END
 COPY ./hack/cleanup.sh /usr/bin/cleanup.sh
 RUN <<END
     cleanup.sh /rootfs
-    mkdir -pv /rootfs/{boot/EFI,etc/{iscsi,nvme,cri/conf.d/hosts},usr/lib/firmware,usr/etc,usr/local/share,usr/share/zoneinfo/Etc,mnt,system,opt,.extra}
+    mkdir -pv /rootfs/{boot/EFI,etc/{iscsi,nvme,cri/conf.d/hosts},usr/lib/firmware,usr/etc,usr/local/share,usr/share/{containers/selinux,zoneinfo/Etc},mnt,system,opt,.extra}
     mkdir -pv /rootfs/{etc/kubernetes/manifests,etc/cni/net.d,etc/ssl/certs,usr/libexec/kubernetes,/usr/local/lib/kubelet/credentialproviders,etc/selinux/targeted/contexts/files}
     mkdir -pv /rootfs/opt/{containerd/bin,containerd/lib}
 END
@@ -878,6 +885,7 @@ COPY --chmod=0644 hack/nfsmount.conf /rootfs/etc/nfsmount.conf
 COPY --chmod=0644 hack/containerd.toml /rootfs/etc/containerd/config.toml
 COPY --chmod=0644 hack/cri-containerd.toml /rootfs/etc/cri/containerd.toml
 COPY --chmod=0644 hack/cri-plugin.part /rootfs/etc/cri/conf.d/00-base.part
+COPY --chmod=0644 hack/selinux-containers-contexts /rootfs/usr/share/containers/selinux/contexts
 COPY --chmod=0644 hack/udevd/99-default.link /rootfs/usr/lib/systemd/network/
 COPY --chmod=0644 hack/udevd/40-vm-hotadd.rules hack/udevd/90-selinux.rules /rootfs/usr/lib/udev/rules.d/
 COPY --chmod=0644 hack/lvm.conf /rootfs/etc/lvm/lvm.conf

@@ -2,12 +2,18 @@
 
 set -eou pipefail
 
+# Support archives can contain machine configuration and other sensitive
+# diagnostics. Keep every artifact private from the moment it is created.
+umask 077
+
 # shellcheck source=/dev/null
 source ./hack/test/e2e.sh
 
 PROVISIONER=qemu
 CLUSTER_NAME="e2e-${PROVISIONER}"
 LOG_ARCHIVE_SUFFIX="${GITHUB_STEP_NAME:-e2e-${PROVISIONER}}"
+E2E_ARTIFACT_DIR="${E2E_ARTIFACT_DIR:-/tmp}"
+mkdir -p "${E2E_ARTIFACT_DIR}"
 
 QEMU_FLAGS=()
 
@@ -16,6 +22,16 @@ case "${CI:-false}" in
     QEMU_FLAGS+=("--with-bootloader=false")
     ;;
   *)
+    ;;
+esac
+
+case "${KATA_CLH_TEST:-false}" in
+  true)
+    # The composed production image intentionally includes Tailscale, whose
+    # service waits for node-specific credentials in this credential-free
+    # test cluster. Do not let that unrelated service decide the Kata claim;
+    # the Kata gate below waits for and verifies its own exact prerequisites.
+    QEMU_FLAGS+=("--wait=false")
     ;;
 esac
 
@@ -234,7 +250,13 @@ case "${WITH_UKI_BOOT:-false}" in
   false)
     ;;
   *)
-    QEMU_FLAGS+=("--uki-path=_out/metal-amd64-uki.efi")
+    if [[ -z "${E2E_UKI_PATH:-}" || ! -r "${E2E_UKI_PATH}" ]]; then
+      echo "WITH_UKI_BOOT requires a readable E2E_UKI_PATH" >&2
+
+      exit 1
+    fi
+
+    QEMU_FLAGS+=("--uki-path=${E2E_UKI_PATH}")
     ;;
 esac
 
@@ -301,7 +323,7 @@ function create_cluster {
     --provisioner="${PROVISIONER}" \
     --name="${CLUSTER_NAME}" \
     --kubernetes-version="${KUBERNETES_VERSION}" \
-    --controlplanes=3 \
+    --controlplanes="${QEMU_CONTROLPLANES:-3}" \
     --workers="${QEMU_WORKERS:-2}" \
     --disk="${QEMU_SYSTEM_DISK_SIZE:-15360}" \
     --extra-disks="${QEMU_EXTRA_DISKS:-0}" \
@@ -330,17 +352,62 @@ function destroy_cluster() {
   "${TALOSCTL}" cluster destroy \
     --name "${CLUSTER_NAME}" \
     --provisioner "${PROVISIONER}" \
-    --save-cluster-logs-archive-path="/tmp/logs-${LOG_ARCHIVE_SUFFIX}.tar.gz" \
-    --save-support-archive-path="/tmp/support-${LOG_ARCHIVE_SUFFIX}.zip"
+    --save-cluster-logs-archive-path="${E2E_ARTIFACT_DIR}/logs-${LOG_ARCHIVE_SUFFIX}.tar.gz" \
+    --save-support-archive-path="${E2E_ARTIFACT_DIR}/support-${LOG_ARCHIVE_SUFFIX}.zip"
 }
 
 trap destroy_cluster SIGINT EXIT
+
+case "${WITH_CUSTOM_CNI:-none}:${CILIUM_TEST_MODE:-integration}" in
+  cilium:readiness|cilium:full|cilium:integration)
+    if [[ -n "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+      echo "CILIUM_CONNECTIVITY_TEST is only valid with CILIUM_TEST_MODE=focused" >&2
+
+      exit 1
+    fi
+    ;;
+  cilium:focused)
+    if [[ -z "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
+      echo "CILIUM_TEST_MODE=focused requires CILIUM_CONNECTIVITY_TEST" >&2
+
+      exit 1
+    fi
+    ;;
+  cilium:*)
+    echo "unknown CILIUM_TEST_MODE: ${CILIUM_TEST_MODE:-}" >&2
+
+    exit 1
+    ;;
+esac
+
+case "${INSTALLER_IMAGE}" in
+  127.0.0.1:*|localhost:*)
+    echo "INSTALLER_IMAGE must use a registry address reachable from the QEMU guests, not host loopback: ${INSTALLER_IMAGE}" >&2
+
+    exit 1
+    ;;
+esac
 
 create_cluster
 
 case "${WITH_CUSTOM_CNI:-none}" in
   cilium)
+    case "${CILIUM_TEST_MODE:-integration}" in
+      readiness)
+        CILIUM_SKIP_CONNECTIVITY_TEST=true
+        ;;
+      focused|full|integration) ;;
+    esac
+
     install_and_run_cilium_cni_tests
+
+    if [[ "${KATA_CLH_TEST:-false}" == "true" ]]; then
+      run_kata_clh_test
+    fi
+
+    if [[ "${CILIUM_TEST_MODE:-integration}" != "integration" ]]; then
+      exit 0
+    fi
     ;;
   *)
     ;;

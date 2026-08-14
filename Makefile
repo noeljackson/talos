@@ -347,6 +347,14 @@ hack-test-%: ## Runs the specified script in ./hack/test with well known environ
 generate: ## Generates code from protobuf service definitions and machinery config.
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/$(ARCH) EMBED_TARGET=embed-abbrev
 
+.PHONY: generate-selinux
+generate-selinux: ## Regenerates only the compiled SELinux policy embedded in init.
+	@$(MAKE) local-selinux-generate DEST=./internal/pkg/selinux PLATFORM=linux/$(ARCH)
+
+.PHONY: check-selinux-policy-generated
+check-selinux-policy-generated: ## Verifies that the checked-in compiled SELinux policy matches its CIL sources.
+	@./hack/test/selinux-policy-generated.sh
+
 .PHONY: docs
 docs: ## Generates the documentation for machine config, and talosctl.
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/amd64
@@ -550,7 +558,7 @@ fmt: ## Formats the source code and protobuf files.
 lint-%: ## Runs the specified linter. Valid options are go, protobuf, and markdown (e.g. lint-go).
 	@$(MAKE) target-lint-$* PLATFORM=linux/$(ARCH)
 
-lint: ## Runs linters on go, vulncheck, deadcode, protobuf, and markdown file types.
+lint: check-selinux-policy-generated ## Runs linters on go, vulncheck, deadcode, protobuf, and markdown file types.
 	@$(MAKE) lint-go lint-vulncheck lint-deadcode lint-protobuf lint-markdown
 
 check-dirty: ## Verifies that source tree is not dirty
@@ -603,6 +611,44 @@ $(ARTIFACTS)/cilium: $(ARTIFACTS)
 
 external-artifacts: $(ARTIFACTS)/kubectl $(ARTIFACTS)/kubestr $(ARTIFACTS)/helm $(ARTIFACTS)/cilium
 
+.PHONY: e2e-qemu-cilium-enforcing-readiness e2e-qemu-cilium-enforcing-kata-clh e2e-qemu-cilium-enforcing-focused e2e-qemu-cilium-enforcing-full
+
+# These targets deliberately require an explicit image tag. Reusing an image
+# while the source tree is dirty must never silently select a different tag.
+e2e-qemu-cilium-enforcing-readiness:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		CILIUM_TEST_MODE=readiness QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
+
+e2e-qemu-cilium-enforcing-kata-clh:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
+	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		WITH_UKI_BOOT=true E2E_UKI_PATH='$(E2E_UKI_PATH)' \
+		CILIUM_TEST_MODE=readiness KATA_CLH_TEST=true \
+		KATA_CLH_EXPECTED_TALOS_VERSION='$(IMAGE_TAG_IN)' QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
+
+e2e-qemu-cilium-enforcing-focused:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@test -n "$(CILIUM_CONNECTIVITY_TEST)" || (echo "set CILIUM_CONNECTIVITY_TEST to an exact test/scenario selector" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		CILIUM_TEST_MODE=focused CILIUM_CONNECTIVITY_TEST='$(CILIUM_CONNECTIVITY_TEST)' \
+		QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
+
+e2e-qemu-cilium-enforcing-full:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@$(MAKE) e2e-qemu \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		CILIUM_TEST_MODE=full QEMU_CONTROLPLANES=3 QEMU_WORKERS=2 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
+
 e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 external-artifacts ## Runs the E2E test for the specified platform (e.g. e2e-docker).
 	@$(MAKE) hack-test-$@ \
 		PLATFORM=$* \
@@ -610,7 +656,7 @@ e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 external-artifacts 
 		SHA=$(SHA) \
 		REGISTRY=$(IMAGE_REGISTRY) \
 		IMAGE=$(REGISTRY_AND_USERNAME)/talos$(IMAGE_NAME_SUFFIX):$(IMAGE_TAG_IN) \
-		INSTALLER_IMAGE=$(REGISTRY_AND_USERNAME)/installer$(IMAGE_NAME_SUFFIX):$(IMAGE_TAG_IN) \
+		INSTALLER_IMAGE=$(if $(E2E_INSTALLER_IMAGE),$(E2E_INSTALLER_IMAGE),$(REGISTRY_AND_USERNAME)/installer$(IMAGE_NAME_SUFFIX):$(IMAGE_TAG_IN)) \
 		ARTIFACTS=$(ARTIFACTS) \
 		TALOSCTL=$(PWD)/$(ARTIFACTS)/$(TALOSCTL_DEFAULT_TARGET)-amd64 \
 		INTEGRATION_TEST=$(PWD)/$(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 \
