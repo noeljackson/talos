@@ -126,6 +126,23 @@ func TestCRIContainerdMayConnectToKataVMMSandboxSocket(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t pod_p (unix_stream_socket (all)))")
 }
 
+func TestCRIContainerdMayOpenItsNamedKataTAP(t *testing.T) {
+	t.Parallel()
+
+	criPolicy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+	networkPolicy, err := os.ReadFile("policy/selinux/common/network.cil")
+	require.NoError(t, err)
+
+	// Linux's selinux_tun_dev_open hook checks both permissions while moving an
+	// existing TUN security SID to the current caller, including a self-relabel.
+	assert.Contains(t, string(criPolicy), "(allow pod_containerd_t self (tun_socket (relabelfrom relabelto)))")
+	assert.NotContains(t, string(criPolicy), "(allow pod_p self (tun_socket")
+	assert.NotContains(t, string(criPolicy), "(allow any_p any_p (tun_socket (relabelfrom")
+	assert.NotContains(t, string(networkPolicy), "relabelfrom")
+	assert.NotContains(t, string(networkPolicy), "relabelto")
+}
+
 func TestHostAgentDomainsHaveBoundedReadOnlyIntrospection(t *testing.T) {
 	t.Parallel()
 
