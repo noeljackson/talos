@@ -224,10 +224,12 @@
 ; Falco uses the modern eBPF driver with the chart's least-privileged
 ; capability set. Keep it out of privileged pod_containerd_t so its host
 ; observer contract has a dedicated, explicitly selected domain. Falco reads
-; process metadata across all MCS categories, inspects only socket and pipe
-; metadata while discovering runtimes, and owns only its own BPF perf events.
-; It receives no host-process control, socket I/O, filesystem write, ptrace,
-; relabel, or generic host-filesystem permission here.
+; process metadata across all MCS categories, owns only its own BPF perf events,
+; and queries the pod containerd CRI socket for the container metadata required
+; by its rules. The chart exposes only that socket on Talos workers. Keep the
+; socket path and peer domain exact: Falco receives no other socket I/O, host-
+; process control, filesystem write, ptrace, relabel, or generic host-filesystem
+; permission here.
 (type falco_t)
 (call pod_p (falco_t))
 (typeattributeset mcs_exempt_p falco_t)
@@ -238,6 +240,8 @@
 (allow falco_t any_p (unix_dgram_socket (getattr)))
 (allow falco_t any_p (fifo_file (getattr)))
 (allow falco_t self (perf_event (all)))
+(allow falco_t pod_containerd_socket_t (sock_file (write)))
+(allow falco_t pod_containerd_t (unix_stream_socket (connectto)))
 
 ; Kata's host-side hypervisor helpers are launched by the CRI shim after it
 ; requests the sandbox's pod_t process label. Keep their entrypoint surface

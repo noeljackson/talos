@@ -170,10 +170,14 @@ func TestFalcoDomainHasBoundedLeastPrivilegedHostObserverAccess(t *testing.T) {
 	assert.Contains(t, string(policy), "(allow falco_t any_p (unix_dgram_socket (getattr)))")
 	assert.Contains(t, string(policy), "(allow falco_t any_p (fifo_file (getattr)))")
 	assert.Contains(t, string(policy), "(allow falco_t self (perf_event (all)))")
+	assert.Contains(t, string(policy), "(allow falco_t pod_containerd_socket_t (sock_file (write)))")
+	assert.Contains(t, string(policy), "(allow falco_t pod_containerd_t (unix_stream_socket (connectto)))")
 	assert.NotContains(t, string(policy), "(allow falco_t any_p (process")
 	assert.NotContains(t, string(policy), "(allow falco_t any_p (fs_classes (rw)))")
 	assert.NotContains(t, string(policy), "(allow falco_t any_p (unix_stream_socket (all)))")
 	assert.NotContains(t, string(policy), "(allow falco_t any_p (unix_dgram_socket (all)))")
+	assert.NotContains(t, string(policy), "(allow falco_t sys_containerd_socket_t")
+	assert.NotContains(t, string(policy), "(allow falco_t sys_containerd_t")
 	assert.NotContains(t, string(policy), "(dontaudit falco_t")
 }
 
