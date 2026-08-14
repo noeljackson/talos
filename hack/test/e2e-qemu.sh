@@ -12,6 +12,8 @@ source ./hack/test/e2e.sh
 PROVISIONER=qemu
 CLUSTER_NAME="e2e-${PROVISIONER}"
 LOG_ARCHIVE_SUFFIX="${GITHUB_STEP_NAME:-e2e-${PROVISIONER}}"
+E2E_ARTIFACT_DIR="${E2E_ARTIFACT_DIR:-/tmp}"
+mkdir -p "${E2E_ARTIFACT_DIR}"
 
 QEMU_FLAGS=()
 
@@ -20,6 +22,16 @@ case "${CI:-false}" in
     QEMU_FLAGS+=("--with-bootloader=false")
     ;;
   *)
+    ;;
+esac
+
+case "${KATA_CLH_TEST:-false}" in
+  true)
+    # The composed production image intentionally includes Tailscale, whose
+    # service waits for node-specific credentials in this credential-free
+    # test cluster. Do not let that unrelated service decide the Kata claim;
+    # the Kata gate below waits for and verifies its own exact prerequisites.
+    QEMU_FLAGS+=("--wait=false")
     ;;
 esac
 
@@ -238,7 +250,13 @@ case "${WITH_UKI_BOOT:-false}" in
   false)
     ;;
   *)
-    QEMU_FLAGS+=("--uki-path=_out/metal-amd64-uki.efi")
+    if [[ -z "${E2E_UKI_PATH:-}" || ! -r "${E2E_UKI_PATH}" ]]; then
+      echo "WITH_UKI_BOOT requires a readable E2E_UKI_PATH" >&2
+
+      exit 1
+    fi
+
+    QEMU_FLAGS+=("--uki-path=${E2E_UKI_PATH}")
     ;;
 esac
 
@@ -334,8 +352,8 @@ function destroy_cluster() {
   "${TALOSCTL}" cluster destroy \
     --name "${CLUSTER_NAME}" \
     --provisioner "${PROVISIONER}" \
-    --save-cluster-logs-archive-path="/tmp/logs-${LOG_ARCHIVE_SUFFIX}.tar.gz" \
-    --save-support-archive-path="/tmp/support-${LOG_ARCHIVE_SUFFIX}.zip"
+    --save-cluster-logs-archive-path="${E2E_ARTIFACT_DIR}/logs-${LOG_ARCHIVE_SUFFIX}.tar.gz" \
+    --save-support-archive-path="${E2E_ARTIFACT_DIR}/support-${LOG_ARCHIVE_SUFFIX}.zip"
 }
 
 trap destroy_cluster SIGINT EXIT
@@ -382,6 +400,10 @@ case "${WITH_CUSTOM_CNI:-none}" in
     esac
 
     install_and_run_cilium_cni_tests
+
+    if [[ "${KATA_CLH_TEST:-false}" == "true" ]]; then
+      run_kata_clh_test
+    fi
 
     if [[ "${CILIUM_TEST_MODE:-integration}" != "integration" ]]; then
       exit 0

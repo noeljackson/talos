@@ -152,16 +152,35 @@ func TestKataPodDomainMayStartVirtiofsd(t *testing.T) {
 	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
 	require.NoError(t, err)
 
-	// Kata launches virtiofsd under the sandbox's MCS-scoped pod_t label. These
-	// are the three enforcing denials observed before the daemon exited: use of
-	// the inherited shim socket, syslog delivery, and private root mount setup.
-	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (read write)))")
+	// Kata launches virtiofsd and Cloud Hypervisor under the sandbox's
+	// MCS-scoped pod_t label. These are the complete startup edges observed in
+	// a permissive run that returned a sandbox ID, combined with the earlier
+	// enforcing denials that stopped before the later checks were reached.
+	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto)))")
 	assert.Contains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (sendto)))")
-	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (mounton)))")
+	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (read open mounton)))")
+	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_socket_t (sock_file (write)))")
+	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)`)
+	assert.Contains(t, string(policy), "(allow pod_t kata_guest_image_t (file (read open lock)))")
+	assert.Contains(t, string(policy), "(allow pod_t self (io_uring (allowed)))")
 	assert.NotContains(t, string(policy), "(allow pod_p pod_containerd_t (unix_stream_socket")
 	assert.NotContains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (all)))")
 	assert.NotContains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (all)))")
 	assert.NotContains(t, string(policy), "(allow pod_t rootfs_t (fs_classes")
+	assert.NotContains(t, string(policy), "(allow pod_t usr_t")
+	assert.NotContains(t, string(policy), "(allow pod_p usr_t")
+	assert.NotContains(t, string(policy), "(allow pod_p self (io_uring")
+}
+
+func TestSELinuxIOUringClassMatchesLinux618(t *testing.T) {
+	t.Parallel()
+
+	classes, err := os.ReadFile("policy/selinux/immutable/classes.cil")
+	require.NoError(t, err)
+
+	// Linux v6.18 appends the setup authorization after the three existing
+	// io_uring permissions. Permission ordering is a kernel-policy ABI.
+	assert.Contains(t, string(classes), "(class io_uring (override_creds sqpoll cmd allowed))")
 }
 
 func TestCRIContainerdMaySetPodOverlayMountContext(t *testing.T) {
