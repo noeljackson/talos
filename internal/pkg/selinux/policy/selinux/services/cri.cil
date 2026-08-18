@@ -79,6 +79,12 @@
 ; Shim socket
 (allow pod_containerd_t pod_containerd_socket_t (fs_classes (rw)))
 
+; CRI proxy snapshotters and storage helpers run as Talos extension services
+; in the default unconfined_container_t system-container domain. Their socket
+; inodes remain governed by the separately labeled /run filesystem objects;
+; allow only the Unix peer connection required after that path check passes.
+(allow pod_containerd_t unconfined_container_t (unix_stream_socket (connectto)))
+
 ; System containers, not k8s pods
 
 (type etcd_t)

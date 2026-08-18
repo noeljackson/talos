@@ -126,6 +126,22 @@ func TestCRIContainerdMayConnectToKataVMMSandboxSocket(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t pod_p (unix_stream_socket (all)))")
 }
 
+func TestCRIContainerdMayConnectToDefaultExtensionServices(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// Talos runs extension services such as Nydus and iSCSI in the default
+	// unconfined_container_t domain. CRI clients still need the peer-domain
+	// connect check after the independently labeled socket path is authorized.
+	assert.Contains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (unix_stream_socket (connectto)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t system_container_p (unix_stream_socket")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (unix_stream_socket (all)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (fs_classes")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (process")
+}
+
 func TestCRIContainerdMayOpenItsNamedKataTAP(t *testing.T) {
 	t.Parallel()
 
