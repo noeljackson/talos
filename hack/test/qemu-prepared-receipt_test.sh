@@ -43,6 +43,11 @@ chmod +x "${test_repo}/talosctl"
   printf 'ignored diagnostic\n' > .tmp/diagnostic
   "${tool}" verify receipt ./talosctl artifact.bin talosctl
 
+  mkdir .tmp/protected
+  chmod 000 .tmp/protected
+  "${tool}" verify receipt ./talosctl artifact.bin talosctl
+  chmod 700 .tmp/protected
+
   printf 'changed\n' > source.txt
   expect_verify_failure
   printf 'tracked\n' > source.txt
