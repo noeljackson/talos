@@ -7,22 +7,30 @@ usage() {
 }
 
 source_fingerprint() {
-  {
+  local fingerprint
+  local untracked
+
+  untracked="$(mktemp)"
+  if ! git ls-files --others --exclude-standard -z -- . ':(exclude).tmp/**' > "${untracked}"; then
+    rm -f -- "${untracked}"
+    return 1
+  fi
+
+  fingerprint="$({
     git rev-parse HEAD
     git diff --binary HEAD
 
     while IFS= read -r -d '' path; do
-      case "${path}" in
-        .tmp/*) continue ;;
-      esac
-
       if [[ -L "${path}" ]]; then
         printf 'symlink %s %s\n' "${path}" "$(readlink "${path}")"
       else
         sha256sum -- "${path}"
       fi
-    done < <(git ls-files --others --exclude-standard -z)
-  } | sha256sum | awk '{ print $1 }'
+    done < "${untracked}"
+  } | sha256sum | awk '{ print $1 }')"
+
+  rm -f -- "${untracked}"
+  printf '%s\n' "${fingerprint}"
 }
 
 artifact_version() {
