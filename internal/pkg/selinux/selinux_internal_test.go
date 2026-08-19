@@ -253,6 +253,7 @@ func TestKataPodDomainsMayStartHostSandboxHelpers(t *testing.T) {
 	assert.Contains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (sendto)))")
 	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (read open mounton)))")
 	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_socket_t (sock_file (write)))")
+	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers-coco-extension.img" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), "(allow pod_t kata_guest_image_t (file (read open lock)))")
