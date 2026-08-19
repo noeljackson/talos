@@ -619,7 +619,7 @@ $(ARTIFACTS)/cilium: $(ARTIFACTS)
 
 external-artifacts: $(ARTIFACTS)/kubectl $(ARTIFACTS)/kubestr $(ARTIFACTS)/helm $(ARTIFACTS)/cilium
 
-.PHONY: e2e-qemu-cilium-enforcing-readiness e2e-qemu-cilium-enforcing-kata-clh e2e-qemu-cilium-enforcing-kata-qemu e2e-qemu-cilium-enforcing-focused e2e-qemu-cilium-enforcing-full
+.PHONY: e2e-qemu-cilium-enforcing-readiness e2e-qemu-cilium-enforcing-kata-clh e2e-qemu-cilium-enforcing-kata-qemu e2e-qemu-cilium-enforcing-kata-qemu-repeat e2e-qemu-cilium-enforcing-kata-qemu-runtime e2e-qemu-cilium-enforcing-kata-qemu-runtime-repeat e2e-qemu-cilium-enforcing-focused e2e-qemu-cilium-enforcing-full
 
 # These targets deliberately require an explicit image tag. Reusing an image
 # while the source tree is dirty must never silently select a different tag.
@@ -656,6 +656,19 @@ e2e-qemu-cilium-enforcing-kata-qemu:
 		KATA_RUNTIME_EXPECTED_TALOS_VERSION='$(IMAGE_TAG_IN)' QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
+e2e-qemu-cilium-enforcing-kata-qemu-repeat:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@sudo -n true || (echo "this QEMU target requires noninteractive sudo -E for Talos CNI/QEMU provisioning" >&2; exit 1)
+	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
+	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
+	@$(MAKE) e2e-qemu-run \
+		E2E_QEMU_RUNNER='sudo -n -E' \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		WITH_UKI_BOOT=true E2E_UKI_PATH='$(E2E_UKI_PATH)' \
+		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
+		KATA_RUNTIME_EXPECTED_TALOS_VERSION='$(IMAGE_TAG_IN)' QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
+
 # Fast policy/runtime discriminator. The installer is the exact candidate, but
 # this intentionally does not claim to exercise its UKI boot path; use the
 # target above for the complete local boot gate.
@@ -663,6 +676,16 @@ e2e-qemu-cilium-enforcing-kata-qemu-runtime:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@sudo -n true || (echo "this QEMU target requires noninteractive sudo -E for Talos CNI/QEMU provisioning" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
+		E2E_QEMU_RUNNER='sudo -n -E' \
+		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
+		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
+		KATA_RUNTIME_EXPECTED_TALOS_VERSION='$(IMAGE_TAG_IN)' QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
+
+e2e-qemu-cilium-enforcing-kata-qemu-runtime-repeat:
+	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@sudo -n true || (echo "this QEMU target requires noninteractive sudo -E for Talos CNI/QEMU provisioning" >&2; exit 1)
+	@$(MAKE) e2e-qemu-run \
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
@@ -688,11 +711,79 @@ e2e-qemu-cilium-enforcing-full:
 # QEMU begins from these local bootstrap artifacts before the selected
 # installer takes over. Keep that contract explicit so a missing image cannot
 # turn into a silent provisioner wait.
-.PHONY: qemu-network-preflight
+.PHONY: qemu-network-preflight e2e-qemu e2e-qemu-prepare e2e-qemu-run
 qemu-network-preflight:
 	@QEMU_CIDR='$(QEMU_CIDR)' bash ./hack/test/qemu-network-preflight.sh
 
-e2e-qemu: qemu-network-preflight kernel initramfs talosctl-cni-bundle
+# Build the expensive, source-owned QEMU inputs once, then bind them to a
+# complete working-tree fingerprint and their content digests. This supports
+# local development before a commit while still making `e2e-qemu-run` reject a
+# changed source snapshot or artifact; it is not a shortcut around exact-source
+# verification. The QEMU harness's private `.tmp/` diagnostics are deliberately
+# excluded from the source fingerprint because they are not build inputs.
+E2E_QEMU_PREPARED_RECEIPT := $(ARTIFACTS)/e2e-qemu-prepared.receipt
+E2E_QEMU_PREPARED_ARTIFACTS := \
+	$(ARTIFACTS)/vmlinuz-amd64 \
+	$(ARTIFACTS)/initramfs-amd64.xz \
+	$(ARTIFACTS)/talosctl-cni-bundle-amd64.tar.gz \
+	$(ARTIFACTS)/integration-test-linux-amd64 \
+	$(ARTIFACTS)/talosctl-linux-amd64 \
+	$(ARTIFACTS)/kubectl \
+	$(ARTIFACTS)/kubestr \
+	$(ARTIFACTS)/helm \
+	$(ARTIFACTS)/cilium
+
+e2e-qemu-prepare: qemu-network-preflight kernel initramfs talosctl-cni-bundle $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 $(TALOSCTL_DEFAULT_TARGET)-amd64 external-artifacts
+	@set -eu; \
+	source_fingerprint() { \
+		{ \
+			git rev-parse HEAD; \
+			git diff --binary HEAD; \
+			while IFS= read -r -d '' path; do \
+				case "$$path" in .tmp/*) continue ;; esac; \
+				if test -L "$$path"; then printf 'symlink %s %s\\n' "$$path" "$$(readlink "$$path")"; else sha256sum -- "$$path"; fi; \
+			done < <(git ls-files --others --exclude-standard -z); \
+		} | sha256sum | awk '{ print $$1 }'; \
+	}; \
+	{ \
+		printf 'source %s\\n' "$$(source_fingerprint)"; \
+		sha256sum $(E2E_QEMU_PREPARED_ARTIFACTS); \
+	} > "$(E2E_QEMU_PREPARED_RECEIPT)"
+
+e2e-qemu-run: qemu-network-preflight
+	@set -eu; \
+	test -r "$(E2E_QEMU_PREPARED_RECEIPT)" || { echo "run e2e-qemu-prepare first" >&2; exit 1; }; \
+	source_fingerprint() { \
+		{ \
+			git rev-parse HEAD; \
+			git diff --binary HEAD; \
+			while IFS= read -r -d '' path; do \
+				case "$$path" in .tmp/*) continue ;; esac; \
+				if test -L "$$path"; then printf 'symlink %s %s\\n' "$$path" "$$(readlink "$$path")"; else sha256sum -- "$$path"; fi; \
+			done < <(git ls-files --others --exclude-standard -z); \
+		} | sha256sum | awk '{ print $$1 }'; \
+	}; \
+	test "$$(sed -n '1s/^source //p' "$(E2E_QEMU_PREPARED_RECEIPT)")" = "$$(source_fingerprint)" || { echo "prepared QEMU artifacts belong to a different source snapshot" >&2; exit 1; }; \
+	tail -n +2 "$(E2E_QEMU_PREPARED_RECEIPT)" | sha256sum --check --status || { echo "prepared QEMU artifacts changed; rerun e2e-qemu-prepare" >&2; exit 1; }
+	@$(MAKE) hack-test-e2e-qemu \
+		PLATFORM=qemu \
+		TAG=$(TAG) \
+		SHA=$(SHA) \
+		REGISTRY=$(IMAGE_REGISTRY) \
+		IMAGE=$(REGISTRY_AND_USERNAME)/talos$(IMAGE_NAME_SUFFIX):$(IMAGE_TAG_IN) \
+		INSTALLER_IMAGE=$(if $(E2E_INSTALLER_IMAGE),$(E2E_INSTALLER_IMAGE),$(REGISTRY_AND_USERNAME)/installer$(IMAGE_NAME_SUFFIX):$(IMAGE_TAG_IN)) \
+		ARTIFACTS=$(ARTIFACTS) \
+		TALOSCTL=$(PWD)/$(ARTIFACTS)/$(TALOSCTL_DEFAULT_TARGET)-amd64 \
+		INTEGRATION_TEST=$(PWD)/$(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 \
+		SHORT_INTEGRATION_TEST=$(SHORT_INTEGRATION_TEST) \
+		CUSTOM_CNI_URL=$(CUSTOM_CNI_URL) \
+		KUBECTL=$(PWD)/$(ARTIFACTS)/kubectl \
+		KUBESTR=$(PWD)/$(ARTIFACTS)/kubestr \
+		HELM=$(PWD)/$(ARTIFACTS)/helm \
+		CILIUM_CLI=$(PWD)/$(ARTIFACTS)/cilium
+
+e2e-qemu: e2e-qemu-prepare
+	@$(MAKE) e2e-qemu-run
 
 # E2E scripts invoke talosctl directly; build the exact binary they receive
 # rather than relying on a stale or incidental artifact in $(ARTIFACTS).
