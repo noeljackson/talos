@@ -62,12 +62,13 @@ case "${mode}" in
     umask 077
 
     fingerprint="$(source_fingerprint)"
+    prepared_version="$(artifact_version "${talosctl}")"
     receipt_tmp="$(mktemp "${receipt}.tmp.XXXXXX")"
     trap 'rm -f -- "${receipt_tmp}"' EXIT
 
     {
       printf 'source %s\n' "${fingerprint}"
-      printf 'version %s\n' "$(artifact_version "${talosctl}")"
+      printf 'version %s\n' "${prepared_version}"
       sha256sum -- "$@"
     } > "${receipt_tmp}"
 
@@ -93,7 +94,8 @@ case "${mode}" in
       exit 1
     }
 
-    expected_version="version $(artifact_version "${talosctl}")"
+    prepared_version="$(artifact_version "${talosctl}")"
+    expected_version="version ${prepared_version}"
     [[ "$(sed -n '2p' "${receipt}")" == "${expected_version}" ]] || {
       echo "prepared QEMU version belongs to a different source snapshot" >&2
       exit 1
