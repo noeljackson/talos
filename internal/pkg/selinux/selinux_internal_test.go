@@ -249,7 +249,7 @@ func TestKataPodDomainsMayStartHostSandboxHelpers(t *testing.T) {
 	// Ordinary Kata sandboxes launch the VMM under the MCS-scoped pod_t label;
 	// privileged sandboxes leave it in pod_containerd_t. These are the bounded
 	// startup edges observed across both enforcing paths.
-	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto getopt listen)))")
+	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto getattr getopt listen)))")
 	assert.Contains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (sendto)))")
 	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (read open mounton)))")
 	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_socket_t (sock_file (write)))")
