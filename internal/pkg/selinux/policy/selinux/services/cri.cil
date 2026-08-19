@@ -289,11 +289,12 @@
 
 ; Kata applies the sandbox's MCS-scoped pod_t label to the VMM and virtiofsd
 ; for an ordinary sandbox. A privileged sandbox has no pod process label, so
-; its VMM remains in pod_containerd_t. The VMM checks the shim-owned QMP
-; stream, and both execution paths create an io_uring instance. Permit only
-; those observed startup edges for the concrete domains; do not broaden the
-; pod_p attribute, generic filesystem classes, or either socket class.
-(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto getopt)))
+; its VMM remains in pod_containerd_t. The ordinary VMM creates and listens on
+; its shim-owned QMP stream, and both execution paths create an io_uring
+; instance. Permit only those observed startup edges for the concrete domains;
+; do not broaden the pod_p attribute, generic filesystem classes, or either
+; socket class.
+(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto getopt listen)))
 (allow pod_t init_t (unix_dgram_socket (sendto)))
 (allow pod_t rootfs_t (dir (read open mounton)))
 (allow pod_t pod_containerd_socket_t (sock_file (write)))

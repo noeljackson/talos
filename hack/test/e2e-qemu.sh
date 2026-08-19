@@ -25,7 +25,7 @@ case "${CI:-false}" in
     ;;
 esac
 
-case "${KATA_CLH_TEST:-false}" in
+case "${KATA_RUNTIME_TEST:-false}" in
   true)
     # The composed production image intentionally includes Tailscale, whose
     # service waits for node-specific credentials in this credential-free
@@ -401,8 +401,8 @@ case "${WITH_CUSTOM_CNI:-none}" in
 
     install_and_run_cilium_cni_tests
 
-    if [[ "${KATA_CLH_TEST:-false}" == "true" ]]; then
-      run_kata_clh_test
+    if [[ "${KATA_RUNTIME_TEST:-false}" == "true" ]]; then
+      run_kata_runtime_test
     fi
 
     if [[ "${CILIUM_TEST_MODE:-integration}" != "integration" ]]; then
