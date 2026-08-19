@@ -624,6 +624,7 @@ e2e-qemu-cilium-enforcing-readiness:
 
 e2e-qemu-cilium-enforcing-kata-clh:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@test "$$(id -u)" -eq 0 || (echo "run this QEMU target with sudo -E so Talos can create its documented CNI/QEMU topology" >&2; exit 1)
 	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
 	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
@@ -635,6 +636,7 @@ e2e-qemu-cilium-enforcing-kata-clh:
 
 e2e-qemu-cilium-enforcing-kata-qemu:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@test "$$(id -u)" -eq 0 || (echo "run this QEMU target with sudo -E so Talos can create its documented CNI/QEMU topology" >&2; exit 1)
 	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
 	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
@@ -649,6 +651,7 @@ e2e-qemu-cilium-enforcing-kata-qemu:
 # target above for the complete local boot gate.
 e2e-qemu-cilium-enforcing-kata-qemu-runtime:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
+	@test "$$(id -u)" -eq 0 || (echo "run this QEMU target with sudo -E so Talos can create its documented CNI/QEMU topology" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
