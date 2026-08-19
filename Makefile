@@ -671,7 +671,9 @@ e2e-qemu-cilium-enforcing-full:
 		CILIUM_TEST_MODE=full QEMU_CONTROLPLANES=3 QEMU_WORKERS=2 \
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
-e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 external-artifacts ## Runs the E2E test for the specified platform (e.g. e2e-docker).
+# E2E scripts invoke talosctl directly; build the exact binary they receive
+# rather than relying on a stale or incidental artifact in $(ARTIFACTS).
+e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 $(TALOSCTL_DEFAULT_TARGET)-amd64 external-artifacts ## Runs the E2E test for the specified platform (e.g. e2e-docker).
 	@$(MAKE) hack-test-$@ \
 		PLATFORM=$* \
 		TAG=$(TAG) \
