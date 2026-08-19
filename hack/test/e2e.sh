@@ -203,8 +203,8 @@ function build_registry_mirrors {
 function install_and_run_cilium_cni_tests {
   get_kubeconfig
 
-  if [[ "${KATA_CLH_TEST:-false}" == "true" ]]; then
-    assert_kata_clh_candidate >/dev/null
+  if [[ "${KATA_RUNTIME_TEST:-false}" == "true" ]]; then
+    assert_kata_runtime_candidate >/dev/null
   fi
 
   CILIUM_SELINUX_ARGS=()
@@ -377,7 +377,7 @@ function install_and_run_cilium_cni_tests {
   ${KUBECTL} delete ns cilium-test-1 cilium-test-ccnp1 cilium-test-ccnp2
 }
 
-function assert_kata_clh_candidate {
+function assert_kata_runtime_candidate {
   local deadline
   local extension_inventory
   local node_ip
@@ -399,7 +399,7 @@ function assert_kata_clh_candidate {
   done
 
   if [[ ${#worker_nodes[@]} -ne 1 ]]; then
-    echo "expected exactly one QEMU worker for the kata-clh probe, found ${#worker_nodes[@]}" >&2
+    echo "expected exactly one QEMU worker for the Kata runtime probe, found ${#worker_nodes[@]}" >&2
 
     return 1
   fi
@@ -408,22 +408,22 @@ function assert_kata_clh_candidate {
   node_ip=$(${KUBECTL} get node "${node_name}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
 
   if [[ -z ${node_ip} ]]; then
-    echo "kata-clh worker ${node_name} has no InternalIP" >&2
+    echo "Kata runtime worker ${node_name} has no InternalIP" >&2
 
     return 1
   fi
 
-  if [[ -z "${KATA_CLH_EXPECTED_TALOS_VERSION:-}" ]]; then
-    echo "KATA_CLH_EXPECTED_TALOS_VERSION must identify the exact candidate" >&2
+  if [[ -z "${KATA_RUNTIME_EXPECTED_TALOS_VERSION:-}" ]]; then
+    echo "KATA_RUNTIME_EXPECTED_TALOS_VERSION must identify the exact candidate" >&2
 
     return 1
   fi
 
   server_version=$(${TALOSCTL} -n "${node_ip}" version --json)
 
-  if ! jq -es --arg expected "${KATA_CLH_EXPECTED_TALOS_VERSION}" \
+  if ! jq -es --arg expected "${KATA_RUNTIME_EXPECTED_TALOS_VERSION}" \
     'length == 1 and .[0].version.tag == $expected' <<< "${server_version}" >/dev/null; then
-    echo "kata-clh worker does not run the exact expected Talos version ${KATA_CLH_EXPECTED_TALOS_VERSION}" >&2
+    echo "Kata runtime worker does not run the exact expected Talos version ${KATA_RUNTIME_EXPECTED_TALOS_VERSION}" >&2
 
     return 1
   fi
@@ -435,7 +435,7 @@ function assert_kata_clh_candidate {
       . == $name or endswith("/" + $name));
     named("kata-containers")
   ' <<< "${extension_inventory}" >/dev/null; then
-    echo "kata-clh worker is missing the kata-containers system extension" >&2
+    echo "Kata runtime worker is missing the kata-containers system extension" >&2
 
     return 1
   fi
@@ -461,30 +461,39 @@ function assert_kata_clh_candidate {
     sleep 2
   done
 
-  echo "kata-clh worker did not satisfy the required service contract" >&2
+  echo "Kata runtime worker did not satisfy the required service contract" >&2
   ${TALOSCTL} -n "${node_ip}" services >&2 || true
 
   return 1
 }
 
-function run_kata_clh_test {
+function run_kata_runtime_test {
   local avc_count
   local deadline
   local node_ip
   local node_name
   local pod_state
-  local probe_name="kata-clh-enforcing-probe"
-  local runtime_class_name="kata-clh-enforcing"
+  local probe_name="kata-runtime-enforcing-probe"
+  local runtime_class_name="kata-runtime-enforcing"
+  local runtime_handler
   local terminal_event
 
-  read -r node_name node_ip < <(assert_kata_clh_candidate)
+  runtime_handler="${KATA_RUNTIME_HANDLER:-}"
+
+  if [[ ! ${runtime_handler} =~ ^kata(-[a-z0-9][a-z0-9-]*)?$ ]]; then
+    echo "KATA_RUNTIME_HANDLER must be a concrete Kata handler name" >&2
+
+    return 1
+  fi
+
+  read -r node_name node_ip < <(assert_kata_runtime_candidate)
 
   ${KUBECTL} apply -f - <<EOF
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
   name: ${runtime_class_name}
-handler: kata-clh
+handler: ${runtime_handler}
 ---
 apiVersion: v1
 kind: Pod
@@ -507,7 +516,7 @@ spec:
           type: RuntimeDefault
 EOF
 
-  function dump_kata_clh_failure {
+  function dump_kata_runtime_failure {
     # These are structural QEMU test-cluster diagnostics. Emit the complete
     # service, kernel, and audit buffers so a new failure cannot be hidden
     # behind a stale classifier or a secondary record ceiling. Talos routes
@@ -536,8 +545,8 @@ EOF
 
     if jq -e 'any(.items[]?; .type == "Warning" and .reason == "FailedCreatePodSandBox")' \
       <<< "${terminal_event}" >/dev/null; then
-      echo "kata-clh sandbox creation reported a terminal warning" >&2
-      dump_kata_clh_failure
+      echo "Kata runtime sandbox creation reported a terminal warning for ${runtime_handler}" >&2
+      dump_kata_runtime_failure
 
       return 1
     fi
@@ -547,8 +556,8 @@ EOF
 
   if ! jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' \
     <<< "${pod_state}" >/dev/null; then
-    echo "kata-clh probe did not become Ready before the five-minute deadline" >&2
-    dump_kata_clh_failure
+    echo "Kata runtime probe did not become Ready before the five-minute deadline for ${runtime_handler}" >&2
+    dump_kata_runtime_failure
 
     return 1
   fi
@@ -559,8 +568,8 @@ EOF
   ')
 
   if [[ ${avc_count} -ne 0 ]]; then
-    echo "SELinux reported ${avc_count} AVC denials after the kata-clh probe on ${node_name}" >&2
-    dump_kata_clh_failure
+    echo "SELinux reported ${avc_count} AVC denials after the Kata runtime probe on ${node_name}" >&2
+    dump_kata_runtime_failure
 
     return 1
   fi
@@ -568,5 +577,5 @@ EOF
   ${KUBECTL} delete pod "${probe_name}" --wait=true --timeout=2m
   ${KUBECTL} delete runtimeclass "${runtime_class_name}" --wait=true --timeout=2m
 
-  echo "kata-clh enforcing probe passed on ${node_name}: Ready with zero AVC denials"
+  echo "Kata runtime enforcing probe passed on ${node_name}: handler=${runtime_handler} Ready with zero AVC denials"
 }
