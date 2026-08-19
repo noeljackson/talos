@@ -680,8 +680,9 @@ e2e-qemu-cilium-enforcing-kata-qemu-repeat:
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
 # Fast policy/runtime discriminator. The installer is the exact candidate, but
-# this intentionally does not claim to exercise its UKI boot path; use the
-# target above for the complete local boot gate.
+# this intentionally boots the source-bound prepared kernel/initramfs rather
+# than claiming to exercise the installer's UKI path. The prepared receipt is
+# the version oracle; use the target above for the complete local boot gate.
 e2e-qemu-cilium-enforcing-kata-qemu-runtime:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@sudo -n true || (echo "this QEMU target requires noninteractive sudo -E for Talos CNI/QEMU provisioning" >&2; exit 1)
@@ -690,7 +691,8 @@ e2e-qemu-cilium-enforcing-kata-qemu-runtime:
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
-		KATA_RUNTIME_EXPECTED_TALOS_VERSION='$(IMAGE_TAG_IN)' QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		KATA_RUNTIME_EXPECTED_TALOS_VERSION="$$($(E2E_QEMU_PREPARED_RECEIPT_TOOL) version '$(E2E_QEMU_PREPARED_RECEIPT)')" \
+		QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
 e2e-qemu-cilium-enforcing-kata-qemu-runtime-repeat:
@@ -701,7 +703,8 @@ e2e-qemu-cilium-enforcing-kata-qemu-runtime-repeat:
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
-		KATA_RUNTIME_EXPECTED_TALOS_VERSION='$(IMAGE_TAG_IN)' QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
+		KATA_RUNTIME_EXPECTED_TALOS_VERSION="$$($(E2E_QEMU_PREPARED_RECEIPT_TOOL) version '$(E2E_QEMU_PREPARED_RECEIPT)')" \
+		QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
 
 e2e-qemu-cilium-enforcing-focused:

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 write|verify RECEIPT ARTIFACT..." >&2
+  echo "usage: $0 write|verify RECEIPT ARTIFACT... | version RECEIPT" >&2
 }
 
 source_fingerprint() {
@@ -25,7 +25,11 @@ source_fingerprint() {
   } | sha256sum | awk '{ print $1 }'
 }
 
-if (( $# < 3 )); then
+source_version() {
+  git describe --tag --always --dirty --match 'v[0-9]*'
+}
+
+if (( $# < 2 )); then
   usage
   exit 2
 fi
@@ -36,6 +40,11 @@ shift 2
 
 case "${mode}" in
   write)
+    (( $# > 0 )) || {
+      usage
+      exit 2
+    }
+
     umask 077
 
     fingerprint="$(source_fingerprint)"
@@ -44,6 +53,7 @@ case "${mode}" in
 
     {
       printf 'source %s\n' "${fingerprint}"
+      printf 'version %s\n' "$(source_version)"
       sha256sum -- "$@"
     } > "${receipt_tmp}"
 
@@ -51,6 +61,11 @@ case "${mode}" in
     trap - EXIT
     ;;
   verify)
+    (( $# > 0 )) || {
+      usage
+      exit 2
+    }
+
     [[ -r "${receipt}" ]] || {
       echo "run e2e-qemu-prepare first" >&2
       exit 1
@@ -62,14 +77,39 @@ case "${mode}" in
       exit 1
     }
 
+    expected_version="version $(source_version)"
+    [[ "$(sed -n '2p' "${receipt}")" == "${expected_version}" ]] || {
+      echo "prepared QEMU version belongs to a different source snapshot" >&2
+      exit 1
+    }
+
     expected_hashes="$(mktemp)"
     trap 'rm -f -- "${expected_hashes}"' EXIT
     sha256sum -- "$@" > "${expected_hashes}"
 
-    cmp -s <(tail -n +2 "${receipt}") "${expected_hashes}" || {
+    cmp -s <(tail -n +3 "${receipt}") "${expected_hashes}" || {
       echo "prepared QEMU artifacts changed; rerun e2e-qemu-prepare" >&2
       exit 1
     }
+    ;;
+  version)
+    (( $# == 0 )) || {
+      usage
+      exit 2
+    }
+
+    [[ -r "${receipt}" ]] || {
+      echo "run e2e-qemu-prepare first" >&2
+      exit 1
+    }
+
+    receipt_version="$(sed -n '2s/^version //p' "${receipt}")"
+    [[ -n "${receipt_version}" && "${receipt_version}" != *[[:space:]]* ]] || {
+      echo "prepared QEMU receipt has no valid version" >&2
+      exit 1
+    }
+
+    printf '%s\n' "${receipt_version}"
     ;;
   *)
     usage
