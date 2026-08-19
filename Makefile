@@ -621,11 +621,18 @@ external-artifacts: $(ARTIFACTS)/kubectl $(ARTIFACTS)/kubestr $(ARTIFACTS)/helm 
 
 .PHONY: e2e-qemu-cilium-enforcing-readiness e2e-qemu-cilium-enforcing-kata-clh e2e-qemu-cilium-enforcing-kata-qemu e2e-qemu-cilium-enforcing-kata-qemu-repeat e2e-qemu-cilium-enforcing-kata-qemu-runtime e2e-qemu-cilium-enforcing-kata-qemu-runtime-repeat e2e-qemu-cilium-enforcing-focused e2e-qemu-cilium-enforcing-full
 
+# Keep the downstream enforcing/Kata regression topology aligned with the
+# durable workstation firewall and OpenSnitch contracts. Generic upstream QEMU
+# targets retain their normal subnet; only these exact gates use the dedicated,
+# collision-checked range.
+E2E_QEMU_REGRESSION_CIDR ?= 10.254.253.0/24
+
 # These targets deliberately require an explicit image tag. Reusing an image
 # while the source tree is dirty must never silently select a different tag.
 e2e-qemu-cilium-enforcing-readiness:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
@@ -636,6 +643,7 @@ e2e-qemu-cilium-enforcing-kata-clh:
 	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
 	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		WITH_UKI_BOOT=true E2E_UKI_PATH='$(E2E_UKI_PATH)' \
@@ -649,6 +657,7 @@ e2e-qemu-cilium-enforcing-kata-qemu:
 	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
 	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		WITH_UKI_BOOT=true E2E_UKI_PATH='$(E2E_UKI_PATH)' \
@@ -662,6 +671,7 @@ e2e-qemu-cilium-enforcing-kata-qemu-repeat:
 	@test -n "$(E2E_UKI_PATH)" || (echo "set E2E_UKI_PATH to the exact composed candidate UKI" >&2; exit 1)
 	@test -r "$(E2E_UKI_PATH)" || (echo "E2E_UKI_PATH is not readable: $(E2E_UKI_PATH)" >&2; exit 1)
 	@$(MAKE) e2e-qemu-run \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		WITH_UKI_BOOT=true E2E_UKI_PATH='$(E2E_UKI_PATH)' \
@@ -676,6 +686,7 @@ e2e-qemu-cilium-enforcing-kata-qemu-runtime:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@sudo -n true || (echo "this QEMU target requires noninteractive sudo -E for Talos CNI/QEMU provisioning" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
@@ -686,6 +697,7 @@ e2e-qemu-cilium-enforcing-kata-qemu-runtime-repeat:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@sudo -n true || (echo "this QEMU target requires noninteractive sudo -E for Talos CNI/QEMU provisioning" >&2; exit 1)
 	@$(MAKE) e2e-qemu-run \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		E2E_QEMU_RUNNER='sudo -n -E' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=readiness KATA_RUNTIME_TEST=true KATA_RUNTIME_HANDLER=kata-qemu-snp \
@@ -696,6 +708,7 @@ e2e-qemu-cilium-enforcing-focused:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@test -n "$(CILIUM_CONNECTIVITY_TEST)" || (echo "set CILIUM_CONNECTIVITY_TEST to an exact test/scenario selector" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=focused CILIUM_CONNECTIVITY_TEST='$(CILIUM_CONNECTIVITY_TEST)' \
 		QEMU_CONTROLPLANES=1 QEMU_WORKERS=1 \
@@ -704,6 +717,7 @@ e2e-qemu-cilium-enforcing-focused:
 e2e-qemu-cilium-enforcing-full:
 	@test "$(origin IMAGE_TAG_IN)" != "file" || (echo "set IMAGE_TAG_IN to the exact installer tag" >&2; exit 1)
 	@$(MAKE) e2e-qemu \
+		QEMU_CIDR='$(E2E_QEMU_REGRESSION_CIDR)' \
 		WITH_CUSTOM_CNI=cilium CILIUM_INSTALL_TYPE=strict WITH_ENFORCING=true \
 		CILIUM_TEST_MODE=full QEMU_CONTROLPLANES=3 QEMU_WORKERS=2 \
 		QEMU_MEMORY_CONTROLPLANES=4096 QEMU_MEMORY_WORKERS=4096
@@ -711,9 +725,12 @@ e2e-qemu-cilium-enforcing-full:
 # QEMU begins from these local bootstrap artifacts before the selected
 # installer takes over. Keep that contract explicit so a missing image cannot
 # turn into a silent provisioner wait.
-.PHONY: qemu-network-preflight e2e-qemu e2e-qemu-prepare e2e-qemu-run
+.PHONY: qemu-network-preflight qemu-prepared-receipt-test e2e-qemu e2e-qemu-prepare e2e-qemu-run
 qemu-network-preflight:
 	@QEMU_CIDR='$(QEMU_CIDR)' bash ./hack/test/qemu-network-preflight.sh
+
+qemu-prepared-receipt-test:
+	@./hack/test/qemu-prepared-receipt_test.sh
 
 # Build the expensive, source-owned QEMU inputs once, then bind them to a
 # complete working-tree fingerprint and their content digests. This supports
@@ -722,6 +739,7 @@ qemu-network-preflight:
 # verification. The QEMU harness's private `.tmp/` diagnostics are deliberately
 # excluded from the source fingerprint because they are not build inputs.
 E2E_QEMU_PREPARED_RECEIPT := $(ARTIFACTS)/e2e-qemu-prepared.receipt
+E2E_QEMU_PREPARED_RECEIPT_TOOL := ./hack/test/qemu-prepared-receipt.sh
 E2E_QEMU_PREPARED_ARTIFACTS := \
 	$(ARTIFACTS)/vmlinuz-amd64 \
 	$(ARTIFACTS)/initramfs-amd64.xz \
@@ -733,38 +751,13 @@ E2E_QEMU_PREPARED_ARTIFACTS := \
 	$(ARTIFACTS)/helm \
 	$(ARTIFACTS)/cilium
 
-e2e-qemu-prepare: qemu-network-preflight kernel initramfs talosctl-cni-bundle $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 $(TALOSCTL_DEFAULT_TARGET)-amd64 external-artifacts
-	@set -eu; \
-	source_fingerprint() { \
-		{ \
-			git rev-parse HEAD; \
-			git diff --binary HEAD; \
-			while IFS= read -r -d '' path; do \
-				case "$$path" in .tmp/*) continue ;; esac; \
-				if test -L "$$path"; then printf 'symlink %s %s\\n' "$$path" "$$(readlink "$$path")"; else sha256sum -- "$$path"; fi; \
-			done < <(git ls-files --others --exclude-standard -z); \
-		} | sha256sum | awk '{ print $$1 }'; \
-	}; \
-	{ \
-		printf 'source %s\\n' "$$(source_fingerprint)"; \
-		sha256sum $(E2E_QEMU_PREPARED_ARTIFACTS); \
-	} > "$(E2E_QEMU_PREPARED_RECEIPT)"
+e2e-qemu-prepare: qemu-network-preflight qemu-prepared-receipt-test kernel initramfs talosctl-cni-bundle $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 $(TALOSCTL_DEFAULT_TARGET)-amd64 external-artifacts
+	@$(E2E_QEMU_PREPARED_RECEIPT_TOOL) write \
+		"$(E2E_QEMU_PREPARED_RECEIPT)" $(E2E_QEMU_PREPARED_ARTIFACTS)
 
 e2e-qemu-run: qemu-network-preflight
-	@set -eu; \
-	test -r "$(E2E_QEMU_PREPARED_RECEIPT)" || { echo "run e2e-qemu-prepare first" >&2; exit 1; }; \
-	source_fingerprint() { \
-		{ \
-			git rev-parse HEAD; \
-			git diff --binary HEAD; \
-			while IFS= read -r -d '' path; do \
-				case "$$path" in .tmp/*) continue ;; esac; \
-				if test -L "$$path"; then printf 'symlink %s %s\\n' "$$path" "$$(readlink "$$path")"; else sha256sum -- "$$path"; fi; \
-			done < <(git ls-files --others --exclude-standard -z); \
-		} | sha256sum | awk '{ print $$1 }'; \
-	}; \
-	test "$$(sed -n '1s/^source //p' "$(E2E_QEMU_PREPARED_RECEIPT)")" = "$$(source_fingerprint)" || { echo "prepared QEMU artifacts belong to a different source snapshot" >&2; exit 1; }; \
-	tail -n +2 "$(E2E_QEMU_PREPARED_RECEIPT)" | sha256sum --check --status || { echo "prepared QEMU artifacts changed; rerun e2e-qemu-prepare" >&2; exit 1; }
+	@$(E2E_QEMU_PREPARED_RECEIPT_TOOL) verify \
+		"$(E2E_QEMU_PREPARED_RECEIPT)" $(E2E_QEMU_PREPARED_ARTIFACTS)
 	@$(MAKE) hack-test-e2e-qemu \
 		PLATFORM=qemu \
 		TAG=$(TAG) \
