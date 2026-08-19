@@ -516,12 +516,21 @@ spec:
           type: RuntimeDefault
 EOF
 
+  function kata_runtime_avc_count {
+    ${TALOSCTL} -n "${node_ip}" logs auditd | awk '
+      /type=AVC|avc: *denied/ { count++ }
+      END { print count + 0 }
+    '
+  }
+
   function dump_kata_runtime_failure {
     # These are structural QEMU test-cluster diagnostics. Emit the complete
     # service, kernel, and audit buffers so a new failure cannot be hidden
     # behind a stale classifier or a secondary record ceiling. Talos routes
     # enforcing AVC records to auditd, so dmesg alone is not an SELinux
     # oracle.
+    avc_count=$(kata_runtime_avc_count)
+    echo "Kata runtime audit evidence on ${node_name}: avc_denials=${avc_count}" >&2
     ${KUBECTL} describe pod "${probe_name}" || true
     ${TALOSCTL} -n "${node_ip}" services || true
     ${TALOSCTL} -n "${node_ip}" logs containerd || true
@@ -562,10 +571,7 @@ EOF
     return 1
   fi
 
-  avc_count=$(${TALOSCTL} -n "${node_ip}" logs auditd | awk '
-    /type=AVC|avc: *denied/ { count++ }
-    END { print count + 0 }
-  ')
+  avc_count=$(kata_runtime_avc_count)
 
   if [[ ${avc_count} -ne 0 ]]; then
     echo "SELinux reported ${avc_count} AVC denials after the Kata runtime probe on ${node_name}" >&2
