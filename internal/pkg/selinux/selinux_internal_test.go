@@ -240,17 +240,16 @@ func TestKataPodDomainHasOnlyDedicatedHostHelperEntrypoints(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_t bin_exec_t (file (entrypoint")
 }
 
-func TestKataPodDomainMayStartVirtiofsd(t *testing.T) {
+func TestKataPodDomainsMayStartHostSandboxHelpers(t *testing.T) {
 	t.Parallel()
 
 	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
 	require.NoError(t, err)
 
-	// Kata launches virtiofsd and Cloud Hypervisor under the sandbox's
-	// MCS-scoped pod_t label. These are the complete startup edges observed in
-	// a permissive run that returned a sandbox ID, combined with the earlier
-	// enforcing denials that stopped before the later checks were reached.
-	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto)))")
+	// Ordinary Kata sandboxes launch the VMM under the MCS-scoped pod_t label;
+	// privileged sandboxes leave it in pod_containerd_t. These are the bounded
+	// startup edges observed across both enforcing paths.
+	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto getopt)))")
 	assert.Contains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (sendto)))")
 	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (read open mounton)))")
 	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_socket_t (sock_file (write)))")
@@ -258,6 +257,7 @@ func TestKataPodDomainMayStartVirtiofsd(t *testing.T) {
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), "(allow pod_t kata_guest_image_t (file (read open lock)))")
 	assert.Contains(t, string(policy), "(allow pod_t self (io_uring (allowed)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t self (io_uring (allowed)))")
 	assert.NotContains(t, string(policy), "(allow pod_p pod_containerd_t (unix_stream_socket")
 	assert.NotContains(t, string(policy), "(allow pod_t pod_containerd_t (unix_stream_socket (all)))")
 	assert.NotContains(t, string(policy), "(allow pod_t init_t (unix_dgram_socket (all)))")
@@ -265,6 +265,7 @@ func TestKataPodDomainMayStartVirtiofsd(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_t usr_t")
 	assert.NotContains(t, string(policy), "(allow pod_p usr_t")
 	assert.NotContains(t, string(policy), "(allow pod_p self (io_uring")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t self (io_uring (all)))")
 }
 
 func TestSELinuxIOUringClassMatchesLinux618(t *testing.T) {
