@@ -20,6 +20,7 @@
 /usr/local/share/kata-containers/vmlinux.container	--	system_u:object_r:kata_guest_image_t:s0
 /usr/local/lib/kubelet/credentialproviders(/.*)?	system_u:object_r:k8s_credentialproviders_t:s0
 /usr/local/share/kata-containers/kata-containers.img	--	system_u:object_r:kata_guest_image_t:s0
+/usr/local/share/kata-qemu-snp-experimental/qemu/bios-256k.bin	--	system_u:object_r:kata_guest_image_t:s0
 /usr/local/share/kata-containers/kata-containers-coco-extension.img	--	system_u:object_r:kata_guest_image_t:s0
 /	system_u:object_r:rootfs_t:s0
 /bin	system_u:object_r:bin_exec_t:s0
