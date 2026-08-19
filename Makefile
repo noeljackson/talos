@@ -688,7 +688,11 @@ e2e-qemu-cilium-enforcing-full:
 # QEMU begins from these local bootstrap artifacts before the selected
 # installer takes over. Keep that contract explicit so a missing image cannot
 # turn into a silent provisioner wait.
-e2e-qemu: kernel initramfs talosctl-cni-bundle
+.PHONY: qemu-network-preflight
+qemu-network-preflight:
+	@QEMU_CIDR='$(QEMU_CIDR)' bash ./hack/test/qemu-network-preflight.sh
+
+e2e-qemu: qemu-network-preflight kernel initramfs talosctl-cni-bundle
 
 # E2E scripts invoke talosctl directly; build the exact binary they receive
 # rather than relying on a stale or incidental artifact in $(ARTIFACTS).

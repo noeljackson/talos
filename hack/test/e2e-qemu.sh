@@ -8,6 +8,8 @@ umask 077
 
 # shellcheck source=/dev/null
 source ./hack/test/e2e.sh
+# shellcheck source=/dev/null
+source ./hack/test/qemu-network-preflight.sh
 
 PROVISIONER=qemu
 CLUSTER_NAME="e2e-${PROVISIONER}"
@@ -279,7 +281,7 @@ esac
 
 case "${WITH_AIRGAPPED:-false}" in
   no-proxy)
-    INSTALLER_IMAGE="${INSTALLER_IMAGE/registry.dev.siderolabs.io/172.20.1.1:5000}"
+    INSTALLER_IMAGE="${INSTALLER_IMAGE/registry.dev.siderolabs.io/${QEMU_GATEWAY}:5000}"
 
     QEMU_FLAGS+=("--config-patch=@hack/test/patches/airgapped-timesync.yaml")
     QEMU_FLAGS+=("--config-patch=@${TMP}/image-cache-patch.yaml")
@@ -289,7 +291,7 @@ case "${WITH_AIRGAPPED:-false}" in
     QEMU_FLAGS+=("--image-cache-tls-key-file=${TMP}/image-cache-tls.key")
     ;;
   http-proxy)
-    "${TALOSCTL}" debug-tool air-gapped --advertised-address 172.20.1.1 > /tmp/airgapped.log 2>&1 &
+    "${TALOSCTL}" debug-tool air-gapped --advertised-address "${QEMU_GATEWAY}" > /tmp/airgapped.log 2>&1 &
     sleep 5 # wait for the air-gapped server to start
     cat air-gapped-patch.yaml
     mv air-gapped-patch.yaml "${TMP}/air-gapped-patch.yaml"
@@ -297,7 +299,7 @@ case "${WITH_AIRGAPPED:-false}" in
     QEMU_FLAGS+=("--config-patch=@${TMP}/air-gapped-patch.yaml")
     ;;
   secure-http-proxy)
-    "${TALOSCTL}" debug-tool air-gapped --advertised-address 172.20.1.1 --use-secure-proxy > /tmp/airgapped-secure.log 2>&1 &
+    "${TALOSCTL}" debug-tool air-gapped --advertised-address "${QEMU_GATEWAY}" --use-secure-proxy > /tmp/airgapped-secure.log 2>&1 &
     sleep 5 # wait for the air-gapped server to start
     cat air-gapped-patch.yaml
     mv air-gapped-patch.yaml "${TMP}/air-gapped-patch.yaml"
@@ -305,7 +307,7 @@ case "${WITH_AIRGAPPED:-false}" in
     QEMU_FLAGS+=("--config-patch=@${TMP}/air-gapped-patch.yaml")
     ;;
   https-reverse-proxy)
-    "${TALOSCTL}" debug-tool air-gapped --advertised-address 172.20.1.1 --inject-http-proxy=false --https-reverse-proxy-target=https://registry.dev.siderolabs.io > /tmp/airgapped-reverse-proxy.log 2>&1 &
+    "${TALOSCTL}" debug-tool air-gapped --advertised-address "${QEMU_GATEWAY}" --inject-http-proxy=false --https-reverse-proxy-target=https://registry.dev.siderolabs.io > /tmp/airgapped-reverse-proxy.log 2>&1 &
     sleep 5 # wait for the air-gapped server to start
     cat air-gapped-patch.yaml
     mv air-gapped-patch.yaml "${TMP}/air-gapped-patch.yaml"
@@ -336,14 +338,14 @@ function create_cluster {
     --memory-workers="${QEMU_MEMORY_WORKERS:-2048}" \
     --cpus="${QEMU_CPUS:-2}" \
     --cpus-workers="${QEMU_CPUS_WORKERS:-2}" \
-    --cidr=172.20.1.0/24 \
+    --cidr="${QEMU_CIDR}" \
     --install-image="${INSTALLER_IMAGE}" \
     --with-init-node=false \
     --cni-bundle-url="${ARTIFACTS}/talosctl-cni-bundle-\${ARCH}.tar.gz" \
     "${REGISTRY_MIRROR_FLAGS[@]}" \
     "${QEMU_FLAGS[@]}"
 
-  "${TALOSCTL}" config node 172.20.1.2
+  "${TALOSCTL}" config node "${QEMU_CONTROLPLANE_IP}"
 }
 
 function destroy_cluster() {
