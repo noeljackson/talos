@@ -46,6 +46,7 @@ func TestLookupFileContextForKataHostHelpers(t *testing.T) {
 	for _, path := range []string{
 		"/usr/local/bin/cloud-hypervisor",
 		"/usr/local/bin/qemu-system-x86_64-snp-experimental",
+		"/usr/local/libexec/qemu-system-x86_64-snp-experimental",
 		"/usr/local/libexec/virtiofsd",
 	} {
 		t.Run(path, func(t *testing.T) {
@@ -227,12 +228,13 @@ func TestKataPodDomainHasOnlyDedicatedHostHelperEntrypoints(t *testing.T) {
 	for _, path := range []string{
 		"/usr/local/bin/cloud-hypervisor",
 		"/usr/local/bin/qemu-system-x86_64-snp-experimental",
+		"/usr/local/libexec/qemu-system-x86_64-snp-experimental",
 		"/usr/local/libexec/virtiofsd",
 	} {
 		assert.Contains(t, string(policy), `(filecon "`+path+`" file kata_helper_exec_t)`)
 	}
 
-	assert.Contains(t, string(policy), "(allow pod_containerd_t kata_helper_exec_t (file (execute)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t kata_helper_exec_t (file (execute_no_trans execute)))")
 	assert.Contains(t, string(policy), "(allow pod_t kata_helper_exec_t (file (entrypoint execute)))")
 	assert.NotContains(t, string(policy), "(allow pod_p bin_exec_t (file (entrypoint")
 	assert.NotContains(t, string(policy), "(allow pod_t bin_exec_t (file (entrypoint")
