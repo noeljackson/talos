@@ -8,5 +8,6 @@ package sdboot
 var (
 	FindBootedUKIFile   = findBootedUKIFile
 	FindMatchingUKIFile = findMatchingUKIFile
+	FindNextBootUKIFile = findNextBootUKIFile
 	GenerateNextUKIName = generateNextUKIName
 )

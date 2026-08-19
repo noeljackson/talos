@@ -191,6 +191,13 @@ func TestFindBootedUKIFile(t *testing.T) {
 			expectedFound: true,
 		},
 		{
+			name:          "post_upgrade_firmware_boot_uses_selected_entry",
+			defaultEntry:  "Talos-current.efi",
+			selectedEntry: "Talos-old.efi",
+			expectedEntry: "Talos-old.efi",
+			expectedFound: true,
+		},
+		{
 			name:          "kexec_uses_installer_updated_default",
 			defaultEntry:  "Talos-current.efi",
 			selectedEntry: "Talos-old.efi",
@@ -232,6 +239,66 @@ func TestFindBootedUKIFile(t *testing.T) {
 				test.oneShotEntry,
 				test.rebootReason,
 			)
+
+			require.Equal(t, test.expectedFound, found)
+			require.Equal(t, test.expectedEntry, entry)
+		})
+	}
+}
+
+func TestFindNextBootUKIFile(t *testing.T) {
+	t.Parallel()
+
+	existingFiles := []string{
+		"/EFI/Linux/Talos-old.efi",
+		"/EFI/Linux/Talos-current.efi",
+	}
+
+	for _, test := range []struct {
+		name          string
+		defaultEntry  string
+		selectedEntry string
+		expectedEntry string
+		expectedFound bool
+	}{
+		{
+			name:          "post_upgrade_uses_default_entry",
+			defaultEntry:  "Talos-current.efi",
+			selectedEntry: "Talos-old.efi",
+			expectedEntry: "Talos-current.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "rollback_uses_default_entry",
+			defaultEntry:  "Talos-old.efi",
+			selectedEntry: "Talos-current.efi",
+			expectedEntry: "Talos-old.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "missing_default_falls_back_to_selected",
+			selectedEntry: "Talos-current.efi",
+			expectedEntry: "Talos-current.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "missing_default_entry_falls_back_to_selected",
+			defaultEntry:  "Talos-missing.efi",
+			selectedEntry: "Talos-current.efi",
+			expectedEntry: "Talos-current.efi",
+			expectedFound: true,
+		},
+		{
+			name:          "no_matching_entry",
+			defaultEntry:  "Talos-missing-default.efi",
+			selectedEntry: "Talos-missing-selected.efi",
+			expectedFound: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			entry, found := sdboot.FindNextBootUKIFile(existingFiles, test.defaultEntry, test.selectedEntry)
 
 			require.Equal(t, test.expectedFound, found)
 			require.Equal(t, test.expectedEntry, entry)
