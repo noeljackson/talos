@@ -45,7 +45,17 @@ var LoaderConfBytes []byte
 
 // Config describe sd-boot state.
 type Config struct {
-	Default  string
+	// BootedEntry is the UKI the system is running from right now.
+	//
+	// This is what the installer needs on upgrade (to keep the running generation around as a
+	// fallback), and what reverting needs (to move the default away from what is running).
+	BootedEntry string
+	// NextBootEntry is the UKI sd-boot picks on the next boot, i.e. LoaderEntryDefault.
+	//
+	// This is what kexec needs to load, as kexec replaces a firmware boot which would have been
+	// handled by sd-boot.
+	NextBootEntry string
+	// Fallback is the previous entry kept around by an upgrade.
 	Fallback string
 }
 
@@ -73,6 +83,10 @@ func New() *Config {
 
 // ProbeWithCallback probes the sd-boot bootloader, and calls the callback function with the Config.
 // this is called when we upgrade, do KexecLoad, or for reverting the bootloader.
+//
+// The Config carries both the entry the system is running from (Config.BootedEntry) and the entry
+// which boots next (Config.NextBootEntry): those differ e.g. right after the installer updated
+// LoaderEntryDefault, or when an operator selected a non-default entry in the sd-boot menu.
 //
 //nolint:gocyclo
 func ProbeWithCallback(disk string, options options.ProbeOptions, callback func(*Config) error) (*Config, error) {
@@ -155,24 +169,26 @@ func ProbeWithCallback(disk string, options options.ProbeOptions, callback func(
 				return errors.New("sd-boot: no LoaderEntryDefault or LoaderEntrySelected found, cannot continue")
 			}
 
-			bootEntry, bootEntryOk := findBootedUKIFile(
+			bootedEntry, bootedEntryOk := findBootedUKIFile(
 				ukiFiles,
 				loaderEntryDefault,
 				loaderEntrySelected,
 				loaderEntryOneShot,
 				loaderEntryRebootReason,
 			)
-			if !bootEntryOk {
+
+			nextBootEntry, nextBootEntryOk := findNextBootUKIFile(ukiFiles, loaderEntryDefault, loaderEntrySelected)
+
+			if !bootedEntryOk || !nextBootEntryOk {
 				return errors.New("sd-boot: no valid boot entry found matching LoaderEntrySelected or LoaderEntryDefault")
 			}
 
-			options.Logf("sd-boot: found boot entry: %s", bootEntry)
-
 			sdbootConf = &Config{
-				Default: bootEntry,
+				BootedEntry:   bootedEntry,
+				NextBootEntry: nextBootEntry,
 			}
 
-			options.Logf("sd-boot: using %s as default entry", sdbootConf.Default)
+			options.Logf("sd-boot: booted entry: %s, next boot entry: %s", sdbootConf.BootedEntry, sdbootConf.NextBootEntry)
 
 			if callback != nil {
 				return callback(sdbootConf)
@@ -210,7 +226,9 @@ func (c *Config) KexecLoad(r runtime.Runtime, disk string) error {
 	_, err := ProbeWithCallback(disk, options.ProbeOptions{}, func(conf *Config) error {
 		var kernelFd int
 
-		assetInfo, err := uki.Extract(filepath.Join(constants.EFIMountPoint, "EFI", "Linux", conf.Default))
+		// kexec replaces the next firmware boot, so load the entry sd-boot would have booted,
+		// and not the one which is running right now.
+		assetInfo, err := uki.Extract(filepath.Join(constants.EFIMountPoint, "EFI", "Linux", conf.NextBootEntry))
 		if err != nil {
 			return fmt.Errorf("failed to extract kernel and initrd from uki: %w", err)
 		}
@@ -355,10 +373,10 @@ func (c *Config) Upgrade(opts options.InstallOptions) (*options.InstallResult, e
 			}
 
 			for _, file := range files {
-				if strings.EqualFold(filepath.Base(file), c.Default) {
-					if !strings.EqualFold(c.Default, ukiPath) {
-						// set fallback to the current default unless it matches the new install
-						c.Fallback = c.Default
+				if strings.EqualFold(filepath.Base(file), c.BootedEntry) {
+					if !strings.EqualFold(c.BootedEntry, ukiPath) {
+						// set fallback to the entry we are running from unless it matches the new install
+						c.Fallback = c.BootedEntry
 					}
 
 					continue
@@ -547,7 +565,7 @@ func (c *Config) revert() error {
 	}
 
 	for _, file := range files {
-		if strings.EqualFold(filepath.Base(file), c.Default) {
+		if strings.EqualFold(filepath.Base(file), c.BootedEntry) {
 			continue
 		}
 
@@ -587,4 +605,16 @@ func findBootedUKIFile(ukiFiles []string, defaultEntry, selectedEntry, oneShotEn
 	}
 
 	return findMatchingUKIFile(ukiFiles, defaultEntry)
+}
+
+// findNextBootUKIFile returns the UKI sd-boot boots next, which is the persistent default.
+//
+// LoaderEntrySelected is only a fallback for a system which never ran the installer (e.g. booted
+// off a disk image), as there LoaderEntryDefault is not set yet.
+func findNextBootUKIFile(ukiFiles []string, defaultEntry, selectedEntry string) (string, bool) {
+	if entry, ok := findMatchingUKIFile(ukiFiles, defaultEntry); ok {
+		return entry, true
+	}
+
+	return findMatchingUKIFile(ukiFiles, selectedEntry)
 }
