@@ -122,7 +122,11 @@ func handlerDHCP4(serverIP net.IP, statePath string) server4.Handler {
 		_, err = conn.WriteTo(resp.ToBytes(), peer)
 		if err != nil {
 			log.Printf("failure sending response: %s", err)
+
+			return
 		}
+
+		log.Printf("DHCPv4: sent response")
 	}
 }
 
