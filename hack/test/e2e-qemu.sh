@@ -321,7 +321,8 @@ esac
 function create_cluster {
   build_registry_mirrors
 
-  "${TALOSCTL}" cluster create \
+  local cluster_create=(
+    "${TALOSCTL}" cluster create
     --provisioner="${PROVISIONER}" \
     --name="${CLUSTER_NAME}" \
     --kubernetes-version="${KUBERNETES_VERSION}" \
@@ -344,8 +345,78 @@ function create_cluster {
     --cni-bundle-url="${ARTIFACTS}/talosctl-cni-bundle-\${ARCH}.tar.gz" \
     "${REGISTRY_MIRROR_FLAGS[@]}" \
     "${QEMU_FLAGS[@]}"
+  )
 
-  "${TALOSCTL}" config node "${QEMU_CONTROLPLANE_IP}"
+  if [[ "${KATA_RUNTIME_TEST:-false}" != "true" ]]; then
+    "${cluster_create[@]}"
+
+    "${TALOSCTL}" config node "${QEMU_CONTROLPLANE_IP}"
+
+    return
+  fi
+
+  local bootstrap_timeout_seconds="${QEMU_BOOTSTRAP_TIMEOUT_SECONDS:-90}"
+
+  if [[ ! ${bootstrap_timeout_seconds} =~ ^[1-9][0-9]*$ ]]; then
+    echo "QEMU_BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer" >&2
+
+    return 1
+  fi
+
+  "${cluster_create[@]}" &
+
+  local cluster_create_pid=$!
+  local deadline=$((SECONDS + bootstrap_timeout_seconds))
+
+  while kill -0 "${cluster_create_pid}" 2>/dev/null; do
+    if (( SECONDS >= deadline )); then
+      echo "QEMU bootstrap did not complete within ${bootstrap_timeout_seconds}s" >&2
+      kill -TERM "${cluster_create_pid}" 2>/dev/null || true
+      wait "${cluster_create_pid}" || true
+      dump_qemu_dhcp_progress
+
+      return 1
+    fi
+
+    sleep 1
+  done
+
+  if ! wait "${cluster_create_pid}"; then
+    dump_qemu_dhcp_progress
+
+    return 1
+  fi
+
+  if ! "${TALOSCTL}" config node "${QEMU_CONTROLPLANE_IP}"; then
+    dump_qemu_dhcp_progress
+
+    return 1
+  fi
+}
+
+function dump_qemu_dhcp_progress {
+  local state_dir="${HOME}/.talos/clusters/${CLUSTER_NAME}"
+  local dhcp_log="${state_dir}/dhcpd.log"
+  local requests=0
+  local replies=0
+  local guest_no_offer=0
+
+  if [[ -r "${dhcp_log}" ]]; then
+    requests=$(grep -c 'DHCPv4: got ' "${dhcp_log}" || true)
+    replies=$(grep -c 'DHCPv4: sent response' "${dhcp_log}" || true)
+  fi
+
+  local node_logs=("${state_dir}/${CLUSTER_NAME}"-*.log)
+
+  if [[ -e "${node_logs[0]}" ]]; then
+    guest_no_offer=$(grep -E -h -c 'unable to receive an offer|DHCP request/renew failed' "${node_logs[@]}" | awk '{ total += $1 } END { print total + 0 }')
+  fi
+
+  echo "QEMU DHCP evidence: requests_received=${requests} replies_sent=${replies} guest_no_offer=${guest_no_offer}" >&2
+
+  if (( requests > 0 && replies > 0 && guest_no_offer > 0 )); then
+    echo "QEMU DHCP replies were generated but not delivered to a guest; inspect host packet filtering before changing Talos, SELinux, or Kata." >&2
+  fi
 }
 
 function destroy_cluster() {
