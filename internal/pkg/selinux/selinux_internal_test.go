@@ -60,6 +60,31 @@ func TestLookupFileContextForKataHostHelpers(t *testing.T) {
 	}
 }
 
+func TestLookupFileContextForKataGuestBootArtifacts(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/usr/local/share/kata-qemu-snp-experimental/qemu/bios-256k.bin",
+		"/usr/local/share/kata-qemu-snp-experimental/qemu/kvmvapic.bin",
+		"/usr/local/share/kata-qemu-snp-experimental/qemu/linuxboot_dma.bin",
+		"/usr/local/share/kata-qemu-snp-experimental/qemu/efi-virtio.rom",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			context, ok, err := LookupFileContext(path, 0)
+			require.NoError(t, err)
+			require.True(t, ok, "LookupFileContext(%q) did not match", path)
+			assert.Equal(t, "system_u:object_r:kata_guest_image_t:s0", context)
+		})
+	}
+
+	context, ok, err := LookupFileContext("/usr/local/share/unrelated/host-data", 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "system_u:object_r:usr_t:s0", context)
+}
+
 func TestCiliumRuntimePolicyAllowsKubeletHostPathSetup(t *testing.T) {
 	t.Parallel()
 
@@ -257,7 +282,7 @@ func TestKataPodDomainsMayStartHostSandboxHelpers(t *testing.T) {
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinuz.container" file kata_guest_image_t)`)
-	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-qemu-snp-experimental/qemu/bios-256k.bin" file kata_guest_image_t)`)
+	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-qemu-snp-experimental/qemu/.*" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/ovmf/AMDSEV.fd" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), "(allow pod_t kata_guest_image_t (file (read open lock)))")
 	assert.Contains(t, string(policy), "(allow pod_t self (io_uring (allowed)))")
