@@ -287,19 +287,18 @@
 (filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)
 (allow pod_t kata_guest_image_t (file (read open lock)))
 
-; Kata applies the sandbox's MCS-scoped pod_t label to both the VMM and its
-; virtiofsd helper. A complete permissive discovery run showed that virtiofsd
-; inherits and accepts the shim stream socket, opens and mounts its private
-; namespace root, and serves the separately typed socket inode. Cloud
-; Hypervisor connects to that socket, locks and reads the immutable guest
-; image, and creates an io_uring instance. Permit only those observed startup
-; edges for the concrete workload domain; do not broaden the pod_p attribute,
-; generic filesystem classes, or either socket class.
-(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto)))
+; Kata applies the sandbox's MCS-scoped pod_t label to the VMM and virtiofsd
+; for an ordinary sandbox. A privileged sandbox has no pod process label, so
+; its VMM remains in pod_containerd_t. The VMM checks the shim-owned QMP
+; stream, and both execution paths create an io_uring instance. Permit only
+; those observed startup edges for the concrete domains; do not broaden the
+; pod_p attribute, generic filesystem classes, or either socket class.
+(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto getopt)))
 (allow pod_t init_t (unix_dgram_socket (sendto)))
 (allow pod_t rootfs_t (dir (read open mounton)))
 (allow pod_t pod_containerd_socket_t (sock_file (write)))
 (allow pod_t self (io_uring (allowed)))
+(allow pod_containerd_t self (io_uring (allowed)))
 
 (type cilium_t)
 (call pod_p (cilium_t))
