@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 write|verify RECEIPT ARTIFACT... | version RECEIPT" >&2
+  echo "usage: $0 write|verify RECEIPT TALOSCTL ARTIFACT... | version RECEIPT" >&2
 }
 
 source_fingerprint() {
@@ -25,8 +25,20 @@ source_fingerprint() {
   } | sha256sum | awk '{ print $1 }'
 }
 
-source_version() {
-  git describe --tag --always --dirty --match 'v[0-9]*'
+artifact_version() {
+  local output
+  local talosctl="$1"
+  local version
+
+  output="$("${talosctl}" version --client --short)"
+  version="$(sed -n 's/^Talos \(v[^[:space:]]*\)$/\1/p' <<< "${output}")"
+
+  [[ -n "${version}" && "$(grep -c '^Talos v[^[:space:]]*$' <<< "${output}")" -eq 1 ]] || {
+    echo "prepared talosctl did not report one exact client version" >&2
+    exit 1
+  }
+
+  printf '%s\n' "${version}"
 }
 
 if (( $# < 2 )); then
@@ -40,11 +52,13 @@ shift 2
 
 case "${mode}" in
   write)
-    (( $# > 0 )) || {
+    (( $# > 1 )) || {
       usage
       exit 2
     }
 
+    talosctl="$1"
+    shift
     umask 077
 
     fingerprint="$(source_fingerprint)"
@@ -53,7 +67,7 @@ case "${mode}" in
 
     {
       printf 'source %s\n' "${fingerprint}"
-      printf 'version %s\n' "$(source_version)"
+      printf 'version %s\n' "$(artifact_version "${talosctl}")"
       sha256sum -- "$@"
     } > "${receipt_tmp}"
 
@@ -61,11 +75,13 @@ case "${mode}" in
     trap - EXIT
     ;;
   verify)
-    (( $# > 0 )) || {
+    (( $# > 1 )) || {
       usage
       exit 2
     }
 
+    talosctl="$1"
+    shift
     [[ -r "${receipt}" ]] || {
       echo "run e2e-qemu-prepare first" >&2
       exit 1
@@ -77,7 +93,7 @@ case "${mode}" in
       exit 1
     }
 
-    expected_version="version $(source_version)"
+    expected_version="version $(artifact_version "${talosctl}")"
     [[ "$(sed -n '2p' "${receipt}")" == "${expected_version}" ]] || {
       echo "prepared QEMU version belongs to a different source snapshot" >&2
       exit 1
