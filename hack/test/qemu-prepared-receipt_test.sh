@@ -3,7 +3,9 @@
 set -euo pipefail
 
 tool="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qemu-prepared-receipt.sh"
-test_repo="$(mktemp -d)"
+source_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
+mkdir -p "${source_root}/.tmp"
+test_repo="$(mktemp -d "${source_root}/.tmp/qemu-prepared-receipt-test.XXXXXX")"
 trap 'rm -rf -- "${test_repo}"' EXIT
 
 expect_verify_failure() {
