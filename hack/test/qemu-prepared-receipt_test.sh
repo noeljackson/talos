@@ -24,8 +24,15 @@ printf 'artifact\n' > "${test_repo}/artifact.bin"
 (
   cd "${test_repo}"
   "${tool}" write receipt artifact.bin
-  [[ "$(wc -l < receipt)" -eq 2 ]]
+  [[ "$(wc -l < receipt)" -eq 3 ]]
   [[ "$(sed -n '1p' receipt)" =~ ^source\ [0-9a-f]{64}$ ]]
+  [[ "$(sed -n '2p' receipt)" == "version $(git describe --tag --always --dirty --match 'v[0-9]*')" ]]
+  [[ "$("${tool}" version receipt)" == "$(git describe --tag --always --dirty --match 'v[0-9]*')" ]]
+  "${tool}" verify receipt artifact.bin
+
+  sed -i '2c version stale' receipt
+  expect_verify_failure
+  "${tool}" write receipt artifact.bin
   "${tool}" verify receipt artifact.bin
 
   mkdir -p .tmp
