@@ -48,11 +48,15 @@ type upgradeSpec struct {
 
 	// Deprecated: staged upgrades are not supported by the new LifecycleService API.
 	// Use the legacy MachineService.Upgrade path instead.
-	UpgradeStage    bool
-	WithEncryption  bool
-	WithBios        bool
-	WithApplyConfig bool
-	WithEnforcing   bool
+	UpgradeStage            bool
+	UpgradeRebootPowercycle bool
+	WithEncryption          bool
+	WithBios                bool
+	WithApplyConfig         bool
+	WithEnforcing           bool
+
+	// TestRollback specifies whether to test rollback after the upgrade.
+	TestRollback bool
 }
 
 const (
@@ -206,34 +210,47 @@ func upgradeStableToCurrentPreserveStage() upgradeSpec {
 	}
 }
 
-func upgradeCurrentToCurrentNewCmdline() upgradeSpec {
-	installerImage := fmt.Sprintf(
-		"%s/%s:%s",
-		DefaultSettings.TargetInstallImageRegistry,
-		images.DefaultInstallerImageName,
-		DefaultSettings.CurrentVersion,
-	)
+func upgradeCurrentToCurrentNewCmdline(powercycle, encryption bool) func() upgradeSpec {
+	return func() upgradeSpec {
+		installerImage := fmt.Sprintf(
+			"%s/%s:%s",
+			DefaultSettings.TargetInstallImageRegistry,
+			images.DefaultInstallerImageName,
+			DefaultSettings.CurrentVersion,
+		)
 
-	targetInstallerImage := installerImage + "-extra-cmdline"
+		rebootMode := "kex"
+		if powercycle {
+			rebootMode = "pwr"
+		}
 
-	return upgradeSpec{
-		ShortName: fmt.Sprintf("%s-same-ver-extra-cmdline", DefaultSettings.CurrentVersion),
+		encryptionMode := "ne"
+		if encryption {
+			encryptionMode = "en"
+		}
 
-		SourceISOPath:        helpers.ArtifactPath("metal-amd64.iso"),
-		SourceInstallerImage: installerImage,
-		SourceVersion:        DefaultSettings.CurrentVersion,
-		SourceK8sVersion:     currentK8sVersion,
+		return upgradeSpec{
+			ShortName: fmt.Sprintf("%s-sver-sd-%s-%s", DefaultSettings.CurrentVersion, rebootMode, encryptionMode),
 
-		TargetInstallerImage: targetInstallerImage,
-		TargetVersion:        DefaultSettings.CurrentVersion,
-		TargetK8sVersion:     currentK8sVersion,
+			SourceISOPath:        helpers.ArtifactPath("metal-amd64.iso"),
+			SourceInstallerImage: installerImage,
+			SourceVersion:        DefaultSettings.CurrentVersion,
+			SourceK8sVersion:     currentK8sVersion,
 
-		ControlplaneNodes: 1,
-		WorkerNodes:       0,
+			TargetInstallerImage: installerImage + "-extra-cmdline",
+			TargetVersion:        DefaultSettings.CurrentVersion,
+			TargetK8sVersion:     currentK8sVersion,
 
-		TargetCmdlineContains: "talos.extra_cmdline=extra-super-cmdline",
+			ControlplaneNodes: 1,
+			WorkerNodes:       0,
 
-		WithApplyConfig: true,
+			TargetCmdlineContains: "talos.extra_cmdline=extra-super-cmdline",
+
+			UpgradeRebootPowercycle: powercycle,
+			WithApplyConfig:         true,
+			WithEncryption:          encryption,
+			TestRollback:            true,
+		}
 	}
 }
 
@@ -341,9 +358,11 @@ func (suite *UpgradeSuite) TestRolling() {
 	}
 
 	options := upgradeOptions{
+		SourceVersion:        suite.spec.SourceVersion,
 		TargetInstallerImage: suite.spec.TargetInstallerImage,
 		UpgradeStage:         suite.spec.UpgradeStage,
 		TargetVersion:        suite.spec.TargetVersion,
+		RebootPowercycle:     suite.spec.UpgradeRebootPowercycle,
 	}
 
 	// upgrade master nodes
@@ -386,6 +405,31 @@ func (suite *UpgradeSuite) TestRolling() {
 
 	// run e2e test
 	suite.runE2E(suite.spec.TargetK8sVersion)
+
+	if !suite.spec.TestRollback {
+		return
+	}
+
+	// Roll back workers before control planes, mirroring the reverse of the upgrade order.
+	for _, node := range suite.Cluster.Info().Nodes {
+		if node.Type == machine.TypeWorker {
+			suite.rollbackNode(client, node, options)
+		}
+	}
+
+	for _, node := range suite.Cluster.Info().Nodes {
+		if node.Type == machine.TypeInit || node.Type == machine.TypeControlPlane {
+			suite.rollbackNode(client, node, options)
+		}
+	}
+
+	suite.assertSameVersionCluster(client, suite.spec.SourceVersion)
+
+	if suite.spec.TargetCmdlineContains != "" {
+		for _, node := range suite.Cluster.Info().Nodes {
+			suite.assertCmdlineNotContains(client, node.IPs[0].String(), suite.spec.TargetCmdlineContains)
+		}
+	}
 }
 
 // SuiteName ...
@@ -405,7 +449,10 @@ func init() {
 		&UpgradeSuite{specGen: upgradeCurrentToCurrent, track: 2},
 		&UpgradeSuite{specGen: upgradeCurrentToCurrentBios, track: 0},
 		&UpgradeSuite{specGen: upgradeStableToCurrentPreserveStage, track: 1},
-		&UpgradeSuite{specGen: upgradeCurrentToCurrentNewCmdline, track: 2},
+		&UpgradeSuite{specGen: upgradeCurrentToCurrentNewCmdline(false, false), track: 2},
+		&UpgradeSuite{specGen: upgradeCurrentToCurrentNewCmdline(true, false), track: 2},
+		&UpgradeSuite{specGen: upgradeCurrentToCurrentNewCmdline(false, true), track: 2},
+		&UpgradeSuite{specGen: upgradeCurrentToCurrentNewCmdline(true, true), track: 2},
 		&UpgradeSuite{specGen: upgradeCurrentToCurrentEnforcing, track: 1},
 	)
 }
