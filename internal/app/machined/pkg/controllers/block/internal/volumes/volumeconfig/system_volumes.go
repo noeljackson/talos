@@ -363,6 +363,11 @@ var standardVolumeDefinitions = []struct {
 		Mode:         0o755,
 		SELinuxLabel: "system_u:object_r:var_lock_t:s0",
 	},
+	{
+		Path:         "/var/run/lock/iscsi",
+		Mode:         0o770,
+		SELinuxLabel: "system_u:object_r:iscsi_lock_t:s0",
+	},
 }
 
 // StandardDirectoryVolumesTransformer is the transformer for standard directory volumes,

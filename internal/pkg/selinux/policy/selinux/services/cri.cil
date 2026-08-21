@@ -155,6 +155,20 @@
 (type var_lock_t)
 (call protected_f (var_lock_t))
 (allow var_lock_t tmpfs_t (filesystem (associate)))
+(type iscsi_lock_t)
+(call protected_f (iscsi_lock_t))
+(allow iscsi_lock_t tmpfs_t (filesystem (associate)))
+(filecon "/run/lock/iscsi(/.*)?" any (system_u object_r iscsi_lock_t (systemLow systemLow)))
+
+; Talos creates /run/lock/iscsi before CRI starts. Open-iSCSI then uses two
+; fixed entries: it opens or creates "lock", hard-links it to "lock.write" to
+; acquire the database lock, and unlinks "lock.write" to release it. Keep this
+; lifecycle on a dedicated object type instead of granting either containerd
+; domain write access to the shared var_lock_t tree.
+(allow pod_containerd_t iscsi_lock_t (dir (add_name getattr remove_name search write)))
+(allow pod_containerd_t iscsi_lock_t (file (create getattr link open read unlink write)))
+(allow unconfined_container_t iscsi_lock_t (dir (add_name getattr remove_name search write)))
+(allow unconfined_container_t iscsi_lock_t (file (create getattr link open read unlink write)))
 (type seccomp_profile_t)
 (call protected_f (seccomp_profile_t))
 (type kube_log_t)
