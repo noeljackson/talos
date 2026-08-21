@@ -270,7 +270,7 @@ func TestStandardDirectoryVolumesTransformer(t *testing.T) {
 			name: "W/ config",
 			cfg:  &baseCfg,
 			checkFunc: func(t *testing.T, resources []volumeconfig.VolumeResource) {
-				require.Len(t, resources, 1+14) // +1 for /var/run symlink, +14 for standard directories
+				require.Len(t, resources, 1+15) // +1 for /var/run symlink, +15 for standard directories
 
 				var varRunSymlinkResource *volumeconfig.VolumeResource
 
@@ -292,7 +292,7 @@ func TestStandardDirectoryVolumesTransformer(t *testing.T) {
 				})
 
 				// Check some standard directories
-				expectedPaths := []string{"/var/log", "/var/lib", constants.EtcdDataVolumeID}
+				expectedPaths := []string{"/var/log", "/var/lib", constants.EtcdDataVolumeID, "/var/run/lock/iscsi"}
 				for _, expectedPath := range expectedPaths {
 					var found bool
 

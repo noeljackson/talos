@@ -89,6 +89,7 @@ func (c *CRI) Volumes(r runtime.Runtime) []string {
 		"/var/lib/containerd",
 		"/var/run",
 		"/var/run/lock",
+		"/var/run/lock/iscsi",
 	}
 
 	if !r.State().Platform().Mode().InContainer() {
