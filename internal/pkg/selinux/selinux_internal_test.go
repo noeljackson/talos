@@ -21,6 +21,7 @@ func TestLookupFileContextForPersistentOverlays(t *testing.T) {
 	testCases := map[string]string{
 		"/etc/cni/net.d":                          "system_u:object_r:cni_conf_t:s0",
 		"/etc/kubernetes/kubeconfig":              "system_u:object_r:k8s_conf_t:s0",
+		"/run/lock/iscsi/lock":                    "system_u:object_r:iscsi_lock_t:s0",
 		"/usr/libexec/kubernetes/kubelet-plugins": "system_u:object_r:k8s_plugin_t:s0",
 		"/opt":                          "system_u:object_r:opt_t:s0",
 		"/opt/cni/bin":                  "system_u:object_r:cni_plugin_t:s0",
@@ -166,6 +167,28 @@ func TestCRIContainerdMayConnectToDefaultExtensionServices(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (unix_stream_socket (all)))")
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (fs_classes")
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (process")
+}
+
+func TestISCSIControlPlaneHasDedicatedLockLifecycle(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// Open-iSCSI opens or creates "lock", links it to "lock.write" while it
+	// owns the database, then unlinks "lock.write". Talos pre-creates the
+	// directory, so neither CRI nor extension services need write access to the
+	// parent var_lock_t tree.
+	assert.Contains(t, string(policy), `(filecon "/run/lock/iscsi(/.*)?" any (system_u object_r iscsi_lock_t (systemLow systemLow)))`)
+	assert.Contains(t, string(policy), "(allow pod_containerd_t iscsi_lock_t (dir (add_name getattr remove_name search write)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t iscsi_lock_t (file (create getattr link open read unlink write)))")
+	assert.Contains(t, string(policy), "(allow unconfined_container_t iscsi_lock_t (dir (add_name getattr remove_name search write)))")
+	assert.Contains(t, string(policy), "(allow unconfined_container_t iscsi_lock_t (file (create getattr link open read unlink write)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t var_lock_t")
+	assert.NotContains(t, string(policy), "(allow unconfined_container_t var_lock_t")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t iscsi_lock_t (fs_classes")
+	assert.NotContains(t, string(policy), "(allow unconfined_container_t iscsi_lock_t (fs_classes")
+	assert.NotContains(t, string(policy), "(allow pod_p iscsi_lock_t")
 }
 
 func TestCRIContainerdMayOpenItsNamedKataTAP(t *testing.T) {
