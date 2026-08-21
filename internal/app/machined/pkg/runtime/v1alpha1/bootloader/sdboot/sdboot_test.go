@@ -184,6 +184,7 @@ func TestFindBootedUKIFile(t *testing.T) {
 		expectedFound bool
 	}{
 		{
+			// An operator picked a non-default entry in the sd-boot menu: that entry is the one running.
 			name:          "manual_selection_uses_selected_entry",
 			defaultEntry:  "Talos-old.efi",
 			selectedEntry: "Talos-current.efi",
@@ -191,6 +192,7 @@ func TestFindBootedUKIFile(t *testing.T) {
 			expectedFound: true,
 		},
 		{
+			// The installer just pointed the default at the new UKI, but the old one is still running.
 			name:          "post_upgrade_firmware_boot_uses_selected_entry",
 			defaultEntry:  "Talos-current.efi",
 			selectedEntry: "Talos-old.efi",
@@ -262,6 +264,7 @@ func TestFindNextBootUKIFile(t *testing.T) {
 		expectedFound bool
 	}{
 		{
+			// The installer updated the default; kexec must boot the new UKI, not the running one.
 			name:          "post_upgrade_uses_default_entry",
 			defaultEntry:  "Talos-current.efi",
 			selectedEntry: "Talos-old.efi",
@@ -269,6 +272,7 @@ func TestFindNextBootUKIFile(t *testing.T) {
 			expectedFound: true,
 		},
 		{
+			// Rollback moved the default back; kexec must boot the previous UKI.
 			name:          "rollback_uses_default_entry",
 			defaultEntry:  "Talos-old.efi",
 			selectedEntry: "Talos-current.efi",
@@ -276,6 +280,7 @@ func TestFindNextBootUKIFile(t *testing.T) {
 			expectedFound: true,
 		},
 		{
+			// A disk-image boot has no default until the installer runs, so use the selected entry.
 			name:          "missing_default_falls_back_to_selected",
 			selectedEntry: "Talos-current.efi",
 			expectedEntry: "Talos-current.efi",
