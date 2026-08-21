@@ -47,13 +47,14 @@ var LoaderConfBytes []byte
 type Config struct {
 	// BootedEntry is the UKI the system is running from right now.
 	//
-	// This is what the installer needs on upgrade (to keep the running generation around as a
-	// fallback), and what reverting needs (to move the default away from what is running).
+	// This is what the installer needs on upgrade, to keep the running generation around as a
+	// fallback.
 	BootedEntry string
 	// NextBootEntry is the UKI sd-boot picks on the next boot, i.e. LoaderEntryDefault.
 	//
 	// This is what kexec needs to load, as kexec replaces a firmware boot which would have been
-	// handled by sd-boot.
+	// handled by sd-boot, and what reverting moves the default away from, as reverting should
+	// change the entry which boots next.
 	NextBootEntry string
 	// Fallback is the previous entry kept around by an upgrade.
 	Fallback string
@@ -346,6 +347,8 @@ func (c *Config) Install(opts options.InstallOptions) (*options.InstallResult, e
 
 // Upgrade the bootloader.
 // On upgrade we mount the EFI partition, cleanup old UKIs, copy the new UKI and sd-boot.efi, and update the EFI variables.
+//
+//nolint:gocyclo
 func (c *Config) Upgrade(opts options.InstallOptions) (*options.InstallResult, error) {
 	var installResult *options.InstallResult
 
@@ -370,6 +373,18 @@ func (c *Config) Upgrade(opts options.InstallOptions) (*options.InstallResult, e
 			ukiPath, err := generateNextUKIName(opts.Version, files)
 			if err != nil {
 				return fmt.Errorf("failed to generate next UKI name: %w", err)
+			}
+
+			// The cleanup below might remove the UKI LoaderEntryDefault points to (when the entry which
+			// boots next is not the one we are running from), so repoint the default to the booted entry
+			// first: if the upgrade is interrupted before setup() rewrites it, the next boot still lands
+			// on a UKI which exists.
+			if !strings.EqualFold(c.NextBootEntry, c.BootedEntry) {
+				opts.Printf("sd-boot: pointing the default entry to the booted one for the duration of the upgrade: %s", c.BootedEntry)
+
+				if err = WriteVariable(LoaderEntryDefaultName, c.BootedEntry); err != nil {
+					return err
+				}
 			}
 
 			for _, file := range files {
@@ -565,7 +580,8 @@ func (c *Config) revert() error {
 	}
 
 	for _, file := range files {
-		if strings.EqualFold(filepath.Base(file), c.BootedEntry) {
+		// Skip the entry which boots next, as the whole point of the revert is to boot something else.
+		if strings.EqualFold(filepath.Base(file), c.NextBootEntry) {
 			continue
 		}
 
@@ -587,6 +603,7 @@ func findMatchingUKIFile(ukiFiles []string, entry string) (string, bool) {
 	return "", false
 }
 
+// findBootedUKIFile returns the UKI the system is running from.
 func findBootedUKIFile(ukiFiles []string, defaultEntry, selectedEntry, oneShotEntry, rebootReason string) (string, bool) {
 	// A kexec reboot bypasses sd-boot, so LoaderEntrySelected can describe an older
 	// boot. In that case the installer-updated default is the running entry.

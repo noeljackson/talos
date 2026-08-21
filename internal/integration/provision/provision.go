@@ -287,6 +287,17 @@ func (suite *BaseSuite) assertCmdlineContains(client *talosclient.Client, node s
 	suite.Assert().Contains(cmdline.TypedSpec().Cmdline, expectedCmdlineContains, "expected cmdline to contain %q", expectedCmdlineContains)
 }
 
+func (suite *BaseSuite) assertCmdlineNotContains(client *talosclient.Client, node string, expectedCmdlineContains string) {
+	ctx := talosclient.WithNode(suite.ctx, node)
+
+	cmdline, err := safe.ReaderGetByID[*runtime.KernelCmdline](ctx, client.COSI, runtime.KernelCmdlineID)
+	suite.Require().NoError(err)
+
+	suite.Assert().NotEmpty(cmdline, "expected cmdline to be not empty")
+
+	suite.Assert().NotContains(cmdline.TypedSpec().Cmdline, expectedCmdlineContains, "expected cmdline not to contain %q", expectedCmdlineContains)
+}
+
 func (suite *BaseSuite) readVersion(nodeCtx context.Context, client *talosclient.Client) (
 	version string,
 	err error,
@@ -304,11 +315,15 @@ func (suite *BaseSuite) readVersion(nodeCtx context.Context, client *talosclient
 }
 
 type upgradeOptions struct {
+	SourceVersion string
+
 	TargetInstallerImage string
 	// Deprecated: staged upgrades are not supported by the new LifecycleService API.
 	// Use the legacy MachineService.Upgrade path instead.
 	UpgradeStage  bool
 	TargetVersion string
+	// RebootPowercycle controls how the machine is rebooted after a lifecycle upgrade.
+	RebootPowercycle bool
 }
 
 //nolint:gocyclo,cyclop
@@ -325,10 +340,19 @@ func (suite *BaseSuite) upgradeNode(client *talosclient.Client, node provision.N
 	if !options.UpgradeStage {
 		if suite.tryUpgradeViaLifecycleService(nodeCtx, client, node, options) {
 			// LifecycleService.Upgrade succeeded — trigger reboot and wait.
-			suite.T().Logf("upgrade via LifecycleService succeeded, rebooting node %s", node.IPs[0])
+			rebootMode := "kexec"
 
-			suite.Require().NoError(client.Reboot(nodeCtx))
-			suite.waitForUpgrade(nodeCtx, client, node, options)
+			var rebootOptions []talosclient.RebootMode
+
+			if options.RebootPowercycle {
+				rebootMode = "powercycle"
+				rebootOptions = []talosclient.RebootMode{talosclient.WithPowerCycle}
+			}
+
+			suite.T().Logf("upgrade via LifecycleService succeeded, rebooting node %s via %s", node.IPs[0], rebootMode)
+
+			suite.rebootNode(nodeCtx, client, rebootOptions)
+			suite.waitForUpgrade(nodeCtx, client, node, options.TargetVersion)
 
 			return
 		}
@@ -338,7 +362,20 @@ func (suite *BaseSuite) upgradeNode(client *talosclient.Client, node provision.N
 
 	// Legacy path: MachineService.Upgrade (handles image pull, install, and reboot in one call).
 	suite.upgradeNodeLegacy(nodeCtx, client, options)
-	suite.waitForUpgrade(nodeCtx, client, node, options)
+	suite.waitForUpgrade(nodeCtx, client, node, options.TargetVersion)
+}
+
+func (suite *BaseSuite) rollbackNode(client *talosclient.Client, node provision.NodeInfo, options upgradeOptions) {
+	suite.T().Logf("rolling back node %s", node.IPs[0])
+
+	ctx, cancel := context.WithCancel(suite.ctx)
+	defer cancel()
+
+	nodeCtx := talosclient.WithNode(ctx, node.IPs[0].String())
+
+	suite.Require().NoError(client.Rollback(nodeCtx))
+	suite.waitForSequencerReboot(nodeCtx, client, "", "rollback")
+	suite.waitForUpgrade(nodeCtx, client, node, options.SourceVersion)
 }
 
 // tryUpgradeViaLifecycleService attempts to upgrade via the new streaming
@@ -609,10 +646,39 @@ func (suite *BaseSuite) upgradeNodeLegacy(
 
 	actorID := resp.Messages[0].ActorId
 
+	suite.waitForSequencerReboot(nodeCtx, c, actorID, "upgrade")
+}
+
+func (suite *BaseSuite) rebootNode(
+	nodeCtx context.Context,
+	c *talosclient.Client,
+	rebootModes []talosclient.RebootMode,
+) {
+	resp, err := c.RebootWithResponse(nodeCtx, rebootModes...)
+	suite.Require().NoError(err)
+
+	actorID := resp.GetMessages()[0].GetActorId()
+
+	suite.waitForSequencerReboot(nodeCtx, c, actorID, "reboot")
+}
+
+//nolint:gocyclo
+func (suite *BaseSuite) waitForSequencerReboot(
+	nodeCtx context.Context,
+	c *talosclient.Client,
+	actorID string,
+	actionName string,
+) {
+
 	eventCh := make(chan talosclient.EventResult)
+	eventOpts := []talosclient.EventsOptionFunc{talosclient.WithTailEvents(-1)}
+
+	if actorID != "" {
+		eventOpts = append(eventOpts, talosclient.WithActorID(actorID))
+	}
 
 	// watch for events
-	suite.Require().NoError(c.EventsWatchV2(nodeCtx, eventCh, talosclient.WithActorID(actorID), talosclient.WithTailEvents(-1)))
+	suite.Require().NoError(c.EventsWatchV2(nodeCtx, eventCh, eventOpts...))
 
 	waitTimer := time.NewTimer(5 * time.Minute)
 	defer waitTimer.Stop()
@@ -626,20 +692,20 @@ waitLoop:
 			switch msg := ev.Event.Payload.(type) {
 			case *machineapi.SequenceEvent:
 				if msg.Error != nil {
-					suite.FailNow("upgrade failed", "%s: %s", msg.Error.Message, msg.Error.Code)
+					suite.FailNow(actionName+" failed", "%s: %s", msg.Error.Message, msg.Error.Code)
 				}
 			case *machineapi.PhaseEvent:
-				if msg.Action == machineapi.PhaseEvent_START && msg.Phase == "kexec" {
+				if msg.Action == machineapi.PhaseEvent_START && (msg.Phase == "kexec" || msg.Phase == "stopEverything") {
 					// about to be rebooted
 					break waitLoop
 				}
 
 				if msg.Action == machineapi.PhaseEvent_STOP {
-					suite.T().Logf("upgrade phase %q finished", msg.Phase)
+					suite.T().Logf(actionName+" phase %q finished", msg.Phase)
 				}
 			}
 		case <-waitTimer.C:
-			suite.FailNow("timeout waiting for upgrade to finish")
+			suite.FailNow("timeout waiting for %s to finish", actionName)
 		case <-nodeCtx.Done():
 			suite.FailNow("context canceled")
 		}
@@ -653,7 +719,7 @@ func (suite *BaseSuite) waitForUpgrade(
 	nodeCtx context.Context,
 	c *talosclient.Client,
 	node provision.NodeInfo,
-	options upgradeOptions,
+	expectedVersion string,
 ) {
 	// wait for the apid to be shut down
 	time.Sleep(10 * time.Second)
@@ -672,12 +738,12 @@ func (suite *BaseSuite) waitForUpgrade(
 					return retry.ExpectedError(err)
 				}
 
-				if version != options.TargetVersion {
+				if version != expectedVersion {
 					// upgrade not finished yet
 					return retry.ExpectedErrorf(
 						"node %q version doesn't match expected: expected %q, got %q",
 						node.IPs[0].String(),
-						options.TargetVersion,
+						expectedVersion,
 						version,
 					)
 				}
