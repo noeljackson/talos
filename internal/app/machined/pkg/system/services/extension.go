@@ -270,9 +270,7 @@ func (svc *Extension) Runner(r runtime.Runtime) (runner.Runner, error) {
 		logToConsole = true
 	}
 
-	return restart.New(containerd.NewRunner(
-		logToConsole,
-		&args,
+	runnerOpts := []runner.Option{
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithNamespace(constants.SystemContainerdNamespace),
 		runner.WithContainerdAddress(constants.SystemContainerdAddress),
@@ -280,9 +278,27 @@ func (svc *Extension) Runner(r runtime.Runtime) (runner.Runner, error) {
 		runner.WithOCISpecOpts(ociSpecOpts...),
 		runner.WithCgroupPath(filepath.Join(constants.CgroupExtensions, svc.Spec.Name)),
 		runner.WithOOMScoreAdj(-600),
+	}
+
+	if label := extensionSELinuxLabel(svc.Spec.Container.Security); label != "" {
+		runnerOpts = append(runnerOpts, runner.WithSelinuxLabel(label))
+	}
+
+	return restart.New(containerd.NewRunner(
+		logToConsole,
+		&args,
+		runnerOpts...,
 	),
 		restart.WithType(restartType),
 	), nil
+}
+
+func extensionSELinuxLabel(security extservices.Security) string {
+	if security.WriteableSysfs {
+		return constants.SelinuxLabelWriteableSysfsSysContainer
+	}
+
+	return ""
 }
 
 // APIRestartAllowed implements APIRestartableService.

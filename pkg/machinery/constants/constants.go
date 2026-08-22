@@ -784,6 +784,9 @@ const (
 	// SelinuxLabelUnconfinedSysContainer is the SELinux label for system containers without label set (normally extensions).
 	SelinuxLabelUnconfinedSysContainer = "system_u:system_r:unconfined_container_t:s0"
 
+	// SelinuxLabelWriteableSysfsSysContainer is the SELinux label for extension services which explicitly request writeable sysfs.
+	SelinuxLabelWriteableSysfsSysContainer = "system_u:system_r:writeable_sysfs_container_t:s0"
+
 	// SelinuxLabelUnconfinedService is the SELinux label for process without label set (normally should not occur).
 	SelinuxLabelUnconfinedService = "system_u:system_r:unconfined_service_t:s0"
 
