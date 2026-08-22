@@ -30,6 +30,11 @@
 ; for the existing kubelet state type; do not grant relabel access to unlabeled
 ; or arbitrary types.
 (allow pod_containerd_t kubelet_state_t (filesystem (relabelfrom relabelto)))
+; The root-context check then validates that the selected inode type may be
+; associated with the selected superblock type. Both sides are exactly
+; kubelet_state_t for this context= mount; do not add kubelet_state_t to the
+; generic filesystem_f attribute.
+(allow kubelet_state_t self (filesystem (associate)))
 
 ; FIXME: insecure as anyone with access to the pod containerd may obtain this domain
 ; TODO: Secure kubelet launch labeling
