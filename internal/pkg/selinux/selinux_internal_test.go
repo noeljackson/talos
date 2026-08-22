@@ -66,6 +66,7 @@ func TestLookupFileContextForKataGuestBootArtifacts(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{
+		"/usr/local/share/kata-containers/kata-containers-confidential.img",
 		"/usr/local/share/kata-qemu-snp-experimental/qemu/bios-256k.bin",
 		"/usr/local/share/kata-qemu-snp-experimental/qemu/kvmvapic.bin",
 		"/usr/local/share/kata-qemu-snp-experimental/qemu/linuxboot_dma.bin",
@@ -354,6 +355,7 @@ func TestKataPodDomainsMayStartHostSandboxHelpers(t *testing.T) {
 	assert.Contains(t, string(policy), "(allow pod_t rootfs_t (dir (read open mounton)))")
 	assert.Contains(t, string(policy), "(allow pod_t pod_containerd_socket_t (sock_file (write unlink)))")
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers-coco-extension.img" file kata_guest_image_t)`)
+	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers-confidential.img" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinuz.container" file kata_guest_image_t)`)

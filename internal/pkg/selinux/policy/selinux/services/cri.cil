@@ -308,6 +308,7 @@
 (call system_f (kata_guest_image_t))
 (context kata_guest_image_t (system_u object_r kata_guest_image_t (systemLow systemLow)))
 (filecon "/usr/local/share/kata-containers/kata-containers-coco-extension.img" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-containers/kata-containers-confidential.img" file kata_guest_image_t)
 (filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)
 (filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)
 (filecon "/usr/local/share/kata-containers/vmlinuz.container" file kata_guest_image_t)
