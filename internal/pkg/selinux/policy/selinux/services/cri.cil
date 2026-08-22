@@ -79,11 +79,10 @@
 ; Shim socket
 (allow pod_containerd_t pod_containerd_socket_t (fs_classes (rw)))
 
-; CRI proxy snapshotters and storage helpers run as Talos extension services
-; in the default unconfined_container_t system-container domain. Their socket
-; inodes remain governed by the separately labeled /run filesystem objects;
-; allow only the Unix peer connection required after that path check passes.
-(allow pod_containerd_t unconfined_container_t (unix_stream_socket (connectto)))
+; CRI proxy snapshotters and storage helpers run as Talos extension services.
+; Their socket inodes remain governed by the separately labeled /run filesystem
+; objects; allow only the Unix peer connection required after that path check.
+(allow pod_containerd_t extension_service_p (unix_stream_socket (connectto)))
 
 ; System containers, not k8s pods
 
@@ -167,8 +166,8 @@
 ; domain write access to the shared var_lock_t tree.
 (allow pod_containerd_t iscsi_lock_t (dir (add_name getattr remove_name search write)))
 (allow pod_containerd_t iscsi_lock_t (file (create getattr link open read unlink write)))
-(allow unconfined_container_t iscsi_lock_t (dir (add_name getattr remove_name search write)))
-(allow unconfined_container_t iscsi_lock_t (file (create getattr link open read unlink write)))
+(allow extension_service_p iscsi_lock_t (dir (add_name getattr remove_name search write)))
+(allow extension_service_p iscsi_lock_t (file (create getattr link open read unlink write)))
 (type seccomp_profile_t)
 (call protected_f (seccomp_profile_t))
 (type kube_log_t)

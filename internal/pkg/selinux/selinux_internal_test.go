@@ -159,14 +159,14 @@ func TestCRIContainerdMayConnectToDefaultExtensionServices(t *testing.T) {
 	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
 	require.NoError(t, err)
 
-	// Talos runs extension services such as Nydus and iSCSI in the default
-	// unconfined_container_t domain. CRI clients still need the peer-domain
-	// connect check after the independently labeled socket path is authorized.
-	assert.Contains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (unix_stream_socket (connectto)))")
+	// Talos runs extension services in either the default or explicitly
+	// writeable-sysfs domain. CRI clients still need the peer-domain connect
+	// check after the independently labeled socket path is authorized.
+	assert.Contains(t, string(policy), "(allow pod_containerd_t extension_service_p (unix_stream_socket (connectto)))")
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t system_container_p (unix_stream_socket")
-	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (unix_stream_socket (all)))")
-	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (fs_classes")
-	assert.NotContains(t, string(policy), "(allow pod_containerd_t unconfined_container_t (process")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t extension_service_p (unix_stream_socket (all)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t extension_service_p (fs_classes")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t extension_service_p (process")
 }
 
 func TestISCSIControlPlaneHasDedicatedLockLifecycle(t *testing.T) {
@@ -182,13 +182,27 @@ func TestISCSIControlPlaneHasDedicatedLockLifecycle(t *testing.T) {
 	assert.Contains(t, string(policy), `(filecon "/run/lock/iscsi(/.*)?" any (system_u object_r iscsi_lock_t (systemLow systemLow)))`)
 	assert.Contains(t, string(policy), "(allow pod_containerd_t iscsi_lock_t (dir (add_name getattr remove_name search write)))")
 	assert.Contains(t, string(policy), "(allow pod_containerd_t iscsi_lock_t (file (create getattr link open read unlink write)))")
-	assert.Contains(t, string(policy), "(allow unconfined_container_t iscsi_lock_t (dir (add_name getattr remove_name search write)))")
-	assert.Contains(t, string(policy), "(allow unconfined_container_t iscsi_lock_t (file (create getattr link open read unlink write)))")
+	assert.Contains(t, string(policy), "(allow extension_service_p iscsi_lock_t (dir (add_name getattr remove_name search write)))")
+	assert.Contains(t, string(policy), "(allow extension_service_p iscsi_lock_t (file (create getattr link open read unlink write)))")
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t var_lock_t")
-	assert.NotContains(t, string(policy), "(allow unconfined_container_t var_lock_t")
+	assert.NotContains(t, string(policy), "(allow extension_service_p var_lock_t")
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t iscsi_lock_t (fs_classes")
-	assert.NotContains(t, string(policy), "(allow unconfined_container_t iscsi_lock_t (fs_classes")
+	assert.NotContains(t, string(policy), "(allow extension_service_p iscsi_lock_t (fs_classes")
 	assert.NotContains(t, string(policy), "(allow pod_p iscsi_lock_t")
+}
+
+func TestWriteableSysfsExtensionDomainIsOptIn(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/system-containerd.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(policy), "(type writeable_sysfs_container_t)")
+	assert.Contains(t, string(policy), "(typeattributeset extension_service_p unconfined_container_t)")
+	assert.Contains(t, string(policy), "(typeattributeset extension_service_p writeable_sysfs_container_t)")
+	assert.Contains(t, string(policy), "(allow writeable_sysfs_container_t sysfs_t (fs_classes (rw)))")
+	assert.NotContains(t, string(policy), "(allow unconfined_container_t sysfs_t (fs_classes (rw)))")
+	assert.NotContains(t, string(policy), "(allow extension_service_p sysfs_t (fs_classes (rw)))")
 }
 
 func TestCRIContainerdMayOpenItsNamedKataTAP(t *testing.T) {

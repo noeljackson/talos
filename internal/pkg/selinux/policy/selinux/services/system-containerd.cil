@@ -48,18 +48,6 @@
 (allow system_container_p sys_containerd_t (fd (use)))
 (allow system_container_p sys_containerd_t (fifo_file (append getattr ioctl map open read rename setattr watch write)))
 
-; Machined composes extension-service overlay rootfs mounts in init_t before
-; system containerd enters unconfined_container_t. File-backed mprotect checks
-; the overlay file descriptor's stashed creator credential, so extension
-; services need the same narrow fd-use edge as direct init_t children.
-(allow unconfined_container_t init_t (fd (use)))
-
-; Extension services opt into host state explicitly through their OCI bind
-; mounts. Permit the shared extension domain to use the writable /var and /run
-; surfaces once those paths are present in its mount namespace.
-(allow unconfined_container_t ephemeral_t (fs_classes (rw)))
-(allow unconfined_container_t run_t (fs_classes (rw)))
-
 (allow sys_containerd_t system_container_p (key (view read write search link setattr create)))
 
 ; Shim sockets
@@ -91,6 +79,32 @@
 ; Possibly a service misconfigured by machined
 (type unconfined_container_t)
 (call system_container_p (unconfined_container_t))
+
+; writeableSysfs is an explicit extension-service capability. Keep services
+; which request it in a separate process domain so ordinary extensions retain
+; the read-only sysfs policy even if their mount namespace is misconfigured.
+(type writeable_sysfs_container_t)
+(call system_container_p (writeable_sysfs_container_t))
+
+(typeattribute extension_service_p)
+(typeattributeset extension_service_p unconfined_container_t)
+(typeattributeset extension_service_p writeable_sysfs_container_t)
+
+; Machined composes extension-service overlay rootfs mounts in init_t before
+; system containerd enters the service domain. File-backed mprotect checks the
+; overlay file descriptor's stashed creator credential, so extension services
+; need the same narrow fd-use edge as direct init_t children.
+(allow extension_service_p init_t (fd (use)))
+
+; Extension services opt into host state explicitly through their OCI bind
+; mounts. Permit both extension domains to use the writable /var and /run
+; surfaces once those paths are present in their mount namespace.
+(allow extension_service_p ephemeral_t (fs_classes (rw)))
+(allow extension_service_p run_t (fs_classes (rw)))
+
+; Match the existing writeableSysfs OCI mount contract only for its dedicated
+; process domain. The default extension domain keeps the common read-only rule.
+(allow writeable_sysfs_container_t sysfs_t (fs_classes (rw)))
 
 ; Extension system containers execute binaries and map executable libraries
 ; from their immutable extension rootfs.
