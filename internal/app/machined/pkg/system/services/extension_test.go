@@ -20,8 +20,20 @@ import (
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services/mocks"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	extservices "github.com/siderolabs/talos/pkg/machinery/extensions/services"
 )
+
+func TestExtensionSELinuxLabel(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, services.ExtensionSELinuxLabel(extservices.Security{}))
+	assert.Equal(
+		t,
+		constants.SelinuxLabelWriteableSysfsSysContainer,
+		services.ExtensionSELinuxLabel(extservices.Security{WriteableSysfs: true}),
+	)
+}
 
 func TestEnsureExtensionRootfsMountpoints(t *testing.T) {
 	t.Run("creates implicit and declared mountpoints", func(t *testing.T) {

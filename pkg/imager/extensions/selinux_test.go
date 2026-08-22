@@ -348,9 +348,9 @@ func TestExtensionSystemContainerPolicyAllowsLabeledExecutablesAndLibraries(t *t
 
 	assert.Contains(t, policy, "(allow system_container_p bin_exec_t (file (entrypoint execute execute_no_trans)))")
 	assert.Contains(t, policy, "(allow system_container_p lib_t (file (execute)))")
-	assert.Contains(t, policy, "(allow unconfined_container_t init_t (fd (use)))")
-	assert.Contains(t, policy, "(allow unconfined_container_t ephemeral_t (fs_classes (rw)))")
-	assert.Contains(t, policy, "(allow unconfined_container_t run_t (fs_classes (rw)))")
+	assert.Contains(t, policy, "(allow extension_service_p init_t (fd (use)))")
+	assert.Contains(t, policy, "(allow extension_service_p ephemeral_t (fs_classes (rw)))")
+	assert.Contains(t, policy, "(allow extension_service_p run_t (fs_classes (rw)))")
 }
 
 func TestInitramfsOverlayCredentialCanCheckImmutableExecutables(t *testing.T) {

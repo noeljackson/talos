@@ -7,6 +7,8 @@ package services
 import (
 	"github.com/containerd/containerd/v2/pkg/oci"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+
+	extservices "github.com/siderolabs/talos/pkg/machinery/extensions/services"
 )
 
 // GetOCIOptions gets all OCI options from an Extension.
@@ -23,4 +25,9 @@ func (svc *Extension) GetOCIOptions() ([]oci.SpecOpts, error) {
 // contract to external tests.
 func EnsureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
 	return ensureExtensionRootfsMountpoints(rootfsPath, mounts)
+}
+
+// ExtensionSELinuxLabel exposes the extension security-to-domain mapping to external tests.
+func ExtensionSELinuxLabel(security extservices.Security) string {
+	return extensionSELinuxLabel(security)
 }
