@@ -236,6 +236,15 @@
 (allow pod_containerd_t any_p (file (getattr open read)))
 (allow pod_containerd_t any_p (lnk_file (getattr read)))
 
+; Longhorn V1's privileged instance manager also inherits pod_containerd_t.
+; After an iSCSI login it sets the SCSI command timeout through the dynamic
+; /sys/block/<device>/device/timeout path. The backing sysfs inode path varies
+; with each SCSI session and sysfs exposes it only as sysfs_t, so it cannot be
+; assigned a stable path-specific type. Permit only the observed write checks;
+; do not grant generic sysfs rw, creation, setattr, or relabel permissions.
+(allow pod_containerd_t sysfs_t (dir (write)))
+(allow pod_containerd_t sysfs_t (file (write)))
+
 ; node-exporter is not privileged, so keep its host-observer access out of the
 ; generic pod_t domain. The workload selects this type explicitly and receives
 ; only read-only access to Talos PID 1 process metadata and udev's block-device
