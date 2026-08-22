@@ -103,9 +103,9 @@ func TestPrivilegedCSIPluginMayMountWithKubeletStateContext(t *testing.T) {
 	policy, err := os.ReadFile("policy/selinux/services/kubelet.cil")
 	require.NoError(t, err)
 
-	assert.Contains(t, string(policy), "(allow pod_containerd_t kubelet_state_t (filesystem (relabelto)))")
+	assert.Contains(t, string(policy), "(allow pod_containerd_t kubelet_state_t (filesystem (relabelfrom relabelto)))")
 	assert.NotContains(t, string(policy), "(allow pod_containerd_t unlabeled_t")
-	assert.NotContains(t, string(policy), "(allow pod_containerd_t any_f (filesystem (relabelto)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t any_f (filesystem")
 }
 
 func TestCiliumDomainMayInstallCNIBinaries(t *testing.T) {

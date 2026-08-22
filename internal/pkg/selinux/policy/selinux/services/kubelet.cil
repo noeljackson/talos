@@ -24,9 +24,12 @@
 (allow init_t kubelet_state_t (fs_classes (rw)))
 (allow pod_containerd_t kubelet_state_t (fs_classes (rw)))
 ; Privileged CSI node plugins mount independent filesystems beneath kubelet's
-; state tree. Permit their context= mount to select only the existing kubelet
-; state type; do not grant relabel access to unlabeled or arbitrary types.
-(allow pod_containerd_t kubelet_state_t (filesystem (relabelto)))
+; state tree. A context= mount checks relabelfrom twice: first against the
+; filesystem's initial fs_t label and then against the selected superblock
+; label while applying the matching root context. Permit that round trip only
+; for the existing kubelet state type; do not grant relabel access to unlabeled
+; or arbitrary types.
+(allow pod_containerd_t kubelet_state_t (filesystem (relabelfrom relabelto)))
 
 ; FIXME: insecure as anyone with access to the pod containerd may obtain this domain
 ; TODO: Secure kubelet launch labeling
