@@ -97,6 +97,17 @@ func TestCiliumRuntimePolicyAllowsKubeletHostPathSetup(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow kubelet_t pod_containerd_run_t")
 }
 
+func TestPrivilegedCSIPluginMayMountWithKubeletStateContext(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/kubelet.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(policy), "(allow pod_containerd_t kubelet_state_t (filesystem (relabelto)))")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t unlabeled_t")
+	assert.NotContains(t, string(policy), "(allow pod_containerd_t any_f (filesystem (relabelto)))")
+}
+
 func TestCiliumDomainMayInstallCNIBinaries(t *testing.T) {
 	t.Parallel()
 
