@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -248,6 +249,30 @@ func TestHostAgentDomainsHaveBoundedReadOnlyIntrospection(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow pod_t udev_run_t")
 	assert.NotContains(t, string(policy), "(dontaudit pod_containerd_t any_p")
 	assert.NotContains(t, string(policy), "(dontaudit node_exporter_t")
+}
+
+func TestPrivilegedLonghornV1HasBoundedScsiTimeoutAccess(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+
+	// containerd clears explicit labels for privileged CRI containers, so the
+	// Longhorn V1 instance manager inherits pod_containerd_t when it writes the
+	// SCSI command timeout. Keep this to the two observed sysfs write checks.
+	var sysfsRules []string
+
+	for line := range strings.Lines(string(policy)) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "(allow pod_containerd_t sysfs_t ") {
+			sysfsRules = append(sysfsRules, line)
+		}
+	}
+
+	assert.Equal(t, []string{
+		"(allow pod_containerd_t sysfs_t (dir (write)))",
+		"(allow pod_containerd_t sysfs_t (file (write)))",
+	}, sysfsRules)
 }
 
 func TestFalcoDomainHasBoundedLeastPrivilegedHostObserverAccess(t *testing.T) {
