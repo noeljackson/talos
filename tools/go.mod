@@ -2,7 +2,7 @@ module github.com/siderolabs/talos/tools
 
 // upgrading all tools: go get tool
 
-go 1.26.0
+go 1.26.6
 
 tool (
 	github.com/aarzilli/whydeadcode
@@ -19,6 +19,7 @@ tool (
 	github.com/siderolabs/talos/tools/docgen
 	github.com/siderolabs/talos/tools/gotagsrewrite
 	github.com/siderolabs/talos/tools/labeled-squashfs
+	github.com/siderolabs/talos/tools/redactgen
 	github.com/siderolabs/talos/tools/structprotogen
 	golang.org/x/tools/cmd/goimports
 	golang.org/x/tools/cmd/stringer
@@ -34,6 +35,7 @@ replace (
 	github.com/siderolabs/talos/tools/docgen => ./docgen
 	github.com/siderolabs/talos/tools/gotagsrewrite => ./gotagsrewrite
 	github.com/siderolabs/talos/tools/labeled-squashfs => ./labeled-squashfs
+	github.com/siderolabs/talos/tools/redactgen => ./redactgen
 	github.com/siderolabs/talos/tools/structprotogen => ./structprotogen
 )
 
@@ -472,6 +474,7 @@ require (
 	github.com/siderolabs/talos/tools/docgen v0.0.0-20260414160823-e3e8f01ca66e // indirect
 	github.com/siderolabs/talos/tools/gotagsrewrite v0.0.0-20260414160823-e3e8f01ca66e // indirect
 	github.com/siderolabs/talos/tools/labeled-squashfs v0.0.0-00010101000000-000000000000 // indirect
+	github.com/siderolabs/talos/tools/redactgen v0.0.0-20260414160823-e3e8f01ca66e // indirect
 	github.com/siderolabs/talos/tools/structprotogen v0.0.0-20260414160823-e3e8f01ca66e // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/sivchari/containedctx v1.0.3 // indirect
@@ -551,19 +554,19 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.4 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
-	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260218203240-3dfff04db8fa // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/mod v0.40.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260409153401-be6f6cb8b1fa // indirect
-	golang.org/x/term v0.42.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
+	golang.org/x/term v0.45.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
 	golang.org/x/vuln v1.2.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
