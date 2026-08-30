@@ -67,6 +67,7 @@ func TestLookupFileContextForKataGuestBootArtifacts(t *testing.T) {
 
 	for _, path := range []string{
 		"/usr/local/share/kata-containers/kata-containers-confidential.img",
+		"/usr/local/share/kata-containers/vmlinuz-7.2.2-202",
 		"/usr/local/share/kata-qemu-snp-experimental/qemu/bios-256k.bin",
 		"/usr/local/share/kata-qemu-snp-experimental/qemu/kvmvapic.bin",
 		"/usr/local/share/kata-qemu-snp-experimental/qemu/linuxboot_dma.bin",
@@ -82,10 +83,16 @@ func TestLookupFileContextForKataGuestBootArtifacts(t *testing.T) {
 		})
 	}
 
-	context, ok, err := LookupFileContext("/usr/local/share/unrelated/host-data", 0)
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, "system_u:object_r:usr_t:s0", context)
+	for _, path := range []string{
+		"/usr/local/share/unrelated/host-data",
+		"/usr/local/share/kata-containers/vmlinuz-latest",
+		"/usr/local/share/kata-containers/vmlinuz-7.2.2-202.backup",
+	} {
+		context, ok, err := LookupFileContext(path, 0)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "system_u:object_r:usr_t:s0", context)
+	}
 }
 
 func TestCiliumRuntimePolicyAllowsKubeletHostPathSetup(t *testing.T) {
@@ -359,6 +366,7 @@ func TestKataPodDomainsMayStartHostSandboxHelpers(t *testing.T) {
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinuz.container" file kata_guest_image_t)`)
+	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-containers/vmlinuz-[0-9]+([.][0-9]+)*-[0-9]+" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/kata-qemu-snp-experimental/qemu/.*" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), `(filecon "/usr/local/share/ovmf/AMDSEV.fd" file kata_guest_image_t)`)
 	assert.Contains(t, string(policy), "(allow pod_t kata_guest_image_t (file (read open lock)))")
