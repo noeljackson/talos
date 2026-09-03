@@ -5,6 +5,7 @@ umask 077
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
+identity_file="${script_dir}/runtime-identity.json"
 registry_root="ghcr.io/noeljackson"
 components=(installer-base imager)
 temporary_dir=""
@@ -54,12 +55,60 @@ require_publication_context() {
 }
 
 load_identity() {
+	local identity machinery_version resolved_revision
+	local -a machinery_versions
+
 	revision="$(git -C "${repo_root}" rev-parse HEAD)"
-	version="$(git -C "${repo_root}" describe --tag --always --match 'v[0-9]*')"
 	source_epoch="$(git -C "${repo_root}" show -s --format=%ct HEAD)"
 	[[ "${revision}" =~ ^[0-9a-f]{40}$ ]] || die "source revision is not a full commit"
+	[[ -f "${identity_file}" ]] || die "pinned runtime identity is missing"
+	identity="$(jq -er '
+		if type == "object" and
+		   keys == ["commitAbbreviationLength", "release", "releaseCommit", "schema", "upstreamRepository"] and
+		   .schema == "codewire.talos-runtime-source-identity/v1" and
+		   .upstreamRepository == "https://github.com/siderolabs/talos" and
+		   (.release | type == "string") and
+		   (.releaseCommit | type == "string") and
+		   (.commitAbbreviationLength | type == "number" and floor == .)
+		then [.upstreamRepository, .release, .releaseCommit, (.commitAbbreviationLength | tostring)] | @tsv
+		else error("invalid runtime identity")
+		end
+	' "${identity_file}")" || die "pinned runtime identity is invalid"
+	IFS=$'\t' read -r upstream_repository release release_commit abbreviation_length <<<"${identity}"
+	[[ "${release}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]] \
+		|| die "pinned Talos release is invalid"
+	[[ "${release_commit}" =~ ^[0-9a-f]{40}$ ]] \
+		|| die "pinned Talos release commit is invalid"
+	[[ "${abbreviation_length}" =~ ^[0-9]+$ && "${abbreviation_length}" -ge 9 && "${abbreviation_length}" -le 40 ]] \
+		|| die "pinned commit abbreviation length is invalid"
+	git -C "${repo_root}" cat-file -e "${release_commit}^{commit}" 2>/dev/null \
+		|| die "pinned Talos release commit is unavailable"
+	git -C "${repo_root}" merge-base --is-ancestor "${release_commit}" "${revision}" \
+		|| die "pinned Talos release commit is not an ancestor of the deployment revision"
+
+	mapfile -t machinery_versions < <(
+		awk '
+			$1 == "github.com/siderolabs/talos/pkg/machinery" && $2 ~ /^v[0-9]+[.][0-9]+[.][0-9]+$/ { print $2 }
+			$1 == "require" && $2 == "github.com/siderolabs/talos/pkg/machinery" && $3 ~ /^v[0-9]+[.][0-9]+[.][0-9]+$/ { print $3 }
+		' \
+			"${repo_root}/go.mod"
+	)
+	[[ "${#machinery_versions[@]}" -eq 1 ]] \
+		|| die "go.mod does not contain exactly one Talos machinery release"
+	machinery_version=${machinery_versions[0]}
+	[[ "${machinery_version}" == "${release}" ]] \
+		|| die "pinned Talos release does not match the machinery module version"
+
+	revision_distance="$(git -C "${repo_root}" rev-list --count "${release_commit}..${revision}")"
+	[[ "${revision_distance}" =~ ^[0-9]+$ ]] || die "deployment revision distance is invalid"
+	revision_abbreviation=${revision:0:abbreviation_length}
+	resolved_revision="$(git -C "${repo_root}" rev-parse --verify "${revision_abbreviation}^{commit}" 2>/dev/null)" \
+		|| die "deployment revision abbreviation is ambiguous"
+	[[ "${resolved_revision}" == "${revision}" ]] \
+		|| die "deployment revision abbreviation resolves to a different commit"
+	version="${release}-${revision_distance}-g${revision_abbreviation}"
 	[[ "${version}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+-[0-9]+-g[0-9a-f]{7,40}$ ]] \
-		|| die "deployment version is not an immutable git-describe version"
+		|| die "deployment version is not an immutable pinned-release version"
 	[[ "${source_epoch}" =~ ^[0-9]+$ ]] || die "source epoch is invalid"
 }
 
@@ -209,6 +258,11 @@ publish_archives() {
 		--arg revision "${revision}" \
 		--arg version "${version}" \
 		--arg deployment_revision "${GITHUB_SHA}" \
+		--arg upstream_repository "${upstream_repository}" \
+		--arg release "${release}" \
+		--arg release_commit "${release_commit}" \
+		--arg revision_distance "${revision_distance}" \
+		--arg revision_abbreviation "${revision_abbreviation}" \
 		--arg imager_reference "$(reference_for imager)" \
 		--arg imager_digest "${digests[imager]}" \
 		--arg imager_manifest "${manifests[imager]}" \
@@ -222,6 +276,10 @@ publish_archives() {
 		{schema:"codewire.talos-runtime-helpers.publication/v1",
 		 platform:"linux/amd64", sourceRevision:$revision,
 		 sourceVersion:$version, deploymentRevision:$deployment_revision,
+		 sourceIdentity:{upstreamRepository:$upstream_repository,
+		                 release:$release, releaseCommit:$release_commit,
+		                 revisionDistance:($revision_distance | tonumber),
+		                 revisionAbbreviation:$revision_abbreviation},
 		 images:{
 		   imager:{reference:$imager_reference, digest:$imager_digest,
 		           platformManifest:$imager_manifest,
@@ -247,7 +305,7 @@ command=${1:-}
 case "${command}" in
 	preflight)
 		[[ $# -eq 1 ]] || die "preflight takes no arguments"
-		require_command git
+		for tool in awk git jq; do require_command "${tool}"; done
 		require_publication_context
 		load_identity
 		printf 'authorized immutable linux/amd64 helper build: version=%s revision=%s\n' \
@@ -255,7 +313,7 @@ case "${command}" in
 		;;
 	build)
 		[[ $# -eq 2 ]] || die "build requires OUTPUT_DIR"
-		for tool in git jq make sha256sum skopeo; do require_command "${tool}"; done
+		for tool in awk git jq make sha256sum skopeo; do require_command "${tool}"; done
 		require_publication_context
 		load_identity
 		output_dir=$2
@@ -270,7 +328,7 @@ case "${command}" in
 		;;
 	publish)
 		[[ $# -eq 3 ]] || die "publish requires OUTPUT_DIR RECEIPT"
-		for tool in git jq sha256sum skopeo; do require_command "${tool}"; done
+		for tool in awk git jq sha256sum skopeo; do require_command "${tool}"; done
 		require_publication_context
 		load_identity
 		publish_archives "$2" "$3"
