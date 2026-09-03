@@ -13,7 +13,7 @@ import (
 
 const (
 	// DefaultKernelVersion is the default Linux kernel version.
-	DefaultKernelVersion = "6.18.44-talos"
+	DefaultKernelVersion = "6.18.48-talos"
 
 	// KernelParamConfig is the kernel parameter name for specifying the URL.
 	// to the config.
@@ -400,7 +400,7 @@ const (
 
 	// DefaultCoreDNSVersion is the default version for the CoreDNS.
 	// renovate: datasource=docker depName=registry.k8s.io/coredns/coredns
-	DefaultCoreDNSVersion = "v1.14.6"
+	DefaultCoreDNSVersion = "v1.14.7"
 
 	// LabelNodeRoleControlPlane is the node label required by a control plane node.
 	LabelNodeRoleControlPlane = "node-role.kubernetes.io/control-plane"
@@ -434,7 +434,7 @@ const (
 
 	// DefaultEtcdVersion is the default target version of etcd.
 	// renovate: datasource=docker depName=registry.k8s.io/etcd
-	DefaultEtcdVersion = "v3.6.12"
+	DefaultEtcdVersion = "v3.6.14"
 
 	// EtcdRootTalosKey is the root etcd key for Talos-specific storage.
 	EtcdRootTalosKey = "talos:v1"
@@ -1128,7 +1128,7 @@ const (
 	DBusClientSocketLabel = "system_u:object_r:dbus_client_socket_t:s0"
 
 	// GoVersion is the version of Go compiler this release was built with.
-	GoVersion = "go1.26.6"
+	GoVersion = "go1.26.7"
 
 	// KubernetesTalosAPIServiceName is the name of the Kubernetes service to access Talos API.
 	KubernetesTalosAPIServiceName = "talos"

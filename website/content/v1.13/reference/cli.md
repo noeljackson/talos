@@ -134,7 +134,7 @@ talosctl cluster create dev [flags]
       --bad-rtc                                  launch VM with bad RTC state
       --cidr string                              CIDR of the cluster network (IPv4, ULA network for IPv6 is derived in automated way) (default "10.5.0.0/24")
       --cni-bin-path strings                     search path for CNI binaries (default [/home/user/.talos/cni/bin])
-      --cni-bundle-url string                    URL to download CNI bundle from (default "https://github.com/siderolabs/talos/releases/download/v1.13.9/talosctl-cni-bundle-${ARCH}.tar.gz")
+      --cni-bundle-url string                    URL to download CNI bundle from (default "https://github.com/siderolabs/talos/releases/download/v1.13.10/talosctl-cni-bundle-${ARCH}.tar.gz")
       --cni-cache-dir string                     CNI cache directory path (default "/home/user/.talos/cni/cache")
       --cni-conf-dir string                      CNI config directory path (default "/home/user/.talos/cni/conf.d")
       --config-injection-method string           a method to inject machine config: default is HTTP server, 'metal-iso' to mount an ISO
@@ -349,7 +349,7 @@ talosctl cluster create dev [flags]
       --bad-rtc                                  launch VM with bad RTC state
       --cidr string                              CIDR of the cluster network (IPv4, ULA network for IPv6 is derived in automated way) (default "10.5.0.0/24")
       --cni-bin-path strings                     search path for CNI binaries (default [/home/user/.talos/cni/bin])
-      --cni-bundle-url string                    URL to download CNI bundle from (default "https://github.com/siderolabs/talos/releases/download/v1.13.9/talosctl-cni-bundle-${ARCH}.tar.gz")
+      --cni-bundle-url string                    URL to download CNI bundle from (default "https://github.com/siderolabs/talos/releases/download/v1.13.10/talosctl-cni-bundle-${ARCH}.tar.gz")
       --cni-cache-dir string                     CNI cache directory path (default "/home/user/.talos/cni/cache")
       --cni-conf-dir string                      CNI config directory path (default "/home/user/.talos/cni/conf.d")
       --config-injection-method string           a method to inject machine config: default is HTTP server, 'metal-iso' to mount an ISO
@@ -2369,8 +2369,8 @@ talosctl image k8s-bundle [flags]
 ### Options
 
 ```
-      --coredns-version semver                 CoreDNS semantic version (default v1.14.6)
-      --etcd-version semver                    ETCD semantic version (default v3.6.12)
+      --coredns-version semver                 CoreDNS semantic version (default v1.14.7)
+      --etcd-version semver                    ETCD semantic version (default v3.6.14)
       --flannel-version semver                 Flannel CNI semantic version (default 0.28.8)
   -h, --help                                   help for k8s-bundle
       --k8s-version semver                     Kubernetes semantic version (default v1.36.3)
@@ -3454,7 +3454,7 @@ talosctl upgrade [flags]
       --drain-timeout duration     timeout for draining the Kubernetes node (default 5m0s)
   -e, --endpoints strings          override default endpoints in Talos configuration
   -h, --help                       help for upgrade
-  -i, --image string               the container image to use for performing the install (default "ghcr.io/siderolabs/installer:v1.13.9")
+  -i, --image string               the container image to use for performing the install (default "ghcr.io/siderolabs/installer:v1.13.10")
       --legacy                     force use of legacy upgrade method
       --namespace string           namespace to use: "system" (etcd and kubelet images), "cri" for all Kubernetes workloads, "inmem" for in-memory containerd instance (default "system")
       --no-reboot                  do not reboot the node after upgrade (skip reboot and drain)
