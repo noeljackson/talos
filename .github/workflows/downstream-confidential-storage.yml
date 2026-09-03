@@ -1,0 +1,110 @@
+name: Build and publish Codewire Talos runtime helpers
+
+on:
+  pull_request:
+    branches:
+      - downstream/confidential-storage
+  push:
+    branches:
+      - downstream/confidential-storage
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden the runner (audit outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - name: Check out the exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install contract tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+      - name: Verify the deployment publication contract
+        run: ./hack/codewire-confidential-storage/test-publication-contract.sh
+      - name: Check deployment shell programs
+        run: shellcheck hack/codewire-confidential-storage/*.sh
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/downstream/confidential-storage' && github.repository == 'noeljackson/talos'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      OUTPUT_ROOT: _out/codewire-confidential-storage
+    steps:
+      - name: Harden the runner (audit outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - name: Check out the exact deployment commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject an unauthorized publication context
+        run: ./hack/codewire-confidential-storage/publish-runtime-helpers.sh preflight
+      - name: Install exact-build and publication tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq make skopeo
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Record runner capacity
+        run: |
+          nproc
+          free -h
+          df -h "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}"
+      - name: Build both exact linux/amd64 helper archives
+        run: |
+          ./hack/codewire-confidential-storage/publish-runtime-helpers.sh \
+            build "${OUTPUT_ROOT}"
+      - name: Log in to GHCR for immutable copies
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish and verify both immutable helper indexes
+        id: publication
+        run: |
+          ./hack/codewire-confidential-storage/publish-runtime-helpers.sh \
+            publish "${OUTPUT_ROOT}" "${OUTPUT_ROOT}/publication.json"
+      - name: Add deployment provenance for imager
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publication.outputs.imager_image }}
+          subject-digest: ${{ steps.publication.outputs.imager_digest }}
+          push-to-registry: true
+      - name: Add deployment provenance for installer-base
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publication.outputs.installer_base_image }}
+          subject-digest: ${{ steps.publication.outputs.installer_base_digest }}
+          push-to-registry: true
+      - name: Preserve the non-secret publication receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: talos-runtime-helpers-${{ github.sha }}
+          path: _out/codewire-confidential-storage/publication.json
+          if-no-files-found: error
+          retention-days: 90
