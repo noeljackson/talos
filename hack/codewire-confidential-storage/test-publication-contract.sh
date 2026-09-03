@@ -77,11 +77,14 @@ verify_publisher() {
 	require_text "${publisher}" 'INSTALLER_ARCH=targetarch' 'target-only Talos assets'
 	require_text "${publisher}" '"SHA=${revision}"' 'full source revision input'
 	require_text "${publisher}" '"TAG=${version}"' 'commit-derived version input'
+	require_text "${publisher}" 'rewrite-timestamp=true' 'repeatable OCI export timestamps'
 	require_text "${publisher}" '--provenance=mode=max --sbom=true' 'embedded supply-chain attestations'
 	require_text "${publisher}" 'Inspect every local archive and every existing tag before writing either tag.' \
 		'build-both publication ordering'
-	require_text "${publisher}" 'immutable ${component} tag already exists with a different digest' \
-		'immutable collision rejection'
+	require_text "${publisher}" 'immutable ${component} tag already exists with a different platform manifest' \
+		'immutable payload collision rejection'
+	require_text "${publisher}" 'buildIndexDigest:$imager_build_index_digest' \
+		'rebuilt index receipt'
 	require_text "${publisher}" 'skopeo copy --all --format oci' 'all-manifest registry copy'
 	require_text "${publisher}" 'sourceIdentity:{upstreamRepository:$upstream_repository' \
 		'pinned source identity receipt'
@@ -197,10 +200,173 @@ EOF
 	[[ "${unrelated_head}" != "${fixture_head}" ]]
 }
 
+verify_existing_index_retry() {
+	local retry_repo retry_bin retry_release retry_head retry_abbreviation retry_version
+	local output_dir receipt copy_log mismatch_log
+	local installer_platform imager_platform
+
+	retry_repo="${test_root}/retry-fixture"
+	retry_bin="${test_root}/retry-bin"
+	output_dir="${retry_repo}/_out/retry"
+	receipt="${output_dir}/publication.json"
+	copy_log="${test_root}/retry-copy.log"
+	mismatch_log="${test_root}/retry-mismatch.stderr"
+	installer_platform='sha256:1111111111111111111111111111111111111111111111111111111111111111'
+	imager_platform='sha256:2222222222222222222222222222222222222222222222222222222222222222'
+
+	mkdir -p "${retry_repo}" "${retry_bin}"
+	git -C "${retry_repo}" init -q --initial-branch=main
+	git -C "${retry_repo}" config user.name 'Codewire Retry Contract Test'
+	git -C "${retry_repo}" config user.email 'codewire-retry-contract@example.invalid'
+	cat >"${retry_repo}/go.mod" <<'EOF'
+module github.com/siderolabs/talos
+
+go 1.25.0
+
+require github.com/siderolabs/talos/pkg/machinery v1.13.10
+EOF
+	git -C "${retry_repo}" add go.mod
+	git -C "${retry_repo}" commit -q -m 'fixture: upstream release'
+	retry_release="$(git -C "${retry_repo}" rev-parse HEAD)"
+
+	mkdir -p "${retry_repo}/hack/codewire-confidential-storage"
+	cp "${publisher}" "${retry_repo}/hack/codewire-confidential-storage/publish-runtime-helpers.sh"
+	jq -n --arg release_commit "${retry_release}" '{
+		schema: "codewire.talos-runtime-source-identity/v1",
+		upstreamRepository: "https://github.com/siderolabs/talos",
+		release: "v1.13.10",
+		releaseCommit: $release_commit,
+		commitAbbreviationLength: 9
+	}' >"${retry_repo}/hack/codewire-confidential-storage/runtime-identity.json"
+	git -C "${retry_repo}" add hack
+	git -C "${retry_repo}" commit -q -m 'fixture: deployment overlay'
+	retry_head="$(git -C "${retry_repo}" rev-parse HEAD)"
+	retry_abbreviation=${retry_head:0:9}
+	retry_version="v1.13.10-1-g${retry_abbreviation}"
+
+	mkdir -p "${output_dir}"
+	printf 'installer-base archive fixture\n' >"${output_dir}/installer-base.oci.tar"
+	printf 'imager archive fixture\n' >"${output_dir}/imager.oci.tar"
+	: >"${copy_log}"
+
+	cat >"${retry_bin}/skopeo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" == copy ]]; then
+	printf '%s\n' "$*" >>"${TEST_COPY_LOG}"
+	exit 0
+fi
+
+[[ "$1" == inspect ]] || exit 2
+source_ref=${!#}
+case "${source_ref}" in
+	*installer-base*)
+		component=installer-base
+		platform='sha256:1111111111111111111111111111111111111111111111111111111111111111'
+		local_attestation='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+		registry_attestation='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+		;;
+	*imager*)
+		component=imager
+		platform='sha256:2222222222222222222222222222222222222222222222222222222222222222'
+		local_attestation='sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+		registry_attestation='sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+		;;
+	*) exit 2 ;;
+esac
+
+if [[ " $* " == *' --config '* ]]; then
+	jq -n \
+		--arg revision "${TEST_REVISION}" \
+		--arg version "${TEST_VERSION}" \
+		'{architecture:"amd64", os:"linux", config:{Labels:{
+		  "org.opencontainers.image.source":"https://github.com/noeljackson/talos",
+		  "org.opencontainers.image.revision":$revision,
+		  "org.opencontainers.image.version":$version,
+		  "alpha.talos.dev/version":$version
+		}}}'
+	exit 0
+fi
+
+[[ " $* " == *' --raw '* ]] || exit 2
+attestation=${local_attestation}
+if [[ "${source_ref}" == docker://* ]]; then
+	attestation=${registry_attestation}
+	if [[ "${TEST_RETRY_MISMATCH:-}" == "${component}" ]]; then
+		platform='sha256:9999999999999999999999999999999999999999999999999999999999999999'
+	fi
+fi
+jq -n --arg platform "${platform}" --arg attestation "${attestation}" '{
+	mediaType:"application/vnd.oci.image.index.v1+json",
+	manifests:[
+	  {mediaType:"application/vnd.oci.image.manifest.v1+json", digest:$platform,
+	   platform:{architecture:"amd64", os:"linux"}},
+	  {mediaType:"application/vnd.oci.image.manifest.v1+json", digest:$attestation,
+	   platform:{architecture:"unknown", os:"unknown"}, annotations:{
+	     "vnd.docker.reference.type":"attestation-manifest",
+	     "vnd.docker.reference.digest":$platform
+	   }}
+	]
+}'
+EOF
+	chmod +x "${retry_bin}/skopeo"
+
+	env \
+		PATH="${retry_bin}:${PATH}" \
+		TEST_COPY_LOG="${copy_log}" \
+		TEST_REVISION="${retry_head}" \
+		TEST_VERSION="${retry_version}" \
+		GITHUB_ACTIONS=true \
+		GITHUB_EVENT_NAME=push \
+		GITHUB_REF=refs/heads/downstream/confidential-storage \
+		GITHUB_REPOSITORY=noeljackson/talos \
+		GITHUB_SHA="${retry_head}" \
+		GITHUB_OUTPUT="${test_root}/retry-github-output" \
+		"${retry_repo}/hack/codewire-confidential-storage/publish-runtime-helpers.sh" \
+		publish "${output_dir}" "${receipt}"
+
+	[[ ! -s "${copy_log}" ]]
+	jq -e \
+		--arg installer_platform "${installer_platform}" \
+		--arg imager_platform "${imager_platform}" '
+		.schema == "codewire.talos-runtime-helpers.publication/v1" and
+		.images["installer-base"].state == "reused" and
+		.images.imager.state == "reused" and
+		.images["installer-base"].platformManifest == $installer_platform and
+		.images.imager.platformManifest == $imager_platform and
+		.images["installer-base"].digest != .images["installer-base"].buildIndexDigest and
+		.images.imager.digest != .images.imager.buildIndexDigest
+	' "${receipt}" >/dev/null
+
+	if env \
+		PATH="${retry_bin}:${PATH}" \
+		TEST_COPY_LOG="${copy_log}" \
+		TEST_RETRY_MISMATCH=installer-base \
+		TEST_REVISION="${retry_head}" \
+		TEST_VERSION="${retry_version}" \
+		GITHUB_ACTIONS=true \
+		GITHUB_EVENT_NAME=push \
+		GITHUB_REF=refs/heads/downstream/confidential-storage \
+		GITHUB_REPOSITORY=noeljackson/talos \
+		GITHUB_SHA="${retry_head}" \
+		GITHUB_OUTPUT="${test_root}/mismatch-github-output" \
+		"${retry_repo}/hack/codewire-confidential-storage/publish-runtime-helpers.sh" \
+		publish "${output_dir}" "${output_dir}/mismatch-publication.json" \
+		>"${test_root}/retry-mismatch.stdout" 2>"${mismatch_log}"; then
+		printf 'mismatched immutable payload unexpectedly passed retry admission\n' >&2
+		exit 1
+	fi
+	grep -Fq 'immutable installer-base tag already exists with a different platform manifest' \
+		"${mismatch_log}"
+	[[ ! -s "${copy_log}" ]]
+}
+
 verify_workflow "${workflow}"
 verify_publisher
 verify_identity
 verify_tag_independent_version
+verify_existing_index_retry
 
 sed 's/downstream\/confidential-storage/main/g' "${workflow}" >"${test_root}/candidate.yml"
 if verify_workflow "${test_root}/candidate.yml" >/dev/null 2>&1; then
