@@ -1174,8 +1174,16 @@ COPY --link --exclude=**/*.a --exclude=**/*.la  --exclude=usr/include --exclude=
 COPY --chmod=0644 hack/extra-modules.conf /etc/modules.d/10-extra-modules.conf
 COPY --from=install-artifacts / /
 
+# Normalize after assembling every source so cached and fresh builds export
+# identical filesystem metadata.
+FROM tools AS imager-image-normalized
+COPY --from=imager-image / /rootfs/
+ARG SOURCE_DATE_EPOCH
+RUN find /rootfs -print0 \
+    | xargs -0r touch --no-dereference --date="@${SOURCE_DATE_EPOCH}"
+
 FROM scratch AS imager-image-squashed
-COPY --from=imager-image / /
+COPY --from=imager-image-normalized /rootfs/ /
 
 FROM imager-image-squashed AS imager
 ARG TAG

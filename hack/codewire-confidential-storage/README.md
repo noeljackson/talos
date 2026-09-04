@@ -25,14 +25,17 @@ fork happens to contain. Both images carry the full deployment commit in
 `org.opencontainers.image.revision`, the same derived version in the Talos and
 OCI version labels, BuildKit SBOM and provenance attestations, and a GitHub
 deployment attestation. The workflow builds and verifies both OCI archives
-before it writes either tag. The OCI exporter rewrites payload timestamps to
-the exact deployment commit epoch so a same-head retry produces the same
-`linux/amd64` platform manifest. BuildKit's embedded provenance intentionally
-records each build invocation and can therefore change the top-level index. A
-retry preserves an existing index only when that exact platform manifest,
-two-descriptor image/attestation topology, and source labels match; it records
-both the retained registry digest and rebuilt index digest in the receipt. Any
-payload-manifest difference fails closed before either tag is written.
+before it writes either tag. Buildx and the BuildKit image index are pinned,
+and the OCI exporter rewrites payload timestamps to the exact deployment
+commit epoch. The build gate also opens the final imager layer and requires
+every tar entry to carry that exact epoch, preventing an older cached layer
+from surviving the export rewrite. BuildKit's embedded provenance
+intentionally records each build invocation and can therefore change the
+top-level index. A retry preserves an existing index only when that exact
+platform manifest, two-descriptor image/attestation topology, and source
+labels match; it records both the retained registry digest and rebuilt index
+digest in the receipt. Any payload-manifest or imager timestamp difference
+fails closed before either tag is written.
 
 Infra consumes only the resulting digest-pinned references. Future source
 maintenance follows the two-branch procedure documented in Codewire at

@@ -145,6 +145,9 @@ inspect_archive() {
 		.config.Labels["org.opencontainers.image.version"] == $version and
 		.config.Labels["alpha.talos.dev/version"] == $version
 	' "${config_file}" >/dev/null || die "${component} archive platform or source labels drifted"
+	if [[ "${component}" == "imager" ]]; then
+		verify_imager_archive_timestamps "${archive}" "${platform_manifest}" "${work_dir}"
+	fi
 	printf '%s\t%s\n' "${digest}" "${platform_manifest}"
 }
 
@@ -172,6 +175,49 @@ index_platform_manifest() {
 			end
 		end
 	' "${raw_file}"
+}
+
+verify_imager_archive_timestamps() {
+	local archive=$1 platform_manifest=$2 work_dir=$3
+	local platform_file layer_digest expected_date expected_time counts
+	local entry_count mismatch_count
+	platform_file="${work_dir}/imager.archive.platform.json"
+	[[ "${platform_manifest}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+		|| die "imager platform manifest digest is invalid"
+	tar -xOf "${archive}" "blobs/sha256/${platform_manifest#sha256:}" >"${platform_file}" \
+		|| die "could not extract the imager platform manifest"
+	layer_digest="$(jq -er --arg source_epoch "${source_epoch}" '
+		if .schemaVersion == 2 and
+		   .mediaType == "application/vnd.oci.image.manifest.v1+json" and
+		   (.layers | length) == 1 and
+		   .layers[0].mediaType == "application/vnd.oci.image.layer.v1.tar+gzip" and
+		   .layers[0].annotations["buildkit/rewritten-timestamp"] == $source_epoch and
+		   (.layers[0].digest | test("^sha256:[0-9a-f]{64}$"))
+		then .layers[0].digest
+		else error("unexpected imager layer topology or source epoch")
+		end
+	' "${platform_file}")" || die "imager archive layer contract is invalid"
+	read -r expected_date expected_time \
+		<<<"$(date --utc --date="@${source_epoch}" '+%F %T')"
+	counts="$(
+		tar -xOf "${archive}" "blobs/sha256/${layer_digest#sha256:}" \
+			| gzip -dc \
+			| LC_ALL=C tar --utc --full-time --numeric-owner -tvf - \
+			| LC_ALL=C awk \
+				-v expected_date="${expected_date}" \
+				-v expected_time="${expected_time}" '
+					{ total++ }
+					$4 != expected_date || $5 != expected_time { mismatches++ }
+					END { printf "%d\t%d\n", total, mismatches + 0 }
+				'
+	)" || die "could not inspect imager layer timestamps"
+	IFS=$'\t' read -r entry_count mismatch_count <<<"${counts}"
+	[[ "${entry_count}" =~ ^[0-9]+$ && "${entry_count}" -gt 0 ]] \
+		|| die "imager archive contains no layer entries"
+	[[ "${mismatch_count}" == "0" ]] \
+		|| die "imager archive contains ${mismatch_count} entry timestamps that do not equal source epoch ${source_epoch}"
+	printf 'verified imager layer timestamps: entries=%s source_epoch=%s\n' \
+		"${entry_count}" "${source_epoch}" >&2
 }
 
 verify_registry_copy() {
@@ -339,7 +385,7 @@ case "${command}" in
 		;;
 	build)
 		[[ $# -eq 2 ]] || die "build requires OUTPUT_DIR"
-		for tool in awk git jq make sha256sum skopeo; do require_command "${tool}"; done
+		for tool in awk date git gzip jq make sha256sum skopeo tar; do require_command "${tool}"; done
 		require_publication_context
 		load_identity
 		output_dir=$2
@@ -354,7 +400,7 @@ case "${command}" in
 		;;
 	publish)
 		[[ $# -eq 3 ]] || die "publish requires OUTPUT_DIR RECEIPT"
-		for tool in awk git jq sha256sum skopeo; do require_command "${tool}"; done
+		for tool in awk date git gzip jq sha256sum skopeo tar; do require_command "${tool}"; done
 		require_publication_context
 		load_identity
 		publish_archives "$2" "$3"

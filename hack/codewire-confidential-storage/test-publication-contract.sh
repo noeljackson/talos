@@ -64,6 +64,10 @@ verify_workflow() {
 	require_text "${candidate}" \
 		'publish "${OUTPUT_ROOT}" "${OUTPUT_ROOT}/publication.json"' \
 		'separate publication step'
+	require_line "${candidate}" '          version: v0.36.1' 'pinned Buildx version'
+	require_line "${candidate}" \
+		'            image=moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8' \
+		'pinned BuildKit image index'
 	require_line "${candidate}" '      packages: write' 'registry write permission'
 	require_line "${candidate}" '      id-token: write' 'OIDC attestation permission'
 	require_line "${candidate}" '      attestations: write' 'attestation permission'
@@ -85,6 +89,10 @@ verify_publisher() {
 		'immutable payload collision rejection'
 	require_text "${publisher}" 'buildIndexDigest:$imager_build_index_digest' \
 		'rebuilt index receipt'
+	require_text "${publisher}" 'verify_imager_archive_timestamps' \
+		'imager layer timestamp verification'
+	require_text "${publisher}" 'entry timestamps that do not equal source epoch' \
+		'imager timestamp mismatch rejection'
 	require_text "${publisher}" 'skopeo copy --all --format oci' 'all-manifest registry copy'
 	require_text "${publisher}" 'sourceIdentity:{upstreamRepository:$upstream_repository' \
 		'pinned source identity receipt'
@@ -120,6 +128,31 @@ run_fixture_preflight() {
 		GITHUB_REPOSITORY=noeljackson/talos \
 		GITHUB_SHA="${fixture_head}" \
 		"${fixture_repo}/hack/codewire-confidential-storage/publish-runtime-helpers.sh" preflight
+}
+
+write_imager_archive_fixture() {
+	local archive=$1 platform=$2 source_epoch=$3 entry_epoch=$4 fixture_name=$5
+	local layout="${test_root}/imager-archive-${fixture_name}"
+	local rootfs="${layout}/rootfs"
+	local layer_digest='sha256:3333333333333333333333333333333333333333333333333333333333333333'
+	mkdir -p "${layout}/blobs/sha256" "${rootfs}/etc/modules.d"
+	printf 'fixture modules\n' >"${rootfs}/etc/modules.d/10-extra-modules.conf"
+	tar --sort=name --format=posix --numeric-owner --owner=0 --group=0 \
+		--mtime="@${entry_epoch}" -czf \
+		"${layout}/blobs/sha256/${layer_digest#sha256:}" -C "${rootfs}" .
+	jq -n \
+		--arg layer_digest "${layer_digest}" \
+		--arg source_epoch "${source_epoch}" '{
+		schemaVersion:2,
+		mediaType:"application/vnd.oci.image.manifest.v1+json",
+		config:{mediaType:"application/vnd.oci.image.config.v1+json",
+		        digest:"sha256:4444444444444444444444444444444444444444444444444444444444444444",
+		        size:2},
+		layers:[{mediaType:"application/vnd.oci.image.layer.v1.tar+gzip",
+		         digest:$layer_digest, size:1,
+		         annotations:{"buildkit/rewritten-timestamp":$source_epoch}}]
+	}' >"${layout}/blobs/sha256/${platform#sha256:}"
+	tar -cf "${archive}" -C "${layout}" blobs
 }
 
 verify_tag_independent_version() {
@@ -202,7 +235,7 @@ EOF
 
 verify_existing_index_retry() {
 	local retry_repo retry_bin retry_release retry_head retry_abbreviation retry_version
-	local output_dir receipt copy_log mismatch_log
+	local retry_epoch output_dir bad_output receipt copy_log mismatch_log timestamp_log
 	local installer_platform imager_platform
 
 	retry_repo="${test_root}/retry-fixture"
@@ -241,12 +274,15 @@ EOF
 	git -C "${retry_repo}" add hack
 	git -C "${retry_repo}" commit -q -m 'fixture: deployment overlay'
 	retry_head="$(git -C "${retry_repo}" rev-parse HEAD)"
+	retry_epoch="$(git -C "${retry_repo}" show -s --format=%ct HEAD)"
 	retry_abbreviation=${retry_head:0:9}
 	retry_version="v1.13.10-1-g${retry_abbreviation}"
 
 	mkdir -p "${output_dir}"
 	printf 'installer-base archive fixture\n' >"${output_dir}/installer-base.oci.tar"
-	printf 'imager archive fixture\n' >"${output_dir}/imager.oci.tar"
+	write_imager_archive_fixture \
+		"${output_dir}/imager.oci.tar" "${imager_platform}" \
+		"${retry_epoch}" "${retry_epoch}" valid
 	: >"${copy_log}"
 
 	cat >"${retry_bin}/skopeo" <<'EOF'
@@ -359,6 +395,34 @@ EOF
 	fi
 	grep -Fq 'immutable installer-base tag already exists with a different platform manifest' \
 		"${mismatch_log}"
+	[[ ! -s "${copy_log}" ]]
+
+	bad_output="${retry_repo}/_out/retry-bad-timestamp"
+	timestamp_log="${test_root}/retry-timestamp.stderr"
+	mkdir -p "${bad_output}"
+	cp "${output_dir}/installer-base.oci.tar" "${bad_output}/installer-base.oci.tar"
+	write_imager_archive_fixture \
+		"${bad_output}/imager.oci.tar" "${imager_platform}" \
+		"${retry_epoch}" "$((retry_epoch - 1))" stale
+	: >"${copy_log}"
+	if env \
+		PATH="${retry_bin}:${PATH}" \
+		TEST_COPY_LOG="${copy_log}" \
+		TEST_REVISION="${retry_head}" \
+		TEST_VERSION="${retry_version}" \
+		GITHUB_ACTIONS=true \
+		GITHUB_EVENT_NAME=push \
+		GITHUB_REF=refs/heads/downstream/confidential-storage \
+		GITHUB_REPOSITORY=noeljackson/talos \
+		GITHUB_SHA="${retry_head}" \
+		GITHUB_OUTPUT="${test_root}/timestamp-github-output" \
+		"${retry_repo}/hack/codewire-confidential-storage/publish-runtime-helpers.sh" \
+		publish "${bad_output}" "${bad_output}/publication.json" \
+		>"${test_root}/retry-timestamp.stdout" 2>"${timestamp_log}"; then
+		printf 'stale imager layer timestamp unexpectedly passed retry admission\n' >&2
+		exit 1
+	fi
+	grep -Fq 'entry timestamps that do not equal source epoch' "${timestamp_log}"
 	[[ ! -s "${copy_log}" ]]
 }
 
