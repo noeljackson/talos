@@ -1,0 +1,1 @@
+(allow system_container_p lib_t (file (execute)))

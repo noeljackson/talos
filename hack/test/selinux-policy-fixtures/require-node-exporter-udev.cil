@@ -1,0 +1,1 @@
+(neverallow node_exporter_t udev_run_t (file (read)))

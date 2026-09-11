@@ -29,6 +29,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/runner/restart"
 	"github.com/siderolabs/talos/internal/pkg/capability"
 	"github.com/siderolabs/talos/internal/pkg/environment"
+	internalextensions "github.com/siderolabs/talos/internal/pkg/extensions"
 	"github.com/siderolabs/talos/internal/pkg/mount/v3"
 	"github.com/siderolabs/talos/pkg/conditions"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -61,7 +62,7 @@ func (svc *Extension) PreFunc(ctx context.Context, r runtime.Runtime) error {
 	// re-mount service rootfs as overlay rw mount to allow containerd to mount there /dev, /proc, etc.
 	rootfsPath := filepath.Join(constants.ExtensionServiceRootfsPath, svc.Spec.Name)
 
-	// TODO: label system extensions
+	// The composed extension image owns labels; preserve them through this overlay.
 	overlay := mount.NewSystemOverlay(
 		[]string{rootfsPath},
 		rootfsPath,
@@ -72,9 +73,45 @@ func (svc *Extension) PreFunc(ctx context.Context, r runtime.Runtime) error {
 		return err
 	}
 
+	if err := ensureExtensionRootfsMountpoints(rootfsPath, svc.Spec.Container.Mounts); err != nil {
+		_ = overlay.Unmount()
+
+		return err
+	}
+
 	svc.overlayUnmounter = overlay.Unmount
 
 	return nil
+}
+
+func ensureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
+	mountpoints := internalextensions.ImplicitServiceRootfsMountpoints()
+
+	for _, containerMount := range mounts {
+		if internalextensions.ServiceRootfsMountpointIsRuntimeManaged(containerMount.Destination) {
+			continue
+		}
+
+		sourceInfo, err := os.Stat(containerMount.Source)
+		switch {
+		case err == nil:
+			mountpoints = append(mountpoints, internalextensions.ServiceRootfsMountpoint{
+				Destination: containerMount.Destination,
+				Directory:   sourceInfo.IsDir(),
+			})
+		case errors.Is(err, os.ErrNotExist):
+			// Runner creates absent mount sources as directories, so prepare the
+			// destination with the same shape before runc sees the rootfs.
+			mountpoints = append(mountpoints, internalextensions.ServiceRootfsMountpoint{
+				Destination: containerMount.Destination,
+				Directory:   true,
+			})
+		default:
+			return fmt.Errorf("error inspecting extension mount source %q: %w", containerMount.Source, err)
+		}
+	}
+
+	return internalextensions.EnsureServiceRootfsMountpoints(rootfsPath, mountpoints)
 }
 
 // PostFunc implements the Service interface.
@@ -349,20 +386,36 @@ func (svc *Extension) Runner(r runtime.Runtime) (runner.Runner, error) {
 
 	ociSpecOpts := svc.getOCIOptions(envVars, mounts)
 
+	runnerOpts := []runner.Option{
+		runner.WithLoggingManager(r.Logging()),
+		runner.WithNamespace(constants.SystemContainerdNamespace),
+		runner.WithContainerdAddress(constants.SystemContainerdAddress),
+		runner.WithEnv(environment.Get(r.Config())),
+		runner.WithOCISpecOpts(ociSpecOpts...),
+		runner.WithCgroupPath(filepath.Join(constants.CgroupExtensions, svc.Spec.Name)),
+		runner.WithOOMScoreAdj(-600),
+	}
+
+	if label := extensionSELinuxLabel(svc.Spec.Container.Security); label != "" {
+		runnerOpts = append(runnerOpts, runner.WithSelinuxLabel(label))
+	}
+
 	return restart.New(
 		containerd.NewRunner(
 			logToConsole,
 			&args,
-			runner.WithLoggingManager(r.Logging()),
-			runner.WithNamespace(constants.SystemContainerdNamespace),
-			runner.WithContainerdAddress(constants.SystemContainerdAddress),
-			runner.WithEnv(environment.Get(r.Config())),
-			runner.WithOCISpecOpts(ociSpecOpts...),
-			runner.WithCgroupPath(filepath.Join(constants.CgroupExtensions, svc.Spec.Name)),
-			runner.WithOOMScoreAdj(-600),
+			runnerOpts...,
 		),
 		restart.WithType(restartType),
 	), nil
+}
+
+func extensionSELinuxLabel(security extservices.Security) string {
+	if security.WriteableSysfs {
+		return constants.SelinuxLabelWriteableSysfsSysContainer
+	}
+
+	return ""
 }
 
 func (svc *Extension) hostProcessArgs(r runtime.Runtime) (runner.Args, error) {
