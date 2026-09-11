@@ -1,0 +1,1 @@
+(allow system_container_p bin_exec_t (file (entrypoint)))

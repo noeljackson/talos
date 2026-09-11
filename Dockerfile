@@ -406,6 +406,12 @@ RUN --mount=type=bind,source=internal/pkg/selinux/policy/selinux,target=/selinux
 FROM scratch AS selinux-generate
 COPY --link --from=selinux /policy /policy
 
+FROM tools AS selinux-effective-policy-test
+RUN --mount=type=bind,source=internal/pkg/selinux/policy/selinux,target=/selinux \
+    --mount=type=bind,source=hack/test/selinux-effective-policy.sh,target=/selinux-effective-policy.sh \
+    --mount=type=bind,source=hack/test/selinux-policy-fixtures,target=/fixtures \
+    bash /selinux-effective-policy.sh /selinux /fixtures
+
 FROM scratch AS ipxe-generate
 COPY --link --from=pkg-ipxe-amd64 /usr/libexec/snp.efi /amd64/snp.efi
 COPY --link --from=pkg-ipxe-arm64 /usr/libexec/snp.efi /arm64/snp.efi
@@ -428,6 +434,9 @@ FROM build-go AS base
 COPY ./cmd ./cmd
 COPY ./pkg ./pkg
 COPY ./internal ./internal
+# init embeds this policy. Compile from the exact CIL inputs even when the
+# checked-in generated policy was not refreshed before an image build.
+COPY --link --from=selinux-generate / /src/internal/pkg/selinux/
 COPY --link --from=embed / ./
 RUN --mount=type=cache,target=/.cache,id=talos/.cache go list all >/dev/null
 WORKDIR /src/pkg/machinery
@@ -826,6 +835,7 @@ COPY --chmod=0644 hack/selinux/virtual_domain_context hack/selinux/virtual_image
 COPY --chmod=0644 hack/containerd.toml /rootfs/etc/containerd/config.toml
 COPY --chmod=0644 hack/cri-containerd.toml /rootfs/etc/cri/containerd.toml
 COPY --chmod=0644 hack/cri-plugin.part /rootfs/etc/cri/conf.d/00-base.part
+COPY --chmod=0644 hack/selinux-containers-contexts /rootfs/usr/share/containers/selinux/contexts
 COPY --chmod=0644 hack/udevd/99-default.link /rootfs/usr/lib/systemd/network/
 COPY --chmod=0644 hack/udevd/40-vm-hotadd.rules hack/udevd/90-md-raid-arrays.rules hack/udevd/90-md-raid-assembly.rules hack/udevd/90-selinux.rules hack/udevd/99-talos.rules /rootfs/usr/lib/udev/rules.d/
 COPY --chmod=0644 hack/lvm.conf /rootfs/etc/lvm/lvm.conf
@@ -917,6 +927,7 @@ COPY --chmod=0644 hack/selinux/virtual_domain_context hack/selinux/virtual_image
 COPY --chmod=0644 hack/containerd.toml /rootfs/etc/containerd/config.toml
 COPY --chmod=0644 hack/cri-containerd.toml /rootfs/etc/cri/containerd.toml
 COPY --chmod=0644 hack/cri-plugin.part /rootfs/etc/cri/conf.d/00-base.part
+COPY --chmod=0644 hack/selinux-containers-contexts /rootfs/usr/share/containers/selinux/contexts
 COPY --chmod=0644 hack/udevd/99-default.link /rootfs/usr/lib/systemd/network/
 COPY --chmod=0644 hack/udevd/40-vm-hotadd.rules hack/udevd/90-md-raid-arrays.rules hack/udevd/90-md-raid-assembly.rules hack/udevd/90-selinux.rules hack/udevd/99-talos.rules /rootfs/usr/lib/udev/rules.d/
 COPY --chmod=0644 hack/lvm.conf /rootfs/etc/lvm/lvm.conf
@@ -1073,8 +1084,10 @@ RUN find /rootfs -print0 \
     | xargs -0r touch --no-dereference --date="@${SOURCE_DATE_EPOCH}"
 ARG ZSTD_COMPRESSION_LEVEL
 COPY --link --from=selinux-generate /policy/file_contexts /file_contexts
+COPY ./hack/validate-squashfs-labels.sh /
 RUN --mount=from=labeled-squashfs-build,source=/labeled-squashfs,target=/usr/local/bin/labeled-squashfs \
-    labeled-squashfs /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL}
+    labeled-squashfs /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL} \
+    && /validate-squashfs-labels.sh /rootfs.sqsh
 
 FROM rootfs-base-amd64 AS rootfs-squashfs-amd64
 RUN rm -rf /rootfs/usr/share/spdx/*
@@ -1084,8 +1097,10 @@ RUN find /rootfs -print0 \
     | xargs -0r touch --no-dereference --date="@${SOURCE_DATE_EPOCH}"
 ARG ZSTD_COMPRESSION_LEVEL
 COPY --link --from=selinux-generate /policy/file_contexts /file_contexts
+COPY ./hack/validate-squashfs-labels.sh /
 RUN --mount=from=labeled-squashfs-build,source=/labeled-squashfs,target=/usr/local/bin/labeled-squashfs \
-    labeled-squashfs /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL}
+    labeled-squashfs /rootfs /rootfs.sqsh /file_contexts ${ZSTD_COMPRESSION_LEVEL} \
+    && /validate-squashfs-labels.sh /rootfs.sqsh
 
 FROM scratch AS squashfs-arm64
 COPY --link --from=rootfs-squashfs-arm64 /rootfs.sqsh /
@@ -1207,9 +1222,12 @@ COPY --link --from=installer-base-image / /
 # 'installer-base' does not contain boot assets or talos itself.
 FROM installer-base-image-squashed AS installer-base
 ARG TAG
+ARG SHA
 ENV VERSION=${TAG}
 LABEL "alpha.talos.dev/version"="${VERSION}"
 LABEL org.opencontainers.image.source=https://github.com/siderolabs/talos
+LABEL org.opencontainers.image.revision=${SHA}
+LABEL org.opencontainers.image.version=${VERSION}
 ENTRYPOINT ["/bin/installer"]
 
 # Imager can be thought of as an extended installer.
@@ -1241,14 +1259,25 @@ COPY --link --exclude=**/*.a --exclude=**/*.la  --exclude=usr/include --exclude=
 COPY --chmod=0644 hack/extra-modules.conf /etc/modules.d/10-extra-modules.conf
 COPY --link --from=install-artifacts / /
 
+# Normalize after assembling every source so cached and fresh builds export
+# identical filesystem metadata.
+FROM tools AS imager-image-normalized
+COPY --from=imager-image / /rootfs/
+ARG SOURCE_DATE_EPOCH
+RUN find /rootfs -print0 \
+    | xargs -0r touch --no-dereference --date="@${SOURCE_DATE_EPOCH}"
+
 FROM scratch AS imager-image-squashed
-COPY --link --from=imager-image / /
+COPY --link --from=imager-image-normalized /rootfs/ /
 
 FROM imager-image-squashed AS imager
 ARG TAG
+ARG SHA
 ENV VERSION=${TAG}
 LABEL "alpha.talos.dev/version"="${VERSION}"
 LABEL org.opencontainers.image.source=https://github.com/siderolabs/talos
+LABEL org.opencontainers.image.revision=${SHA}
+LABEL org.opencontainers.image.version=${VERSION}
 ENTRYPOINT ["/bin/imager"]
 
 FROM imager AS iso-amd64-build

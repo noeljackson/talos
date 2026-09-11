@@ -140,6 +140,7 @@ func (c *CRI) Volumes(r runtime.Runtime) []string {
 		constants.CRIContainerdVolumeID,
 		"/var/run",
 		"/var/run/lock",
+		"/var/run/lock/iscsi",
 	}
 
 	if !r.State().Platform().Mode().InContainer() {

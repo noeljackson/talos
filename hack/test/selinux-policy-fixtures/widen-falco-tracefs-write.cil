@@ -1,0 +1,1 @@
+(allow falco_t tracefs_t (file (write)))

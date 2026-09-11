@@ -1,0 +1,1 @@
+(neverallow pod_containerd_t kubelet_state_t (filesystem (relabelto)))

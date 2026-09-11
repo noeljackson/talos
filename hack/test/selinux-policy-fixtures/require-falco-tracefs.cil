@@ -1,0 +1,1 @@
+(neverallow falco_t tracefs_t (file (read)))

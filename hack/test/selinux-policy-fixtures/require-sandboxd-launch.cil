@@ -1,0 +1,1 @@
+(neverallow sandboxd_t pod_containerd_t (process (transition)))

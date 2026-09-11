@@ -270,7 +270,7 @@ func TestStandardDirectoryVolumesTransformer(t *testing.T) {
 			name: "W/ config",
 			cfg:  &baseCfg,
 			checkFunc: func(t *testing.T, resources []volumeconfig.VolumeResource) {
-				require.Len(t, resources, 1+10) // +1 for /var/run symlink, +10 for standard directories (ETCD/CRI/KUBELET/LOG are promotable, handled separately)
+				require.Len(t, resources, 1+11) // +1 for /var/run symlink, +11 for standard directories (ETCD/CRI/KUBELET/LOG are promotable, handled separately)
 
 				var varRunSymlinkResource *volumeconfig.VolumeResource
 
@@ -292,7 +292,7 @@ func TestStandardDirectoryVolumesTransformer(t *testing.T) {
 				})
 
 				// Check some standard directories (/var/log itself is promotable; its children remain here)
-				expectedPaths := []string{"/var/log/audit", "/var/lib", "/var/lib/cni"}
+				expectedPaths := []string{"/var/log/audit", "/var/lib", "/var/lib/cni", "/var/run/lock/iscsi"}
 				for _, expectedPath := range expectedPaths {
 					var found bool
 

@@ -1,0 +1,1 @@
+(neverallow extension_service_p iscsi_lock_t (file (link)))

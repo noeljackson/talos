@@ -8,6 +8,9 @@ package selinux
 import (
 	"bytes"
 	_ "embed"
+	"errors"
+	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -19,12 +22,35 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/siderolabs/talos/internal/pkg/containermode"
+	"github.com/siderolabs/talos/internal/pkg/selinux/filecontext"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/xfs"
 )
 
 //go:embed policy/policy.33
 var policy []byte
+
+//go:embed policy/file_contexts
+var fileContexts []byte
+
+var defaultFileContextMatcher = sync.OnceValues(func() (*filecontext.Matcher, error) {
+	return filecontext.Parse(bytes.NewReader(fileContexts))
+})
+
+// LookupFileContext resolves the canonical Talos SELinux context for path and
+// mode. The same resolver is used for every filesystem assembled into a Talos
+// image so overlay layers cannot replace correctly labeled base directories
+// with unlabeled ones.
+func LookupFileContext(path string, mode fs.FileMode) (string, bool, error) {
+	matcher, err := defaultFileContextMatcher()
+	if err != nil {
+		return "", false, err
+	}
+
+	context, ok := matcher.Lookup(path, mode)
+
+	return context, ok, nil
+}
 
 // IsEnabled checks if SELinux is enabled on the system by reading
 // the kernel command line. It returns true if SELinux is enabled,
@@ -189,6 +215,53 @@ func SetLabelRecursive(dir string, label string, excludeLabels ...string) error 
 
 	return filepath.Walk(dir, func(path string, _ os.FileInfo, err error) error {
 		return SetLabel(path, label, excludeLabels...)
+	})
+}
+
+// RestoreFileContexts recursively restores the canonical Talos SELinux
+// contexts below root. Symlinks are labeled but never followed.
+func RestoreFileContexts(root string) error {
+	if !IsEnabled() {
+		return nil
+	}
+
+	return restoreFileContexts(root, LookupFileContext, SetLabel)
+}
+
+func restoreFileContexts(
+	root string,
+	lookup func(string, fs.FileMode) (string, bool, error),
+	setLabel func(string, string, ...string) error,
+) error {
+	return filepath.Walk(root, func(path string, info fs.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
+
+			return fmt.Errorf("failed to walk %q: %w", path, walkErr)
+		}
+
+		label, ok, err := lookup(path, info.Mode())
+		if err != nil {
+			return fmt.Errorf("failed to look up file context for %q: %w", path, err)
+		}
+
+		if !ok {
+			return nil
+		}
+
+		if err = setLabel(path, label); err != nil {
+			// Runtime-created entries may disappear while a tree is being
+			// inspected. A replacement will inherit the policy-owned context.
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+
+			return fmt.Errorf("failed to restore file context for %q: %w", path, err)
+		}
+
+		return nil
 	})
 }
 

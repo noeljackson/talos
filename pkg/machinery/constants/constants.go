@@ -205,6 +205,12 @@ const (
 	// OptSELinuxLabel is the SELinux label to be set for /opt overlay mount.
 	OptSELinuxLabel = "system_u:object_r:opt_t:s0"
 
+	// SystemExtensionBinSELinuxLabel is the label for executable extension paths.
+	SystemExtensionBinSELinuxLabel = "system_u:object_r:bin_exec_t:s0"
+
+	// SystemExtensionLibSELinuxLabel is the label for library extension paths.
+	SystemExtensionLibSELinuxLabel = "system_u:object_r:lib_t:s0"
+
 	// RootMountPoint is the label of the partition to use for mounting at
 	// the root path.
 	RootMountPoint = "/"
@@ -349,6 +355,9 @@ const (
 
 	// KubeletCredentialProviderBinDir is the path to the directory where kubelet credential provider binaries are stored.
 	KubeletCredentialProviderBinDir = "/usr/local/lib/kubelet/credentialproviders"
+
+	// KubeletCredentialProviderSELinuxLabel is the label for credential provider binaries.
+	KubeletCredentialProviderSELinuxLabel = "system_u:object_r:k8s_credentialproviders_t:s0"
 
 	// KubeletCredentialProviderConfig is the path to the kubelet credential provider config.
 	KubeletCredentialProviderConfig = KubernetesConfigBaseDir + "/" + "kubelet-credentialproviderconfig.yaml"
@@ -749,6 +758,12 @@ const (
 	// RunSelinuxLabel is the SELinux label for the run directory.
 	RunSelinuxLabel = "system_u:object_r:run_t:s0"
 
+	// CiliumRuntimePath is created before CRI prepares Cilium hostPath mounts.
+	CiliumRuntimePath = RunPath + "/cilium"
+
+	// CiliumRuntimeSelinuxLabel isolates shared Cilium state from ordinary pods.
+	CiliumRuntimeSelinuxLabel = "system_u:object_r:cilium_runtime_t:s0"
+
 	// VarSystemOverlaysPath is the path where overlay mounts are created.
 	VarSystemOverlaysPath = "/var/system/overlays"
 
@@ -833,6 +848,9 @@ const (
 
 	// SelinuxLabelUnconfinedSysContainer is the SELinux label for system containers without label set (normally extensions).
 	SelinuxLabelUnconfinedSysContainer = "system_u:system_r:unconfined_container_t:s0"
+
+	// SelinuxLabelWriteableSysfsSysContainer is the label for extension services which explicitly request writeable sysfs.
+	SelinuxLabelWriteableSysfsSysContainer = "system_u:system_r:writeable_sysfs_container_t:s0"
 
 	// SelinuxLabelTalosContainer is the SELinux label for containers declared via ContainerConfig.
 	//
@@ -1551,6 +1569,27 @@ type SELinuxLabeledPath struct {
 // Overlays is the set of paths to create overlay mounts for.
 var Overlays = []SELinuxLabeledPath{
 	{Path: "/opt", Label: OptSELinuxLabel},
+}
+
+// ExtensionServiceSELinuxLabeledPaths is the set of paths inside an extension
+// service container rootfs whose labels are owned by Talos at final image
+// composition. These paths are interpreted in the container's namespace.
+var ExtensionServiceSELinuxLabeledPaths = []SELinuxLabeledPath{
+	{Path: "/run", Label: RunSelinuxLabel},
+	{Path: "/var", Label: EphemeralSelinuxLabel},
+	{Path: "/bin", Label: SystemExtensionBinSELinuxLabel},
+	{Path: "/sbin", Label: SystemExtensionBinSELinuxLabel},
+	{Path: "/usr/bin", Label: SystemExtensionBinSELinuxLabel},
+	{Path: "/usr/sbin", Label: SystemExtensionBinSELinuxLabel},
+	{Path: "/usr/local/bin", Label: SystemExtensionBinSELinuxLabel},
+	{Path: "/usr/local/sbin", Label: SystemExtensionBinSELinuxLabel},
+	{Path: "/usr/local/libexec", Label: SystemExtensionBinSELinuxLabel},
+	{Path: "/lib", Label: SystemExtensionLibSELinuxLabel},
+	{Path: "/lib64", Label: SystemExtensionLibSELinuxLabel},
+	{Path: "/usr/lib", Label: SystemExtensionLibSELinuxLabel},
+	{Path: "/usr/lib64", Label: SystemExtensionLibSELinuxLabel},
+	{Path: "/usr/local/lib", Label: SystemExtensionLibSELinuxLabel},
+	{Path: "/usr/local/lib64", Label: SystemExtensionLibSELinuxLabel},
 }
 
 // DefaultDroppedCapabilities is the default set of capabilities to drop.

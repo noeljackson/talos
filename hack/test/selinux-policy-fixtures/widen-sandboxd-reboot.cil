@@ -1,0 +1,1 @@
+(allow sandboxd_t self (capability (sys_boot)))

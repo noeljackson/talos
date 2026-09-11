@@ -1,0 +1,1 @@
+(neverallow sandboxd_t procfs_t (filesystem (mount)))
