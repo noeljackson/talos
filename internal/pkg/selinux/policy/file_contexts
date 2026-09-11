@@ -5,14 +5,28 @@
 /opt/cni(/.*)?	system_u:object_r:cni_plugin_t:s0
 /usr/bin(/.*)?	system_u:object_r:bin_exec_t:s0
 /usr/lib(/.*)?	system_u:object_r:lib_t:s0
+/usr/local/bin(/.*)?	system_u:object_r:bin_exec_t:s0
+/usr/local/lib(/.*)?	system_u:object_r:lib_t:s0
 /usr/lib/udev/[^/.]+	--	system_u:object_r:udev_exec_t:s0
 /etc/kubernetes(/.*)?	system_u:object_r:k8s_conf_t:s0
 /opt/containerd(/.*)?	system_u:object_r:containerd_plugin_t:s0
+/run/lock/iscsi(/.*)?	system_u:object_r:iscsi_lock_t:s0
+/usr/local/sbin(/.*)?	system_u:object_r:bin_exec_t:s0
 /usr/lib/modules(/.*)?	system_u:object_r:module_t:s0
+/usr/local/lib64(/.*)?	system_u:object_r:lib_t:s0
+/usr/local/libexec(/.*)?	system_u:object_r:bin_exec_t:s0
 /usr/lib/udev/hwdb[.]bin	--	system_u:object_r:udev_hwdb_t:s0
 /usr/share/zoneinfo(/.*)?	system_u:object_r:etc_t:s0
 /usr/lib/udev/rules.d(/.*)?	system_u:object_r:udev_rules_t:s0
+/usr/local/share/ovmf/AMDSEV.fd	--	system_u:object_r:kata_guest_image_t:s0
+/usr/local/share/kata-containers/vmlinux.container	--	system_u:object_r:kata_guest_image_t:s0
+/usr/local/share/kata-containers/vmlinuz.container	--	system_u:object_r:kata_guest_image_t:s0
+/usr/local/share/kata-containers/vmlinuz-[0-9]+([.][0-9]+)*-[0-9]+	--	system_u:object_r:kata_guest_image_t:s0
 /usr/local/lib/kubelet/credentialproviders(/.*)?	system_u:object_r:k8s_credentialproviders_t:s0
+/usr/local/share/kata-containers/kata-containers.img	--	system_u:object_r:kata_guest_image_t:s0
+/usr/local/share/kata-qemu-snp-experimental/qemu/.*	--	system_u:object_r:kata_guest_image_t:s0
+/usr/local/share/kata-containers/kata-containers-confidential.img	--	system_u:object_r:kata_guest_image_t:s0
+/usr/local/share/kata-containers/kata-containers-coco-extension.img	--	system_u:object_r:kata_guest_image_t:s0
 /	system_u:object_r:rootfs_t:s0
 /bin	system_u:object_r:bin_exec_t:s0
 /lib	system_u:object_r:lib_t:s0
@@ -27,4 +41,8 @@
 /usr/bin/modprobe	--	system_u:object_r:modprobe_exec_t:s0
 /usr/bin/containerd	system_u:object_r:containerd_exec_t:s0
 /usr/bin/systemd-udevd	--	system_u:object_r:udev_exec_t:s0
+/usr/local/libexec/virtiofsd	--	system_u:object_r:kata_helper_exec_t:s0
+/usr/local/bin/cloud-hypervisor	--	system_u:object_r:kata_helper_exec_t:s0
 /usr/bin/containerd-shim-runc-v2	system_u:object_r:containerd_exec_t:s0
+/usr/local/bin/qemu-system-x86_64-snp-experimental	--	system_u:object_r:kata_helper_exec_t:s0
+/usr/local/libexec/qemu-system-x86_64-snp-experimental	--	system_u:object_r:kata_helper_exec_t:s0

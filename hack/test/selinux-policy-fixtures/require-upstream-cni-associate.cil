@@ -1,0 +1,1 @@
+(neverallow cni_conf_t self (filesystem (associate)))

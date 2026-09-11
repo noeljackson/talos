@@ -7,6 +7,10 @@ version = 3
 [plugins."io.containerd.cri.v1.runtime"]
   enable_cdi = true
   cdi_spec_dirs = ["/run/cdi"]
+  # Talos loads and enforces its own SELinux policy. Keep CRI label handling
+  # enabled so Kubernetes seLinuxOptions reach the OCI process spec instead
+  # of silently falling back to the generic pod_t domain.
+  enable_selinux = true
 
 [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
   base_runtime_spec = "/etc/cri/conf.d/base-spec.json"

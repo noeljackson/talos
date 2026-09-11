@@ -1,0 +1,1 @@
+(allow pod_p self (perf_event (open)))

@@ -175,8 +175,13 @@ func (suite *VolumeConfigSuite) TestReconcileDefaults() {
 		constants.SeccompProfilesDirectory,
 		constants.KubernetesAuditLogDir,
 		"/var/run/lock",
+		"/var/run/lock/iscsi",
 	}, func(r *block.VolumeConfig, asrt *assert.Assertions) {
 		asrt.Equal(block.VolumeTypeDirectory, r.TypedSpec().Type)
+	})
+	ctest.AssertResource(suite, "/var/run/lock/iscsi", func(r *block.VolumeConfig, asrt *assert.Assertions) {
+		asrt.EqualValues(0o770, r.TypedSpec().Mount.FileMode)
+		asrt.Equal("system_u:object_r:iscsi_lock_t:s0", r.TypedSpec().Mount.SelinuxLabel)
 	})
 
 	ctest.AssertResources(suite,

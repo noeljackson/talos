@@ -1,0 +1,1 @@
+(neverallow kubelet_state_t self (filesystem (associate)))

@@ -351,6 +351,16 @@ hack-test-%: ## Runs the specified script in ./hack/test with well known environ
 generate: ## Generates code from protobuf service definitions and machinery config.
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/$(ARCH) EMBED_TARGET=embed-abbrev
 
+.PHONY: generate-selinux check-selinux-policy-generated check-selinux-effective-policy
+generate-selinux: ## Regenerates the SELinux policy and contexts embedded in init and imager.
+	@$(MAKE) local-selinux-generate DEST=./internal/pkg/selinux PLATFORM=linux/$(ARCH)
+
+check-selinux-policy-generated: check-selinux-effective-policy ## Verifies the checked-in policy and file contexts match their CIL sources.
+	@./hack/test/selinux-policy-generated.sh
+
+check-selinux-effective-policy: ## Proves required permissions and rejects widening against compiled CIL.
+	@$(MAKE) target-selinux-effective-policy-test PLATFORM=linux/$(ARCH)
+
 .PHONY: docs
 docs: ## Generates the documentation for machine config, and talosctl.
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/amd64
@@ -555,7 +565,7 @@ fmt: ## Formats the source code and protobuf files.
 lint-%: ## Runs the specified linter. Valid options are go, protobuf, and markdown (e.g. lint-go).
 	@$(MAKE) target-lint-$* PLATFORM=linux/$(ARCH)
 
-lint: ## Runs linters on go, vulncheck, deadcode, protobuf, and markdown file types.
+lint: check-selinux-policy-generated ## Runs linters on go, vulncheck, deadcode, protobuf, and markdown file types.
 	@$(MAKE) lint-go lint-vulncheck lint-deadcode lint-protobuf lint-markdown
 
 .PHONY: lint-fmt

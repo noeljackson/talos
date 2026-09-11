@@ -1,0 +1,1 @@
+(neverallow cilium_t sandboxd_t (file (read)))
