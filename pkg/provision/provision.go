@@ -48,6 +48,29 @@ type RebootProvisioner interface {
 	RebootNode(ctx context.Context, cluster Cluster, node NodeInfo) error
 }
 
+// DiskLayout selects an ordered subset of a node's original disks by serial.
+// It never accepts backing-file paths. DiskBootOnly forbids installation media,
+// direct kernel boot, config-media injection, and firmware-variable resets.
+type DiskLayout struct {
+	Serials      []string `json:"serials"`
+	DiskBootOnly bool     `json:"diskBootOnly"`
+}
+
+// DiskBootState records a successful QEMU process start, checked against the
+// live process command line before it is returned by the provisioner.
+type DiskBootState struct {
+	Generation string   `json:"generation"`
+	ProcessID  int      `json:"processID"`
+	Arguments  []string `json:"arguments"`
+}
+
+// DiskLayoutProvisioner is an opt-in native VM testing capability. Changes take
+// effect at a cold reboot, not by online hot-unplugging the running guest.
+type DiskLayoutProvisioner interface {
+	RebootNodeWithDisks(context.Context, Cluster, NodeInfo, DiskLayout) (string, error)
+	NodeDiskBootState(context.Context, Cluster, NodeInfo) (DiskBootState, error)
+}
+
 const (
 	// HTTPProbeDefaultTimeout is the default provisioner-side HTTP probe timeout.
 	HTTPProbeDefaultTimeout = 5 * time.Second
