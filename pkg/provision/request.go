@@ -220,6 +220,10 @@ type NodeRequest struct {
 	Memory int64
 	// Disks (volumes), if applicable (VM only)
 	Disks []*Disk
+	// QEMUDiskLayoutControl opts into serial-selected cold-boot disk layouts.
+	// Intended for isolated native provisioning tests; all disks must be virtio
+	// with unique, nonempty serials. Ordinary node behavior is unchanged.
+	QEMUDiskLayoutControl bool
 	// Mounts (containers only)
 	Mounts []mounttypes.Mount
 	// Ports

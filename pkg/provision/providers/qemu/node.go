@@ -159,8 +159,10 @@ func (p *provisioner) createNode(ctx context.Context, state *provision.State, cl
 	}
 
 	launchConfig := LaunchConfig{
-		ArchitectureData: arch,
-		DiskPaths:        diskPaths,
+		DiskLayoutControl: nodeReq.QEMUDiskLayoutControl,
+		NodeName:          nodeReq.Name,
+		ArchitectureData:  arch,
+		DiskPaths:         diskPaths,
 		DiskDrivers: xslices.Map(nodeReq.Disks, func(disk *provision.Disk) string {
 			return disk.Driver
 		}),
@@ -263,6 +265,12 @@ func (p *provisioner) createNode(ctx context.Context, state *provision.State, cl
 	launchConfig.StatePath, err = state.StatePath()
 	if err != nil {
 		return provision.NodeInfo{}, err
+	}
+
+	if launchConfig.DiskLayoutControl {
+		if err = validateDiskInventory(&launchConfig); err != nil {
+			return provision.NodeInfo{}, err
+		}
 	}
 
 	launchConfigFile, err := os.Create(state.GetRelativePath(fmt.Sprintf("%s.config", nodeReq.Name)))
