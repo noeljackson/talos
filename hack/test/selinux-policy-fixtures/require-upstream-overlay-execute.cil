@@ -1,0 +1,1 @@
+(neverallow initramfs_t cni_plugin_t (file (execute)))

@@ -1,0 +1,1 @@
+(allow falco_t init_t (file (write)))

@@ -13,8 +13,19 @@ import (
 	"github.com/siderolabs/gen/xslices"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/runner"
+	extservices "github.com/siderolabs/talos/pkg/machinery/extensions/services"
 	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
+
+// ExtensionSELinuxLabel exposes the opt-in extension process label for tests.
+func ExtensionSELinuxLabel(security extservices.Security) string {
+	return extensionSELinuxLabel(security)
+}
+
+// EnsureExtensionRootfsMountpoints exposes extension rootfs preparation for tests.
+func EnsureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
+	return ensureExtensionRootfsMountpoints(rootfsPath, mounts)
+}
 
 // CreateOverlayMountRequests exposes createOverlayMountRequests for tests.
 func CreateOverlayMountRequests(ctx context.Context, st state.State) error {

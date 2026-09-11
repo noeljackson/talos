@@ -1,0 +1,1 @@
+(allow pod_p bin_exec_t (file (entrypoint)))

@@ -1,5 +1,9 @@
 (type kubelet_t)
 (call pod_p (kubelet_t))
+; Kubelet runs at systemLow but must inspect and supervise every categorized
+; pod. Exempt only this host supervisor; ordinary pod domains remain subject
+; to the MCS dominance constraint.
+(typeattributeset mcs_exempt_p kubelet_t)
 ; FIXME: insecure as anyone with access to the pod containerd may obtain this domain
 (allow kubelet_t containerd_state_t (file (entrypoint execute execute_no_trans)))
 
@@ -18,6 +22,18 @@
 (call system_f (kubelet_state_t))
 (allow init_t kubelet_state_t (fs_classes (rw)))
 (allow pod_containerd_t kubelet_state_t (fs_classes (rw)))
+; Privileged CSI node plugins mount independent filesystems beneath kubelet's
+; state tree. A context= mount checks relabelfrom twice: first against the
+; filesystem's initial fs_t label and then against the selected superblock
+; label while applying the matching root context. Permit that round trip only
+; for the existing kubelet state type; do not grant relabel access to unlabeled
+; or arbitrary types.
+(allow pod_containerd_t kubelet_state_t (filesystem (relabelfrom relabelto)))
+; The root-context check then validates that the selected inode type may be
+; associated with the selected superblock type. Both sides are exactly
+; kubelet_state_t for this context= mount; do not add kubelet_state_t to the
+; generic filesystem_f attribute.
+(allow kubelet_state_t self (filesystem (associate)))
 
 ; FIXME: insecure as anyone with access to the pod containerd may obtain this domain
 ; TODO: Secure kubelet launch labeling
@@ -41,6 +57,11 @@
 ; Some mount/umount calls, xtables lock
 ; TODO: label more precisely?
 (allow kubelet_t run_t (fs_classes (rw)))
+
+; Kubelet implements hostPath DirectoryOrCreate before the Cilium pods start.
+; Permit it to create only beneath machined's dedicated Cilium runtime type;
+; do not grant kubelet access to generic pod-containerd runtime state.
+(allow kubelet_t cilium_runtime_t (fs_classes (rw)))
 
 ; Communication with init via pipes and sockets
 (allow kubelet_t init_t (fd (use)))

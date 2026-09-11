@@ -1,0 +1,1 @@
+(allow falco_t debugfs_t (file (read)))

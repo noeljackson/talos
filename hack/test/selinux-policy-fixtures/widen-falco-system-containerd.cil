@@ -1,0 +1,1 @@
+(allow falco_t sys_containerd_t (unix_stream_socket (connectto)))

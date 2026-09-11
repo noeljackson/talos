@@ -1,0 +1,1 @@
+(neverallow unconfined_container_t bin_exec_t (file (entrypoint)))
