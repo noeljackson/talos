@@ -1,0 +1,1 @@
+(allow falco_t machine_socket_t (sock_file (write)))

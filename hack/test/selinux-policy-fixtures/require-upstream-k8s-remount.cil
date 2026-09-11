@@ -1,0 +1,1 @@
+(neverallow pod_containerd_t k8s_conf_t (filesystem (remount)))

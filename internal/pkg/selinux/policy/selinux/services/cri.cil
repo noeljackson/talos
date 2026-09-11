@@ -1,6 +1,9 @@
 ; Pod (CRI) containerd
 (type pod_containerd_t)
 (call service_p (pod_containerd_t containerd_exec_t))
+; CRI containerd allocates MCS categories and must supervise the labeled pod
+; roots and processes it creates. Pod domains themselves remain constrained.
+(typeattributeset mcs_exempt_p pod_containerd_t)
 
 (type pod_containerd_socket_t)
 (call system_socket_f (pod_containerd_socket_t))
@@ -20,15 +23,16 @@
 (typetransition pod_containerd_t run_t chr_file pod_containerd_run_t)
 (typetransition pod_containerd_t run_t blk_file pod_containerd_run_t)
 (typetransition pod_containerd_t run_t fifo_file pod_containerd_run_t)
-; /run/cilium and similar, managed by high-privilege pods
-(typetransition pod_p run_t file pod_containerd_run_t)
-(typetransition pod_p run_t dir pod_containerd_run_t)
-(typetransition pod_p run_t lnk_file pod_containerd_run_t)
-(typetransition pod_p run_t chr_file pod_containerd_run_t)
-(typetransition pod_p run_t blk_file pod_containerd_run_t)
-(typetransition pod_p run_t fifo_file pod_containerd_run_t)
 
 (allow pod_containerd_t pod_containerd_run_t (fs_classes (rw)))
+
+; Cilium uses a shared host runtime directory for agent state and Envoy
+; sockets. It is created by machined before CRI, so it does not inherit the
+; pod-containerd runtime label used for shim-created paths.
+(type cilium_runtime_t)
+(call system_f (cilium_runtime_t))
+(allow cilium_runtime_t tmpfs_t (filesystem (associate)))
+(allow pod_containerd_t cilium_runtime_t (fs_classes (rw)))
 
 ; Transition to pod contexts
 (allow pod_containerd_t pod_p (process2 (nnp_transition nosuid_transition)))
@@ -38,6 +42,19 @@
 (allow pod_containerd_t containerd_state_t (fs_classes (rw)))
 (allow pod_containerd_t containerd_state_t (file (entrypoint execute execute_no_trans)))
 (allow pod_containerd_t containerd_state_t (fs_classes (relabelto relabelfrom)))
+; CRI supplies a per-pod mount context when SELinux handling is enabled. The
+; root overlay, /dev tmpfs, and /dev/pts devpts superblocks and their mountpoint
+; objects start in their native domains. runc relabels both the superblock and
+; mountpoint to the configured ephemeral context.
+; Its proc and sysfs mounts deliberately omit the mount label, while mqueue is
+; mounted unlabeled and labels only its mountpoint, so no other filesystem
+; domains belong in this relabel contract.
+(allow pod_containerd_t fs_t (fs_classes (relabelfrom)))
+(allow pod_containerd_t tmpfs_t (fs_classes (relabelfrom)))
+(allow pod_containerd_t devpts_t (fs_classes (relabelfrom)))
+(allow pod_containerd_t ephemeral_t (fs_classes (relabelfrom relabelto)))
+(allow ephemeral_t tmpfs_t (filesystem (associate)))
+(allow ephemeral_t devpts_t (filesystem (associate)))
 
 ; Manage procfs & processes
 (allow pod_containerd_t pod_p (fs_classes (rw)))
@@ -51,16 +68,11 @@
 ; iptables used by CNI
 (allow pod_containerd_t bin_exec_t (file (execute_no_trans execute)))
 (allow pod_containerd_t bin_exec_t (fs_classes (ro)))
-; /etc/cni is a context=cni_conf_t writable tmpfs; the CRI containerd manages the CNI config
-; tree there (e.g. creating net.d), so pod_containerd_t needs rw on cni_conf_t. Without it,
-; under enforcing the CRI plugin's CNI init fails (avc: denied write pod_containerd_t->cni_conf_t
-; dir) and runtime.v1.RuntimeService is never registered. Pods get cni_conf_t rw via pod_p below.
+; /etc/cni is a context=cni_conf_t writable tmpfs managed by CRI.
 (allow pod_containerd_t cni_conf_t (fs_classes (rw)))
-(allow pod_containerd_t cni_state_t (fs_classes (rw)))
-
-; /etc/kubernetes is a context=k8s_conf_t tmpfs now (its superblock is k8s_conf_t), so runc
-; remounts it (read-only bind) when mounting kube config into containers.
+; The /etc/kubernetes tmpfs keeps its own superblock context on read-only binds.
 (allow pod_containerd_t k8s_conf_t (filesystem (remount)))
+(allow pod_containerd_t cni_state_t (fs_classes (rw)))
 
 ; Logs
 (allow pod_containerd_t pods_log_t (fs_classes (rw)))
@@ -69,6 +81,11 @@
 
 ; Shim socket
 (allow pod_containerd_t pod_containerd_socket_t (fs_classes (rw)))
+
+; CRI proxy snapshotters and storage helpers run as Talos extension services.
+; Their socket inodes remain governed by the separately labeled /run filesystem
+; objects; allow only the Unix peer connection required after that path check.
+(allow pod_containerd_t extension_service_p (unix_stream_socket (connectto)))
 
 ; System containers, not k8s pods
 
@@ -89,8 +106,6 @@
 (type cni_conf_t)
 (call filesystem_f (cni_conf_t))
 (filecon "/etc/cni(/.*)?" any (system_u object_r cni_conf_t (systemLow systemLow)))
-; /etc/cni is a tmpfs mounted with context=cni_conf_t (its superblock is cni_conf_t too),
-; so cni_conf_t inodes must be allowed to associate with a cni_conf_t-labeled filesystem.
 (allow cni_conf_t cni_conf_t (filesystem (associate)))
 
 (type cni_plugin_t)
@@ -143,6 +158,20 @@
 (type var_lock_t)
 (call protected_f (var_lock_t))
 (allow var_lock_t tmpfs_t (filesystem (associate)))
+(type iscsi_lock_t)
+(call protected_f (iscsi_lock_t))
+(allow iscsi_lock_t tmpfs_t (filesystem (associate)))
+(filecon "/run/lock/iscsi(/.*)?" any (system_u object_r iscsi_lock_t (systemLow systemLow)))
+
+; Talos creates /run/lock/iscsi before CRI starts. Open-iSCSI then uses two
+; fixed entries: it opens or creates "lock", hard-links it to "lock.write" to
+; acquire the database lock, and unlinks "lock.write" to release it. Keep this
+; lifecycle on a dedicated object type instead of granting either containerd
+; domain write access to the shared var_lock_t tree.
+(allow pod_containerd_t iscsi_lock_t (dir (add_name getattr remove_name search write)))
+(allow pod_containerd_t iscsi_lock_t (file (create getattr link open read unlink write)))
+(allow extension_service_p iscsi_lock_t (dir (add_name getattr remove_name search write)))
+(allow extension_service_p iscsi_lock_t (file (create getattr link open read unlink write)))
 (type seccomp_profile_t)
 (call protected_f (seccomp_profile_t))
 (type kube_log_t)
@@ -180,8 +209,18 @@
 (allow pod_containerd_t devpts_t (fs_classes (rw)))
 (allow pod_p devpts_t (fs_classes (rw)))
 
-; cilium-cni (called by CRI) connecting to /run/cilium/cilium.sock (exposed by agent pod)
+; Kata's CRI shim remains in the MCS-exempt pod_containerd_t domain while the
+; VMM runs under the sandbox pod_p label. Allow only the Unix stream peer
+; connection used by the shim to reach the VMM API socket; access to the
+; socket inode remains governed by the separately typed filesystem rules.
 (allow pod_containerd_t pod_p (unix_stream_socket (connectto)))
+
+; Opening an existing named TAP invokes Linux's selinux_tun_dev_open hook.
+; The hook relabels the TUN security SID to the caller and therefore checks
+; both relabelfrom and relabelto even when both SIDs are pod_containerd_t.
+; Keep this exception on the CRI shim's own TUN sockets; the shared network
+; policy continues to exclude relabel permissions from every other domain.
+(allow pod_containerd_t self (tun_socket (relabelfrom relabelto)))
 
 ; pkg/flannel
 (allow pod_p cni_conf_t (fs_classes (rw)))
@@ -191,11 +230,154 @@
 
 (type pod_t)
 (call pod_p (pod_t))
+
+; containerd deliberately clears the requested SELinux process label for a
+; privileged CRI sandbox. Trusted privileged node agents such as Longhorn
+; therefore inherit pod_containerd_t while walking the host /proc tree.
+; Give that domain read-only process-metadata traversal, but no process,
+; ptrace, signal, write, relabel, or generic host-filesystem access.
+(allow pod_containerd_t any_p (dir (getattr open read search)))
+(allow pod_containerd_t any_p (file (getattr open read)))
+(allow pod_containerd_t any_p (lnk_file (getattr read)))
+
+; Longhorn V1's privileged instance manager also inherits pod_containerd_t.
+; After an iSCSI login it sets the SCSI command timeout through the dynamic
+; /sys/block/<device>/device/timeout path. The backing sysfs inode path varies
+; with each SCSI session and sysfs exposes it only as sysfs_t, so it cannot be
+; assigned a stable path-specific type. Permit only the observed write checks;
+; do not grant generic sysfs rw, creation, setattr, or relabel permissions.
+(allow pod_containerd_t sysfs_t (dir (write)))
+(allow pod_containerd_t sysfs_t (file (write)))
+
+; node-exporter is not privileged, so keep its host-observer access out of the
+; generic pod_t domain. The workload selects this type explicitly and receives
+; only read-only access to Talos PID 1 process metadata and udev's block-device
+; records. The ordinary pod domains retain neither permission.
+(type node_exporter_t)
+(call pod_p (node_exporter_t))
+(allow node_exporter_t init_t (dir (getattr open read search)))
+(allow node_exporter_t init_t (file (getattr open read)))
+(allow node_exporter_t init_t (lnk_file (getattr read)))
+(allow node_exporter_t udev_run_t (file (getattr open read)))
+
+; Falco uses the modern eBPF driver with the chart's least-privileged
+; capability set. Keep it out of privileged pod_containerd_t so its host
+; observer contract has a dedicated, explicitly selected domain. Falco reads
+; process metadata across all MCS categories, owns only its own BPF perf events,
+; reads the host tracefs IDs required to attach its modern eBPF tracepoints, and
+; queries the pod containerd CRI socket for the container metadata required by
+; its rules. The chart exposes only the tracefs mount and that socket on Talos
+; workers. Keep both targets exact: Falco receives no other socket I/O, host-
+; process control, filesystem write, ptrace, relabel, or generic host-filesystem
+; permission here.
+(type falco_t)
+(call pod_p (falco_t))
+(typeattributeset mcs_exempt_p falco_t)
+(allow falco_t any_p (dir (getattr open read search)))
+(allow falco_t any_p (file (getattr open read)))
+(allow falco_t any_p (lnk_file (getattr read)))
+(allow falco_t any_p (unix_stream_socket (getattr)))
+(allow falco_t any_p (unix_dgram_socket (getattr)))
+(allow falco_t any_p (fifo_file (getattr)))
+(allow falco_t self (perf_event (all)))
+(allow falco_t tracefs_t (dir (getattr open read search)))
+(allow falco_t tracefs_t (file (getattr open read)))
+(allow falco_t pod_containerd_socket_t (sock_file (write)))
+(allow falco_t pod_containerd_t (unix_stream_socket (connectto)))
+
+; Kata's host-side hypervisor helpers are launched by the CRI shim after it
+; requests the sandbox's pod_t process label. A privileged sandbox has no pod
+; process label and the helpers instead inherit pod_containerd_t. Keep both
+; entrypoint transitions separate from generic bin_exec_t. The shared pod_p
+; baseline still allows execute/execute_no_trans on any_f; this grants only the
+; finite host helper entrypoints and their required read access.
+(type kata_helper_exec_t)
+(call system_f (kata_helper_exec_t))
+(context kata_helper_exec_t (system_u object_r kata_helper_exec_t (systemLow systemLow)))
+(filecon "/usr/local/bin/cloud-hypervisor" file kata_helper_exec_t)
+(filecon "/usr/local/bin/qemu-system-x86_64-snp-experimental" file kata_helper_exec_t)
+(filecon "/usr/local/libexec/qemu-system-x86_64-snp-experimental" file kata_helper_exec_t)
+(filecon "/usr/local/libexec/virtiofsd" file kata_helper_exec_t)
+(allow pod_containerd_t kata_helper_exec_t (fs_classes (ro)))
+(allow pod_containerd_t kata_helper_exec_t (file (execute_no_trans execute)))
+(allow pod_t kata_helper_exec_t (fs_classes (ro)))
+(allow pod_t kata_helper_exec_t (file (entrypoint execute)))
+
+; Kata VMMs open the immutable guest kernel, root image, CoCo initrd, and QEMU
+; firmware directly. QEMU selects machine firmware and option ROMs from its
+; dedicated packaged data directory, so label every regular file in that
+; immutable directory rather than maintaining a filename allowlist. Keep these
+; boot artifacts separate from generic usr_t so the sandbox cannot read
+; arbitrary host files under /usr.
+(type kata_guest_image_t)
+(call system_f (kata_guest_image_t))
+(context kata_guest_image_t (system_u object_r kata_guest_image_t (systemLow systemLow)))
+(filecon "/usr/local/share/kata-containers/kata-containers-coco-extension.img" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-containers/kata-containers-confidential.img" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-containers/kata-containers.img" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-containers/vmlinux.container" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-containers/vmlinuz.container" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-containers/vmlinuz-[0-9]+([.][0-9]+)*-[0-9]+" file kata_guest_image_t)
+(filecon "/usr/local/share/kata-qemu-snp-experimental/qemu/.*" file kata_guest_image_t)
+(filecon "/usr/local/share/ovmf/AMDSEV.fd" file kata_guest_image_t)
+(allow pod_t kata_guest_image_t (file (read open lock)))
+
+; Kata applies the sandbox's MCS-scoped pod_t label to the VMM and virtiofsd
+; for an ordinary sandbox. A privileged sandbox has no pod process label, so
+; its VMM remains in pod_containerd_t. The ordinary VMM inspects, creates, and
+; listens on its shim-owned QMP stream, and removes the shim-created QMP socket
+; inode before binding its listener. Both execution paths create an io_uring
+; instance. Permit only those observed startup edges for the concrete domains;
+; do not broaden the pod_p attribute, generic filesystem classes, or either
+; socket class.
+(allow pod_t pod_containerd_t (unix_stream_socket (read write accept connectto getattr getopt listen)))
+(allow pod_t init_t (unix_dgram_socket (sendto)))
+(allow pod_t rootfs_t (dir (read open mounton)))
+(allow pod_t pod_containerd_socket_t (sock_file (write unlink)))
+(allow pod_t self (io_uring (allowed)))
+(allow pod_containerd_t self (io_uring (allowed)))
+
+(type cilium_t)
+(call pod_p (cilium_t))
+; Cilium is a node agent, not an isolated tenant workload. It intentionally
+; keeps one stable s0 domain while reading Kubernetes-projected configuration
+; and owning persistent CNI, BPF, and runtime host paths across pod restarts.
+; Exempt only this dedicated type from MCS category comparison; the ordinary
+; pod domains remain isolated and every object access still needs a type allow.
+(typeattributeset mcs_exempt_p cilium_t)
+; Only the Cilium agent and Envoy use this shared hostPath. Do not grant all
+; pod domains access to generic /run or pod-containerd runtime paths.
+(allow cilium_t cilium_runtime_t (fs_classes (rw)))
+; Cilium's install-cni-binaries init container populates Talos's dedicated CNI
+; binary tree before the agent starts.
+(allow cilium_t cni_plugin_t (fs_classes (rw)))
+; Talos mounts bpffs. Cilium owns its maps, programs, and perf-event readers,
+; but it does not receive generic host-namespace or /run access.
+(allow cilium_t bpf_t (fs_classes (rw)))
+(allow cilium_t self (perf_event (all)))
+(allow cilium_t containerd_p (bpf (prog_run)))
+(allow pod_containerd_t cilium_t (unix_stream_socket (connectto)))
+; The Cilium agent enumerates the standard host /run/netns directory to enter
+; pod network namespaces. It does not need write access to generic /run.
+(allow cilium_t run_t (dir (getattr open read search)))
+; In Talos 1.14 the workload namespace PID 1 is sandboxd, not machined.
+; Preserve Cilium's namespace metadata lookup without giving ordinary pods
+; that host-observer edge or granting Cilium machine-management rights.
+(allow cilium_t sandboxd_t (fs_classes (ro)))
 (typeattribute not_containerd_exec_t)
 (typeattributeset not_containerd_exec_t (not containerd_exec_t))
-(typetransition pod_containerd_t containerd_state_t process pod_t)
+; Keep the runc helper in pod_containerd_t. CRI's explicit process label moves
+; only the container entrypoint into a pod domain with the same MCS categories
+; as its rootfs. An automatic transition on either snapshot label would move
+; runc itself to pod_t at systemLow before it can apply that exact label.
 (allow pod_p containerd_state_t (fs_classes (rw)))
 (allow pod_p containerd_state_t (file (entrypoint execute execute_no_trans)))
+; With a CRI mount label, executable files in the pod rootfs are ephemeral_t
+; instead of containerd_state_t. Permit the same bounded entry transition from
+; that labeled rootfs; the requested process label still selects specialized
+; pod domains such as cilium_t.
+(allow pod_containerd_t ephemeral_t (file (execute execute_no_trans)))
+(allow pod_p ephemeral_t (file (entrypoint execute)))
 
 ; ; allow configuring CNI
 ; (allow pod_p cni_conf_t (fs_classes (rw)))
@@ -262,3 +444,7 @@
 ; CRI containerd should talk machined API to call machine.ImageService/Verify API
 (allow pod_containerd_t machine_socket_t (fs_classes (rw)))
 (allow pod_containerd_t init_t (unix_stream_socket (connectto)))
+; Kata shim v2 always connects to the host syslog socket while loading its
+; runtime configuration. Talos syslogd owns /dev/log in init_t, so allow only
+; Unix-datagram delivery from the CRI containerd domain to that service.
+(allow pod_containerd_t init_t (unix_dgram_socket (sendto)))

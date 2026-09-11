@@ -104,25 +104,39 @@ func (ext *Extension) xattrPseudoFlags(xattrsMap map[string]string) ([]string, e
 	}
 
 	flags := []string{"-xattrs-exclude", ".*"} // exclude all xattrs by default
+	paths := make([]string, 0, len(xattrsMap))
 
-	for path, xattrValue := range xattrsMap {
-		if strings.HasPrefix(path, ext.RootfsPath()) {
-			// check if the file exists still (it might have been moved to the initramfs)
-			if _, err := os.Lstat(path); os.IsNotExist(err) {
-				continue
-			}
-
-			relativePath, err := filepath.Rel(ext.RootfsPath(), path)
-			if err != nil {
-				return nil, err
-			}
-
-			if relativePath == "." {
-				relativePath = "/"
-			}
-
-			flags = append(flags, "-p", fmt.Sprintf("%s x security.selinux=%s", relativePath, xattrValue))
+	for path := range xattrsMap {
+		relativePath, err := filepath.Rel(ext.RootfsPath(), path)
+		if err != nil {
+			return nil, err
 		}
+
+		if relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+			continue
+		}
+
+		paths = append(paths, path)
+	}
+
+	slices.Sort(paths)
+
+	for _, path := range paths {
+		// check if the file exists still (it might have been moved to the initramfs)
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			continue
+		}
+
+		relativePath, err := filepath.Rel(ext.RootfsPath(), path)
+		if err != nil {
+			return nil, err
+		}
+
+		if relativePath == "." {
+			relativePath = "/"
+		}
+
+		flags = append(flags, "-p", fmt.Sprintf("%s x security.selinux=%s", relativePath, xattrsMap[path]))
 	}
 
 	return flags, nil

@@ -1,0 +1,1 @@
+(allow sandboxd_t tmpfs_t (system (kexec_image_load)))
