@@ -6,6 +6,7 @@ package storage_test
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -39,8 +40,10 @@ type fakeMDProvisioner struct {
 	// createNode is the node Create returns; createErr overrides success.
 	createNode string
 	createErr  error
+	// createNodes overrides the default node for tests with independent arrays.
+	createNodes map[string]string
 
-	creates map[string][]string            // name -> members
+	creates map[string]md.CreateOptions    // name -> requested array shape
 	adds    map[string]map[string]struct{} // device -> added members
 	grows   map[string]int                 // device -> target raid devices
 }
@@ -51,7 +54,8 @@ func newFakeMDProvisioner() *fakeMDProvisioner {
 		details:      map[string]md.Detail{},
 		syncAction:   map[string]md.SyncAction{},
 		createNode:   "/dev/md0",
-		creates:      map[string][]string{},
+		createNodes:  map[string]string{},
+		creates:      map[string]md.CreateOptions{},
 		adds:         map[string]map[string]struct{}{},
 		grows:        map[string]int{},
 	}
@@ -62,22 +66,36 @@ func (f *fakeMDProvisioner) Create(_ context.Context, name string, opts md.Creat
 	defer f.mu.Unlock()
 
 	if _, ok := f.creates[name]; !ok {
-		f.creates[name] = append([]string(nil), opts.Devices...)
+		recorded := opts
+		recorded.Devices = append([]string(nil), opts.Devices...)
+		f.creates[name] = recorded
+	}
+
+	node := f.createNode
+	if override, ok := f.createNodes[name]; ok {
+		node = override
 	}
 
 	if f.createErr != nil {
-		return f.createNode, f.createErr
+		return node, f.createErr
 	}
 
-	if _, ok := f.details[f.createNode]; !ok {
-		f.details[f.createNode] = md.Detail{
-			Level:       "raid1",
-			RaidDevices: len(opts.Devices),
+	if _, ok := f.details[node]; !ok {
+		f.details[node] = md.Detail{
+			Level:       fmt.Sprintf("raid%d", opts.Level),
+			RaidDevices: opts.RaidDevices,
 			Members:     append([]string(nil), opts.Devices...),
+			Name:        "talos:" + name,
+			UUID:        "test-" + name,
+			Metadata:    opts.Metadata,
 		}
 	}
 
-	return f.createNode, nil
+	for _, member := range opts.Devices {
+		f.findByMember[member] = node
+	}
+
+	return node, nil
 }
 
 func (f *fakeMDProvisioner) Add(_ context.Context, device string, members ...string) error {
@@ -157,9 +175,9 @@ func (f *fakeMDProvisioner) created(name string) ([]string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	members, ok := f.creates[name]
+	opts, ok := f.creates[name]
 
-	return append([]string(nil), members...), ok
+	return append([]string(nil), opts.Devices...), ok
 }
 
 func (f *fakeMDProvisioner) added(device string) []string {
@@ -194,7 +212,8 @@ func (f *fakeMDProvisioner) reset() {
 	f.syncAction = map[string]md.SyncAction{}
 	f.createNode = "/dev/md0"
 	f.createErr = nil
-	f.creates = map[string][]string{}
+	f.createNodes = map[string]string{}
+	f.creates = map[string]md.CreateOptions{}
 	f.adds = map[string]map[string]struct{}{}
 	f.grows = map[string]int{}
 }
