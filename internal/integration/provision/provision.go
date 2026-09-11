@@ -822,6 +822,16 @@ func (suite *BaseSuite) sendMonitorCommand(ctx context.Context, nodeName, comman
 
 type clusterOptions struct {
 	ClusterName string
+	// PrivateStateRoot opts into isolated state/CNI directories and avoids
+	// reading or merging the user's Talos client configuration.
+	PrivateStateRoot string
+	// NodeDisks and MemoryMB override only this fixture's VM resources.
+	NodeDisks             []*provision.Disk
+	MemoryMB              int64
+	QEMUDiskLayoutControl bool
+	// SkipBootstrapAndHealth is for negative provisioning fixtures which must
+	// remain uninstalled. They are responsible for asserting the failure state.
+	SkipBootstrapAndHealth bool
 
 	ControlplaneNodes int
 	WorkerNodes       int
@@ -862,11 +872,26 @@ type clusterOptions struct {
 //
 //nolint:gocyclo,cyclop
 func (suite *BaseSuite) setupCluster(options clusterOptions) {
-	defaultStateDir, err := clientconfig.GetTalosDirectory()
-	suite.Require().NoError(err)
+	var err error
+	if options.PrivateStateRoot != "" {
+		info, statErr := os.Lstat(options.PrivateStateRoot)
+		suite.Require().NoError(statErr)
+		suite.Require().True(info.IsDir(), "private state root must not be a symlink")
+		suite.Require().True(filepath.IsAbs(options.PrivateStateRoot))
+		suite.stateDir = filepath.Join(options.PrivateStateRoot, "clusters")
+		suite.cniDir = filepath.Join(options.PrivateStateRoot, "cni")
+	} else {
+		defaultStateDir, stateErr := clientconfig.GetTalosDirectory()
+		suite.Require().NoError(stateErr)
 
-	suite.stateDir = filepath.Join(defaultStateDir, "clusters")
-	suite.cniDir = filepath.Join(defaultStateDir, "cni")
+		suite.stateDir = filepath.Join(defaultStateDir, "clusters")
+		suite.cniDir = filepath.Join(defaultStateDir, "cni")
+	}
+
+	memoryMB := options.MemoryMB
+	if memoryMB == 0 {
+		memoryMB = DefaultSettings.MemMB
+	}
 
 	cidr, err := netip.ParsePrefix(DefaultSettings.CIDR)
 	suite.Require().NoError(err)
@@ -1098,21 +1123,18 @@ func (suite *BaseSuite) setupCluster(options clusterOptions) {
 		request.Nodes = append(
 			request.Nodes,
 			provision.NodeRequest{
-				Name:     fmt.Sprintf("control-plane-%d", i+1),
-				Type:     machine.TypeControlPlane,
-				IPs:      []netip.Addr{ips[i]},
-				UUID:     &suite.controlplaneUUIDs[i],
-				Memory:   DefaultSettings.MemMB * 1024 * 1024,
-				NanoCPUs: DefaultSettings.CPUs * 1000 * 1000 * 1000,
-				Disks: []*provision.Disk{
-					{
-						Size: DefaultSettings.DiskGB * 1024 * 1024 * 1024,
-					},
-				},
-				Config:              suite.configBundle.ControlPlane(),
-				ExtraKernelArgs:     options.InjectBootKernelArgs,
-				SDStubKernelArgs:    options.InjectExtraKernelArgs,
-				SkipInjectingConfig: options.WithSkipInjectingConfig,
+				Name:                  fmt.Sprintf("control-plane-%d", i+1),
+				Type:                  machine.TypeControlPlane,
+				IPs:                   []netip.Addr{ips[i]},
+				UUID:                  &suite.controlplaneUUIDs[i],
+				Memory:                memoryMB * 1024 * 1024,
+				NanoCPUs:              DefaultSettings.CPUs * 1000 * 1000 * 1000,
+				Disks:                 fixtureDisks(options.NodeDisks),
+				QEMUDiskLayoutControl: options.QEMUDiskLayoutControl,
+				Config:                suite.configBundle.ControlPlane(),
+				ExtraKernelArgs:       options.InjectBootKernelArgs,
+				SDStubKernelArgs:      options.InjectExtraKernelArgs,
+				SkipInjectingConfig:   options.WithSkipInjectingConfig,
 			},
 		)
 	}
@@ -1121,21 +1143,18 @@ func (suite *BaseSuite) setupCluster(options clusterOptions) {
 		request.Nodes = append(
 			request.Nodes,
 			provision.NodeRequest{
-				Name:     fmt.Sprintf("worker-%d", i),
-				Type:     machine.TypeWorker,
-				IPs:      []netip.Addr{ips[options.ControlplaneNodes+i-1]},
-				UUID:     &suite.workerUUIDs[i-1],
-				Memory:   DefaultSettings.MemMB * 1024 * 1024,
-				NanoCPUs: DefaultSettings.CPUs * 1000 * 1000 * 1000,
-				Disks: []*provision.Disk{
-					{
-						Size: DefaultSettings.DiskGB * 1024 * 1024 * 1024,
-					},
-				},
-				Config:              suite.configBundle.Worker(),
-				ExtraKernelArgs:     options.InjectBootKernelArgs,
-				SDStubKernelArgs:    options.InjectExtraKernelArgs,
-				SkipInjectingConfig: options.WithSkipInjectingConfig,
+				Name:                  fmt.Sprintf("worker-%d", i),
+				Type:                  machine.TypeWorker,
+				IPs:                   []netip.Addr{ips[options.ControlplaneNodes+i-1]},
+				UUID:                  &suite.workerUUIDs[i-1],
+				Memory:                memoryMB * 1024 * 1024,
+				NanoCPUs:              DefaultSettings.CPUs * 1000 * 1000 * 1000,
+				Disks:                 fixtureDisks(options.NodeDisks),
+				QEMUDiskLayoutControl: options.QEMUDiskLayoutControl,
+				Config:                suite.configBundle.Worker(),
+				ExtraKernelArgs:       options.InjectBootKernelArgs,
+				SDStubKernelArgs:      options.InjectExtraKernelArgs,
+				SkipInjectingConfig:   options.WithSkipInjectingConfig,
 			},
 		)
 	}
@@ -1163,12 +1182,14 @@ func (suite *BaseSuite) setupCluster(options clusterOptions) {
 		}
 	}
 
-	c, err := clientconfig.Open("")
-	suite.Require().NoError(err)
+	if options.PrivateStateRoot == "" {
+		c, configErr := clientconfig.Open("")
+		suite.Require().NoError(configErr)
 
-	c.Merge(suite.configBundle.TalosConfig())
+		c.Merge(suite.configBundle.TalosConfig())
 
-	suite.Require().NoError(c.Save(""))
+		suite.Require().NoError(c.Save(""))
+	}
 
 	suite.clusterAccess = access.NewAdapter(suite.Cluster, provision.WithTalosConfig(suite.configBundle.TalosConfig()))
 
@@ -1176,11 +1197,23 @@ func (suite *BaseSuite) setupCluster(options clusterOptions) {
 	// nodes — either injected at boot, or applied via the API (WithApplyConfig).
 	// The maintenance suites skip both injection and WithApplyConfig because they
 	// drive apply-config + bootstrap themselves.
-	if !options.WithSkipInjectingConfig || options.WithApplyConfig {
+	if !options.SkipBootstrapAndHealth && (!options.WithSkipInjectingConfig || options.WithApplyConfig) {
 		suite.Require().NoError(suite.clusterAccess.Bootstrap(suite.ctx, os.Stdout))
 
 		suite.waitForClusterHealth()
 	}
+}
+
+func fixtureDisks(override []*provision.Disk) []*provision.Disk {
+	if override == nil {
+		return []*provision.Disk{{Size: DefaultSettings.DiskGB * 1024 * 1024 * 1024}}
+	}
+
+	return xslices.Map(override, func(disk *provision.Disk) *provision.Disk {
+		copy := *disk
+
+		return &copy
+	})
 }
 
 // runE2E runs e2e test on the cluster.

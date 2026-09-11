@@ -51,6 +51,7 @@ type wireNodeRequest struct {
 	NanoCPUs              int64                           `json:"nano_cpus,omitempty"`
 	Memory                int64                           `json:"memory,omitempty"`
 	Disks                 []*provision.Disk               `json:"disks,omitempty"`
+	QEMUDiskLayoutControl bool                            `json:"qemu_disk_layout_control,omitempty"`
 	Ports                 []string                        `json:"ports,omitempty"`
 	SkipInjectingConfig   bool                            `json:"skip_injecting_config,omitempty"`
 	DefaultBootOrder      string                          `json:"default_boot_order,omitempty"`
@@ -145,6 +146,10 @@ func UnmarshalClusterRequest(b []byte) (provision.ClusterRequest, error) {
 }
 
 func nodeToWire(n *provision.NodeRequest) (wireNodeRequest, error) {
+	if n.QEMUDiskLayoutControl {
+		return wireNodeRequest{}, fmt.Errorf("QEMU disk layout control is supported only by the local native provisioner")
+	}
+
 	w := wireNodeRequest{
 		Name:                  n.Name,
 		IPs:                   n.IPs,
@@ -188,6 +193,10 @@ func nodeToWire(n *provision.NodeRequest) (wireNodeRequest, error) {
 }
 
 func nodeFromWire(w *wireNodeRequest) (provision.NodeRequest, error) {
+	if w.QEMUDiskLayoutControl {
+		return provision.NodeRequest{}, fmt.Errorf("QEMU disk layout control is supported only by the local native provisioner")
+	}
+
 	n := provision.NodeRequest{
 		Name:                  w.Name,
 		IPs:                   w.IPs,
