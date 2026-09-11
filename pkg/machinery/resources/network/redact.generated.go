@@ -7,6 +7,8 @@
 package network
 
 import (
+	"net/url"
+
 	"github.com/cosi-project/runtime/pkg/resource"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -67,7 +69,15 @@ func (spec OperatorSpecSpec) RedactSecrets(resource.Metadata) OperatorSpecSpec {
 
 // RedactSecrets implements resources.RedactableSpec interface.
 func (spec ProbeSpecSpec) RedactSecrets(resource.Metadata) ProbeSpecSpec {
-	// no sensitive fields
+	if !hasSecretsProbeSpecSpec(&spec) {
+		return spec
+	}
+
+	// the spec might share the backing storage with the resource, so copy before mutating
+	spec = spec.DeepCopy()
+
+	redactProbeSpecSpec(&spec)
+
 	return spec
 }
 
@@ -123,6 +133,20 @@ func redactOperatorSpecSpec(spec *OperatorSpecSpec) {
 	redactVIPOperatorSpec(&spec.VIP)
 }
 
+// hasSecretsProbeSpecSpec checks if ProbeSpecSpec carries any sensitive value.
+func hasSecretsProbeSpecSpec(spec *ProbeSpecSpec) bool {
+	if hasSecretsHTTPProbeSpec(&spec.HTTP) {
+		return true
+	}
+
+	return false
+}
+
+// redactProbeSpecSpec redacts sensitive values in ProbeSpecSpec in place.
+func redactProbeSpecSpec(spec *ProbeSpecSpec) {
+	redactHTTPProbeSpec(&spec.HTTP)
+}
+
 // hasSecretsWireguardSpec checks if WireguardSpec carries any sensitive value.
 func hasSecretsWireguardSpec(spec *WireguardSpec) bool {
 	if spec.PrivateKey != "" {
@@ -167,6 +191,22 @@ func redactVIPOperatorSpec(spec *VIPOperatorSpec) {
 	redactVIPEquinixMetalSpec(&spec.EquinixMetal)
 
 	redactVIPHCloudSpec(&spec.HCloud)
+}
+
+// hasSecretsHTTPProbeSpec checks if HTTPProbeSpec carries any sensitive value.
+func hasSecretsHTTPProbeSpec(spec *HTTPProbeSpec) bool {
+	if spec.URL != nil && spec.URL.User != nil {
+		return true
+	}
+
+	return false
+}
+
+// redactHTTPProbeSpec redacts sensitive values in HTTPProbeSpec in place.
+func redactHTTPProbeSpec(spec *HTTPProbeSpec) {
+	if spec.URL != nil && spec.URL.User != nil {
+		spec.URL.User = url.UserPassword(spec.URL.User.Username(), constants.Redacted)
+	}
 }
 
 // hasSecretsWireguardPeer checks if WireguardPeer carries any sensitive value.

@@ -25,3 +25,11 @@ if ! cmp -s "${generated_policy}" "${tracked_policy}"; then
 fi
 
 echo "compiled SELinux policy matches the deterministic CIL output"
+
+if ! cmp -s "${generated_dir}/policy/file_contexts" "${repo_root}/internal/pkg/selinux/policy/file_contexts"; then
+    echo "SELinux file contexts are stale; run 'make generate-selinux' and commit file_contexts" >&2
+
+    exit 1
+fi
+
+echo "SELinux file contexts match the deterministic CIL output"

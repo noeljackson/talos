@@ -20,6 +20,9 @@ import (
 type ServiceRootfsMountpoint struct {
 	Destination string
 	Directory   bool
+	// TypeUnknown preserves existing file or directory destinations without
+	// creating absent ones until the runtime can inspect the host source.
+	TypeUnknown bool
 }
 
 // ImplicitServiceRootfsMountpoints returns the files mounted into every
@@ -56,8 +59,40 @@ func EnsureServiceRootfsMountpoints(rootfsPath string, mountpoints []ServiceRoot
 
 	defer rootfs.Close() //nolint:errcheck
 
+	return ensureServiceRootfsMountpoints(rootfs, mountpoints)
+}
+
+// EnsureServiceRootfsMountpointsInRoot prepares a service rootfs below an
+// extracted extension root. The service root and its ancestors must be real
+// directories: following archive-provided symlinks here would change the root
+// used for both mountpoint preparation and container-namespace labeling.
+func EnsureServiceRootfsMountpointsInRoot(extensionRoot, servicePath string, mountpoints []ServiceRootfsMountpoint) error {
+	if !filepath.IsLocal(servicePath) || filepath.Clean(servicePath) == "." {
+		return fmt.Errorf("invalid extension service rootfs path %q", servicePath)
+	}
+
+	rootfs, err := os.OpenFile(extensionRoot, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("error opening extension rootfs: %w", err)
+	}
+
+	for _, component := range strings.Split(filepath.Clean(servicePath), string(os.PathSeparator)) {
+		fd, openErr := unix.Openat(int(rootfs.Fd()), component, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		_ = rootfs.Close()
+		if openErr != nil {
+			return fmt.Errorf("error opening extension service rootfs %q: %w", servicePath, openErr)
+		}
+
+		rootfs = os.NewFile(uintptr(fd), component)
+	}
+	defer rootfs.Close() //nolint:errcheck
+
+	return ensureServiceRootfsMountpoints(rootfs, mountpoints)
+}
+
+func ensureServiceRootfsMountpoints(rootfs *os.File, mountpoints []ServiceRootfsMountpoint) error {
 	for _, mountpoint := range mountpoints {
-		if err = ensureServiceRootfsMountpoint(rootfs, mountpoint); err != nil {
+		if err := ensureServiceRootfsMountpoint(rootfs, mountpoint); err != nil {
 			return err
 		}
 	}
@@ -83,6 +118,10 @@ func ensureServiceRootfsMountpoint(rootfs *os.File, mountpoint ServiceRootfsMoun
 		return validateServiceRootfsMountpoint(handle, mountpoint)
 	case !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("error inspecting extension rootfs mountpoint %q: %w", mountpoint.Destination, err)
+	}
+
+	if mountpoint.TypeUnknown {
+		return nil
 	}
 
 	if mountpoint.Directory {
@@ -131,6 +170,10 @@ func validateServiceRootfsMountpoint(handle *os.File, mountpoint ServiceRootfsMo
 	}
 
 	switch {
+	case mountpoint.TypeUnknown:
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("extension rootfs mountpoint %q is not a regular file or directory", mountpoint.Destination)
+		}
 	case mountpoint.Directory && !info.IsDir():
 		return fmt.Errorf("extension rootfs mountpoint %q is not a directory", mountpoint.Destination)
 	case !mountpoint.Directory && !info.Mode().IsRegular():

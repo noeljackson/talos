@@ -39,11 +39,14 @@ func TalosAPIdOne2ManyAPIs() []protoreflect.FileDescriptor {
 //
 // This includes legacy one-to-many APIs as well as newer one-to-one APIs.
 func TalosAPIdAllAPIs() []protoreflect.FileDescriptor {
-	return append(TalosAPIdOne2ManyAPIs(),
+	return append(
+		TalosAPIdOne2ManyAPIs(),
 		cosi.File_v1alpha1_state_proto,
 		machine.File_machine_debug_proto,
 		machine.File_machine_image_proto,
 		machine.File_machine_lifecycle_proto,
+		machine.File_machine_lvm_proto,
+		machine.File_machine_md_proto,
 	)
 }
 
@@ -51,7 +54,8 @@ func TalosAPIdAllAPIs() []protoreflect.FileDescriptor {
 //
 // This includes Talos apid and trustd APIs.
 func AllAPIs() []protoreflect.FileDescriptor {
-	return append(TalosAPIdAllAPIs(),
+	return append(
+		TalosAPIdAllAPIs(),
 		security.File_security_security_proto,
 	)
 }

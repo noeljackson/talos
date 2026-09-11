@@ -5,20 +5,52 @@
 package vm
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"syscall"
+	"time"
 
 	"github.com/miekg/dns"
+	"github.com/siderolabs/go-retry/retry"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/siderolabs/talos/pkg/provision"
 )
 
+func dnsServe(ctx context.Context, server *dns.Server, log *slog.Logger) error {
+	// IPv6 address takes longer to become ready, and therefore might need a retry
+	err := retry.Constant(
+		time.Minute,
+		retry.WithUnits(time.Second),
+	).RetryWithContext(ctx, func(_ context.Context) error {
+		log.Info("starting DNS forwarder server")
+
+		err := server.ListenAndServe()
+		if err != nil {
+			log.Warn("Failed to listen", slog.String("err", err.Error()))
+		}
+
+		if errors.Is(err, syscall.EADDRNOTAVAIL) {
+			return retry.ExpectedErrorf("address %s unavailable", server.Addr)
+		}
+
+		return err
+	})
+
+	if ctx.Err() != nil {
+		return nil //nolint:nilerr
+	}
+
+	return err
+}
+
 // DNSd entrypoint.
-func DNSd(ips []net.IP, resolvConfPath string) error {
-	var eg errgroup.Group
+func DNSd(ctx context.Context, ips []net.IP, resolvConfPath string) error {
+	eg, egCtx := errgroup.WithContext(ctx)
 
 	config, err := dns.ClientConfigFromFile(resolvConfPath)
 	if err != nil {
@@ -32,30 +64,34 @@ func DNSd(ips []net.IP, resolvConfPath string) error {
 
 	defer initLog.Info("bye")
 
-	dnsServe := func(ip net.IP, mode string) error {
-		addr := net.JoinHostPort(ip.String(), "53")
-
-		log := initLog.With("mode", mode, "addr", addr)
-
-		server := &dns.Server{
-			Addr:    addr,
-			Net:     mode,
-			Handler: dns.HandlerFunc(forwardHandler(mode, log, config)),
-		}
-
-		log.Info("starting DNS forwarder server")
-
-		return server.ListenAndServe()
-	}
-
 	for _, ip := range ips {
-		eg.Go(func() error {
-			return dnsServe(ip, "udp")
-		})
+		for _, mode := range []string{"udp", "tcp"} {
+			addr := net.JoinHostPort(ip.String(), "53")
+			log := initLog.With("mode", mode, "addr", addr)
 
-		eg.Go(func() error {
-			return dnsServe(ip, "tcp")
-		})
+			server := &dns.Server{
+				Addr:    addr,
+				Net:     mode,
+				Handler: dns.HandlerFunc(forwardHandler(mode, log, config)),
+			}
+
+			eg.Go(func() error {
+				<-egCtx.Done()
+
+				sCtx, sCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer sCancel()
+
+				if err := server.ShutdownContext(sCtx); err != nil && !errors.Is(err, net.ErrClosed) {
+					return err
+				}
+
+				return nil
+			})
+
+			eg.Go(func() error {
+				return dnsServe(egCtx, server, log)
+			})
+		}
 	}
 
 	return eg.Wait()

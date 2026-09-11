@@ -33,7 +33,7 @@ jobs:
       - name: Install contract tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends shellcheck
+          sudo apt-get install -y --no-install-recommends jq python3 shellcheck
       - name: Verify the deployment publication contract
         run: ./hack/codewire-confidential-storage/test-publication-contract.sh
       - name: Check deployment shell programs
@@ -61,12 +61,12 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Reject an unauthorized publication context
-        run: ./hack/codewire-confidential-storage/publish-runtime-helpers.sh preflight
       - name: Install exact-build and publication tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends jq make skopeo
+      - name: Reject an unauthorized publication context
+        run: ./hack/codewire-confidential-storage/publish-runtime-helpers.sh preflight
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:

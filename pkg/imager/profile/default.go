@@ -53,6 +53,19 @@ var Default = map[string]Profile{
 			},
 		},
 	},
+	"metal-4k": {
+		Platform:   constants.PlatformMetal,
+		SecureBoot: new(false),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatZSTD,
+			ImageOptions: &ImageOptions{
+				DiskSize:       MinRAWDiskSize,
+				DiskFormat:     DiskFormatRaw,
+				DiskSectorSize: 4096,
+			},
+		},
+	},
 	"metal-uki": {
 		Platform:   constants.PlatformMetal,
 		SecureBoot: new(false),
@@ -110,6 +123,19 @@ var Default = map[string]Profile{
 			},
 		},
 	},
+	"alibabacloud": {
+		Platform:   "alibabacloud",
+		SecureBoot: new(false),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatRaw,
+			ImageOptions: &ImageOptions{
+				DiskSize:          MinRAWDiskSize,
+				DiskFormat:        DiskFormatQCOW2,
+				DiskFormatOptions: "cluster_size=8k",
+			},
+		},
+	},
 	"aws": {
 		Platform:   "aws",
 		SecureBoot: new(false),
@@ -135,9 +161,34 @@ var Default = map[string]Profile{
 			},
 		},
 	},
+	"secureboot-azure": {
+		Platform:   "azure",
+		SecureBoot: new(true),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatZSTD,
+			ImageOptions: &ImageOptions{
+				DiskSize:          DefaultRAWDiskSize,
+				DiskFormat:        DiskFormatVPC,
+				DiskFormatOptions: "subformat=fixed,force_size",
+			},
+		},
+	},
 	"cloudstack": {
 		Platform:   "cloudstack",
 		SecureBoot: new(false),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatZSTD,
+			ImageOptions: &ImageOptions{
+				DiskSize:   DefaultRAWDiskSize,
+				DiskFormat: DiskFormatRaw,
+			},
+		},
+	},
+	"secureboot-cloudstack": {
+		Platform:   "cloudstack",
+		SecureBoot: new(true),
 		Output: Output{
 			Kind:      OutKindImage,
 			OutFormat: OutFormatZSTD,
@@ -208,6 +259,18 @@ var Default = map[string]Profile{
 			},
 		},
 	},
+	"secureboot-nocloud": {
+		Platform:   "nocloud",
+		SecureBoot: new(true),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatZSTD,
+			ImageOptions: &ImageOptions{
+				DiskSize:   MinRAWDiskSize,
+				DiskFormat: DiskFormatRaw,
+			},
+		},
+	},
 	"opennebula": {
 		Platform:   "opennebula",
 		SecureBoot: new(false),
@@ -220,9 +283,33 @@ var Default = map[string]Profile{
 			},
 		},
 	},
+	"secureboot-opennebula": {
+		Platform:   "opennebula",
+		SecureBoot: new(true),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatZSTD,
+			ImageOptions: &ImageOptions{
+				DiskSize:   MinRAWDiskSize,
+				DiskFormat: DiskFormatRaw,
+			},
+		},
+	},
 	"openstack": {
 		Platform:   "openstack",
 		SecureBoot: new(false),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatZSTD,
+			ImageOptions: &ImageOptions{
+				DiskSize:   MinRAWDiskSize,
+				DiskFormat: DiskFormatRaw,
+			},
+		},
+	},
+	"secureboot-openstack": {
+		Platform:   "openstack",
+		SecureBoot: new(true),
 		Output: Output{
 			Kind:      OutKindImage,
 			OutFormat: OutFormatZSTD,
@@ -272,6 +359,18 @@ var Default = map[string]Profile{
 	"vmware": {
 		Platform:   "vmware",
 		SecureBoot: new(false),
+		Output: Output{
+			Kind:      OutKindImage,
+			OutFormat: OutFormatRaw,
+			ImageOptions: &ImageOptions{
+				DiskSize:   DefaultRAWDiskSize,
+				DiskFormat: DiskFormatOVA,
+			},
+		},
+	},
+	"secureboot-vmware": {
+		Platform:   "vmware",
+		SecureBoot: new(true),
 		Output: Output{
 			Kind:      OutKindImage,
 			OutFormat: OutFormatRaw,

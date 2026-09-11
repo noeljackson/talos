@@ -95,6 +95,12 @@ type UserVolumeConfigV1Alpha1 struct {
 	//   description: |
 	//     The mount describes additional mount options.
 	MountSpec UserMountSpec `yaml:"mount,omitempty"`
+	//   description: |
+	//     The trim describes the per-volume filesystem trim (fstrim) configuration.
+	TrimSpec *TrimConfig `yaml:"trim,omitempty"`
+	//   description: |
+	//     The scrub describes the per-volume filesystem scrub configuration.
+	ScrubSpec *ScrubConfig `yaml:"scrub,omitempty"`
 }
 
 // UserMountSpec describes how the volume is mounted.
@@ -103,7 +109,7 @@ type UserMountSpec struct {
 	//     If true, disable file access time updates.
 	MountDisableAccessTime *bool `yaml:"disableAccessTime,omitempty"`
 	//   description: |
-	//     Enable secure mount options (nosuid, nodev).
+	//     Enable secure mount options (nosuid, nodev, noexec).
 	//
 	//     Defaults to true for better security.
 	MountSecure *bool `yaml:"secure,omitempty"`
@@ -265,8 +271,8 @@ func (s *UserVolumeConfigV1Alpha1) Validate(validation.RuntimeMode, ...validatio
 			validationErrors = errors.Join(validationErrors, errors.New("filesystem spec is invalid for volumeType directory"))
 		}
 
-		if !s.MountSpec.IsZero() {
-			validationErrors = errors.Join(validationErrors, errors.New("mount spec is invalid for volumeType directory"))
+		if s.MountSpec.MountDisableAccessTime != nil {
+			validationErrors = errors.Join(validationErrors, errors.New("mount.disableAccessTime is invalid for volumeType directory"))
 		}
 
 	case block.VolumeTypeDisk:
@@ -304,6 +310,14 @@ func (s *UserVolumeConfigV1Alpha1) Validate(validation.RuntimeMode, ...validatio
 		validationErrors = errors.Join(validationErrors, fmt.Errorf("unsupported volume type %q", vtype))
 	}
 
+	if err := s.TrimSpec.Validate(); err != nil {
+		validationErrors = errors.Join(validationErrors, err)
+	}
+
+	if err := s.ScrubSpec.Validate(); err != nil {
+		validationErrors = errors.Join(validationErrors, err)
+	}
+
 	return warnings, validationErrors
 }
 
@@ -339,8 +353,26 @@ func (s *UserVolumeConfigV1Alpha1) Encryption() config.EncryptionConfig {
 }
 
 // Mount implements config.UserVolumeConfig interface.
-func (s *UserVolumeConfigV1Alpha1) Mount() config.UserVolumeMountConfig {
+func (s *UserVolumeConfigV1Alpha1) Mount() config.VolumeMountConfig {
 	return s.MountSpec
+}
+
+// Trim implements config.UserVolumeConfig interface.
+func (s *UserVolumeConfigV1Alpha1) Trim() config.VolumeTrimConfig {
+	if s.TrimSpec == nil {
+		return nil
+	}
+
+	return s.TrimSpec
+}
+
+// Scrub implements config.UserVolumeConfig interface.
+func (s *UserVolumeConfigV1Alpha1) Scrub() config.VolumeScrubConfig {
+	if s.ScrubSpec == nil {
+		return nil
+	}
+
+	return s.ScrubSpec
 }
 
 // FilesystemSpec configures the filesystem for the volume.
@@ -350,17 +382,44 @@ type FilesystemSpec struct {
 	//   values:
 	//     - ext4
 	//     - xfs
+	//     - btrfs
 	FilesystemType block.FilesystemType `yaml:"type,omitempty"`
 	//   description: |
 	//     Enables project quota support, valid only for 'xfs' filesystem.
 	//
 	//     Note: changing this value might require a full remount of the filesystem.
 	ProjectQuotaSupportConfig *bool `yaml:"projectQuotaSupport,omitempty"`
+	//   description: |
+	//     XFS-specific filesystem options, valid only for 'xfs' filesystem.
+	XFSSpec *XFSSpec `yaml:"xfs,omitempty"`
+}
+
+// XFSSpec configures XFS-specific filesystem options.
+type XFSSpec struct {
+	//  description: |
+	//    The minimum size of an XFS allocation group.
+	//
+	//    On non-rotational devices `mkfs.xfs` sizes the allocation group count to the number of
+	//    CPUs, which on machines with many cores and a modest disk yields hundreds of tiny
+	//    allocation groups. Talos bounds the allocation group size from below to keep the geometry
+	//    sane; this option overrides that bound.
+	//
+	//    Set to zero to use the `mkfs.xfs` defaults unchanged.
+	//
+	//    Note: this only affects volumes at the time they are formatted.
+	//
+	//    Size is specified in bytes, but can be expressed in human readable format, e.g. 100MB.
+	//  examples:
+	//    - value: >
+	//        "128GiB"
+	//  schema:
+	//    type: string
+	MinAllocationGroupSizeConfig ByteSize `yaml:"minAllocationGroupSize,omitempty"`
 }
 
 // IsZero checks if the filesystem spec is zero.
 func (s FilesystemSpec) IsZero() bool {
-	return s.FilesystemType == block.FilesystemTypeNone && s.ProjectQuotaSupportConfig == nil
+	return s.FilesystemType == block.FilesystemTypeNone && s.ProjectQuotaSupportConfig == nil && s.XFSSpec == nil
 }
 
 // Type implements config.FilesystemConfig interface.
@@ -377,12 +436,22 @@ func (s FilesystemSpec) ProjectQuotaSupport() bool {
 	return pointer.SafeDeref(s.ProjectQuotaSupportConfig)
 }
 
+// XFS implements config.FilesystemConfig interface.
+func (s FilesystemSpec) XFS() config.XFSFilesystemConfig {
+	if s.XFSSpec == nil {
+		return nil
+	}
+
+	return s.XFSSpec
+}
+
 // Validate implements config.Validator interface.
 func (s FilesystemSpec) Validate() ([]string, error) {
 	switch s.FilesystemType { //nolint:exhaustive
 	case block.FilesystemTypeNone:
 	case block.FilesystemTypeXFS:
 	case block.FilesystemTypeEXT4:
+	case block.FilesystemTypeBtrfs:
 	default:
 		return nil, fmt.Errorf("unsupported filesystem type: %s", s.FilesystemType)
 	}
@@ -391,7 +460,20 @@ func (s FilesystemSpec) Validate() ([]string, error) {
 		return nil, fmt.Errorf("project quota support is only available for xfs filesystem")
 	}
 
+	if s.XFSSpec != nil && s.Type() != block.FilesystemTypeXFS {
+		return nil, fmt.Errorf("xfs options are only available for xfs filesystem")
+	}
+
 	return nil, nil
+}
+
+// MinAllocationGroupSize implements config.XFSFilesystemConfig interface.
+func (s *XFSSpec) MinAllocationGroupSize() optional.Optional[uint64] {
+	if s.MinAllocationGroupSizeConfig.IsZero() {
+		return optional.None[uint64]()
+	}
+
+	return optional.Some(s.MinAllocationGroupSizeConfig.Value())
 }
 
 // IsZero checks if the mount spec is zero.

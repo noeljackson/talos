@@ -15,7 +15,7 @@ import (
 	"github.com/siderolabs/go-talos-support/support"
 	"github.com/siderolabs/go-talos-support/support/bundle"
 	"github.com/siderolabs/go-talos-support/support/collectors"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -49,17 +49,17 @@ func Crashdump(ctx context.Context, cluster provision.Cluster, logWriter io.Writ
 		return nodeInfo.IPs[0].String()
 	})
 
-	controlplane := nodes[0]
-
 	opts := []bundle.Option{
 		bundle.WithArchiveOutput(supportFile),
-		bundle.WithTalosClient(c),
+		bundle.WithTalosClientProvider(func(ctx context.Context, node string) (context.Context, *client.Client, error) {
+			return client.WithNode(ctx, node), c, nil
+		}),
 		bundle.WithNodes(nodes...),
 		bundle.WithNumWorkers(4),
 		bundle.WithLogOutput(io.Discard),
 	}
 
-	kubeclient, err := getKubernetesClient(ctx, c, controlplane)
+	kubeclient, err := getKubernetesClient(ctx, c)
 	// ignore error if we can't get a k8s client
 	if err == nil {
 		opts = append(opts, bundle.WithKubernetesClient(kubeclient))
@@ -69,9 +69,13 @@ func Crashdump(ctx context.Context, cluster provision.Cluster, logWriter io.Writ
 
 	collectors, err := collectors.GetForOptions(ctx, options)
 	if err != nil {
-		fmt.Fprintf(logWriter, "error creating crashdump collector options: %s\n", err)
+		if len(collectors) == 0 {
+			fmt.Fprintf(logWriter, "error creating crashdump collectors: %s\n", err)
 
-		return
+			return
+		}
+
+		fmt.Fprintf(logWriter, "warning: error (ignored) creating some crashdump collectors: %s\n", err)
 	}
 
 	if err := support.CreateSupportBundle(ctx, options, collectors...); err != nil {
@@ -81,8 +85,8 @@ func Crashdump(ctx context.Context, cluster provision.Cluster, logWriter io.Writ
 	}
 }
 
-func getKubernetesClient(ctx context.Context, c *client.Client, endpoint string) (*k8s.Clientset, error) {
-	kubeconfig, err := c.Kubeconfig(client.WithNodes(ctx, endpoint))
+func getKubernetesClient(ctx context.Context, c *client.Client) (*k8s.Clientset, error) {
+	kubeconfig, err := c.Kubeconfig(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +107,7 @@ func getKubernetesClient(ctx context.Context, c *client.Client, endpoint string)
 	}
 
 	// just checking that k8s responds
-	_, err = clientset.CoreV1().Namespaces().Get(ctx, "kube-system", v1.GetOptions{})
+	_, err = clientset.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}

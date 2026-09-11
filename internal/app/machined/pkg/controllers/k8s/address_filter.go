@@ -94,35 +94,18 @@ func (ctrl *AddressFilterController) Run(ctx context.Context, r controller.Runti
 
 		r.StartTrackingOutputs()
 
-		if cfg != nil && cfg.Config().Cluster() != nil {
-			cfgProvider := cfg.Config()
-
+		if cfg != nil {
 			var podCIDRs, serviceCIDRs []netip.Prefix
 
-			for _, cidr := range cfgProvider.Cluster().Network().PodCIDRs() {
-				var ipPrefix netip.Prefix
+			if cfg.Config().K8sNetworkConfig() != nil {
+				k8sNetwork := cfg.Config().K8sNetworkConfig()
 
-				ipPrefix, err = netip.ParsePrefix(cidr)
-				if err != nil {
-					return fmt.Errorf("error parsing podCIDR: %w", err)
+				podCIDRs = slices.Clone(k8sNetwork.PodCIDRs())
+				serviceCIDRs = slices.Clone(k8sNetwork.ServiceCIDRs())
+
+				if nodeStatus != nil {
+					podCIDRs = slices.Concat(podCIDRs, nodeStatus.TypedSpec().PodCIDRs)
 				}
-
-				podCIDRs = append(podCIDRs, ipPrefix)
-			}
-
-			if nodeStatus != nil {
-				podCIDRs = append(podCIDRs, nodeStatus.TypedSpec().PodCIDRs...)
-			}
-
-			for _, cidr := range cfgProvider.Cluster().Network().ServiceCIDRs() {
-				var ipPrefix netip.Prefix
-
-				ipPrefix, err = netip.ParsePrefix(cidr)
-				if err != nil {
-					return fmt.Errorf("error parsing serviceCIDR: %w", err)
-				}
-
-				serviceCIDRs = append(serviceCIDRs, ipPrefix)
 			}
 
 			if err = safe.WriterModify(ctx, r, network.NewNodeAddressFilter(network.NamespaceName, k8s.NodeAddressFilterNoK8s), func(r *network.NodeAddressFilter) error {
@@ -134,7 +117,17 @@ func (ctrl *AddressFilterController) Run(ctx context.Context, r controller.Runti
 			}
 
 			if err = safe.WriterModify(ctx, r, network.NewNodeAddressFilter(network.NamespaceName, k8s.NodeAddressFilterOnlyK8s), func(r *network.NodeAddressFilter) error {
-				r.TypedSpec().IncludeSubnets = slices.Concat(podCIDRs, serviceCIDRs)
+				if len(podCIDRs)+len(serviceCIDRs) > 0 {
+					r.TypedSpec().IncludeSubnets = slices.Concat(podCIDRs, serviceCIDRs)
+					r.TypedSpec().ExcludeSubnets = nil
+				} else {
+					// if k8s is disabled, we want to exclude all networks from "k8s-only" filter
+					r.TypedSpec().IncludeSubnets = nil
+					r.TypedSpec().ExcludeSubnets = []netip.Prefix{
+						netip.MustParsePrefix("0.0.0.0/0"),
+						netip.MustParsePrefix("::/0"),
+					}
+				}
 
 				return nil
 			}); err != nil {

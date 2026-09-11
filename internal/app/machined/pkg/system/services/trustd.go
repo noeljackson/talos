@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-//nolint:golint
+//nolint:revive
 package services
 
 import (
@@ -37,6 +37,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/fipsmode"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/resources/secrets"
 	timeresource "github.com/siderolabs/talos/pkg/machinery/resources/time"
 )
@@ -140,10 +141,19 @@ func (t *Trustd) PostFunc(runtime.Runtime, events.ServiceState) (err error) {
 
 // Condition implements the Service interface.
 func (t *Trustd) Condition(r runtime.Runtime) conditions.Condition {
-	return conditions.WaitForAll(
+	cond := []conditions.Condition{
 		timeresource.NewSyncCondition(r.State().V1Alpha2().Resources()),
 		network.NewReadyCondition(r.State().V1Alpha2().Resources(), network.AddressReady, network.HostnameReady),
-	)
+	}
+
+	if !r.State().Platform().Mode().InContainer() && r.Config().UnattendedInstallConfig() != nil {
+		cond = append(
+			cond,
+			runtimeres.NewUnattendedInstallCondition(r.State().V1Alpha2().Resources()),
+		)
+	}
+
+	return conditions.WaitForAll(cond...)
 }
 
 // DependsOn implements the Service interface.
@@ -167,12 +177,14 @@ func (t *Trustd) Runner(r runtime.Runtime) (runner.Runner, error) {
 	// Set the mounts.
 	mounts := []specs.Mount{
 		{Type: "bind", Destination: filepath.Dir(constants.TrustdRuntimeSocketPath), Source: filepath.Dir(constants.TrustdRuntimeSocketPath), Options: []string{"rbind", "ro"}},
+		{Type: "bind", Destination: "/trustd", Source: "/sbin/init", Options: []string{"bind", "ro"}},
 	}
 
 	mounts = bindMountContainerMarker(mounts)
 
 	env := environment.Get(r.Config())
-	env = append(env,
+	env = append(
+		env,
 		constants.EnvTcellMinimizeEnvironment,
 		constants.EnvTrustdGomemlimit(),
 	)
@@ -185,25 +197,26 @@ func (t *Trustd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		env = append(env, constants.EnvFIPS140ModeStrict)
 	}
 
-	return restart.New(containerd.NewRunner(
-		r.Config().Debug(),
-		&args,
-		runner.WithLoggingManager(r.Logging()),
-		runner.WithContainerdAddress(constants.SystemContainerdAddress),
-		runner.WithEnv(env),
-		runner.WithCgroupPath(constants.CgroupTrustd),
-		runner.WithGracefulShutdownTimeout(15*time.Second),
-		runner.WithSelinuxLabel(constants.SelinuxLabelTrustd),
-		runner.WithOCISpecOpts(
-			oci.WithDroppedCapabilities(cap.Known()),
-			oci.WithHostNamespace(specs.NetworkNamespace),
-			oci.WithMounts(mounts),
-			oci.WithRootFSPath(filepath.Join(constants.SystemLibexecPath, t.ID(r))),
-			oci.WithRootFSReadonly(),
-			oci.WithUser(fmt.Sprintf("%d:%d", constants.TrustdUserID, constants.TrustdUserID)),
+	return restart.New(
+		containerd.NewRunner(
+			r.Config().Debug(),
+			&args,
+			runner.WithLoggingManager(r.Logging()),
+			runner.WithContainerdAddress(constants.SystemContainerdAddress),
+			runner.WithEnv(env),
+			runner.WithCgroupPath(constants.CgroupTrustd),
+			runner.WithGracefulShutdownTimeout(15*time.Second),
+			runner.WithSelinuxLabel(constants.SelinuxLabelTrustd),
+			runner.WithOCISpecOpts(
+				oci.WithDroppedCapabilities(cap.Known()),
+				oci.WithHostNamespace(specs.NetworkNamespace),
+				oci.WithMounts(mounts),
+				oci.WithRootFSPath(filepath.Join(constants.SystemLibexecPath, t.ID(r))),
+				oci.WithRootFSReadonly(),
+				oci.WithUIDGID(constants.TrustdUserID, constants.TrustdUserID),
+			),
+			runner.WithOOMScoreAdj(-998),
 		),
-		runner.WithOOMScoreAdj(-998),
-	),
 		restart.WithType(restart.Forever),
 	), nil
 }

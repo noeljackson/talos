@@ -76,6 +76,11 @@ type Maker[ExtraOps any] struct {
 	GenOps          []generate.Option
 	ConfigBundleOps []bundle.Option
 
+	// PerNodePatches holds config patches applied to a single node (keyed by node index) after the base
+	// machine config is generated, for per-node uniqueness a shared control-plane/worker patch cannot
+	// express (e.g. a unique BGP loopback per node in full-CLOS).
+	PerNodePatches map[int][]configpatcher.Patch
+
 	EOps ExtraOps
 
 	extraOptionsProvider ExtraOptionsProvider
@@ -214,6 +219,10 @@ func (m *Maker[T]) initVersionContract() error {
 		return fmt.Errorf("error parsing Talos version %q: %w", m.Ops.TalosVersion, err)
 	}
 
+	if m.Ops.SkipEtcdK8sConfig {
+		versionContract = versionContract.DisableEtcd().DisableKubernetes()
+	}
+
 	m.VersionContract = versionContract
 
 	return nil
@@ -273,6 +282,7 @@ func (m *Maker[T]) applyOmniConfigs() error {
 	return nil
 }
 
+//nolint:gocyclo
 func (m *Maker[T]) finalizeMachineConfigs() (*bundle.Bundle, error) {
 	// These options needs to be generated after the implementing maker has made changes to the cluster request.
 	provisionGenOps, provisionBundleOps := m.Provisioner.GenOptions(m.ClusterRequest.Network, m.VersionContract)
@@ -280,14 +290,16 @@ func (m *Maker[T]) finalizeMachineConfigs() (*bundle.Bundle, error) {
 	m.ConfigBundleOps = slices.Concat(m.ConfigBundleOps, provisionBundleOps)
 	m.GenOps = slices.Concat(m.GenOps, []generate.Option{generate.WithEndpointList(m.Endpoints)})
 
-	m.ConfigBundleOps = append(m.ConfigBundleOps,
+	m.ConfigBundleOps = append(
+		m.ConfigBundleOps,
 		bundle.WithInputOptions(
 			&bundle.InputOptions{
 				ClusterName: m.Ops.RootOps.ClusterName,
 				Endpoint:    m.InClusterEndpoint,
 				KubeVersion: strings.TrimPrefix(m.Ops.KubernetesVersion, "v"),
 				GenOptions:  m.GenOps,
-			}),
+			},
+		),
 	)
 
 	configBundle, err := bundle.NewBundle(m.ConfigBundleOps...)
@@ -329,6 +341,27 @@ func (m *Maker[T]) finalizeMachineConfigs() (*bundle.Bundle, error) {
 			if err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	// apply per-node patches last, so per-node uniqueness (e.g. a unique full-CLOS loopback) overrides
+	// the shared base config.
+	for i := range m.ClusterRequest.Nodes {
+		patches := m.PerNodePatches[i]
+		if len(patches) == 0 {
+			continue
+		}
+
+		node := &m.ClusterRequest.Nodes[i]
+
+		out, err := configpatcher.Apply(configpatcher.WithConfig(node.Config), patches)
+		if err != nil {
+			return nil, err
+		}
+
+		node.Config, err = out.Config()
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -445,11 +478,16 @@ func (m *Maker[T]) initGenOps() error {
 	}
 
 	if m.Ops.EnableKubeSpan {
-		genOptions = slices.Concat(genOptions,
+		genOptions = slices.Concat(
+			genOptions,
 			[]generate.Option{
 				generate.WithKubeSpanEnabled(m.Ops.EnableKubeSpan),
 			},
 		)
+	}
+
+	if m.Ops.SkipUnattendedInstallConfig {
+		genOptions = append(genOptions, generate.WithSkipUnattendedInstallConfig(true))
 	}
 
 	m.GenOps = genOptions

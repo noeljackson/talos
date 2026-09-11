@@ -7,14 +7,15 @@ package k8s
 import (
 	"encoding/json"
 
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 )
 
 // StaticPod adapter provides conversion from *v1.Pod.
 //
-//nolint:revive,golint
+//nolint:revive
 func StaticPod(r *k8s.StaticPod) staticPod {
 	return staticPod{
 		StaticPod: r,
@@ -26,8 +27,8 @@ type staticPod struct {
 }
 
 // Pod returns native Kubernetes resource.
-func (a staticPod) Pod() (*v1.Pod, error) {
-	var spec v1.Pod
+func (a staticPod) Pod() (*corev1.Pod, error) {
+	var spec corev1.Pod
 
 	jsonSerialized, err := json.Marshal(a.StaticPod.TypedSpec().Pod)
 	if err != nil {
@@ -40,7 +41,7 @@ func (a staticPod) Pod() (*v1.Pod, error) {
 }
 
 // SetPod sets spec from native Kubernetes resource.
-func (a staticPod) SetPod(podSpec *v1.Pod) error {
+func (a staticPod) SetPod(podSpec runtime.Object) error {
 	jsonSerialized, err := json.Marshal(podSpec)
 	if err != nil {
 		return err

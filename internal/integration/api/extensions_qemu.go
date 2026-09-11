@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +32,7 @@ import (
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/siderolabs/talos/internal/integration/base"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/api/storage"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
@@ -102,40 +104,39 @@ func (suite *ExtensionsSuiteQEMU) TestExtensionsExpectedPaths() {
 
 // TestExtensionsExpectedModules verifies expected modules are loaded and in modules.dep.
 func (suite *ExtensionsSuiteQEMU) TestExtensionsExpectedModules() {
-	// expectedModulesModDep is a map of module name to module.dep name
-	expectedModulesModDep := map[string]string{
-		"asix":            "asix.ko",
-		"ax88179_178a":    "ax88179_178a.ko",
-		"ax88796b":        "ax88796b.ko",
-		"binfmt_misc":     "binfmt_misc.ko",
-		"btrfs":           "btrfs.ko",
-		"cdc_ether":       "cdc_ether.ko",
-		"cdc_mbim":        "cdc_mbim.ko",
-		"cdc_ncm":         "cdc_ncm.ko",
-		"cdc_subset":      "cdc_subset.ko",
-		"cdc_wdm":         "cdc-wdm.ko",
-		"cxgb":            "cxgb.ko",
-		"cxgb3":           "cxgb3.ko",
-		"cxgb4":           "cxgb4.ko",
-		"cxgb4vf":         "cxgb4vf.ko",
-		"drbd":            "drbd.ko",
-		"ena":             "ena.ko",
-		"gasket":          "gasket.ko",
-		"net1080":         "net1080.ko",
-		"option":          "option.ko",
-		"qmi_wwan":        "qmi_wwan.ko",
-		"r8153_ecm":       "r8153_ecm.ko",
-		"thunderbolt":     "thunderbolt.ko",
-		"thunderbolt_net": "thunderbolt_net.ko",
-		"usb_wwan":        "usb_wwan.ko",
-		"usbnet":          "usbnet.ko",
-		"xdma":            "xdma.ko",
-		"zaurus":          "zaurus.ko",
-		"zfs":             "zfs.ko",
+	expectedModules := []string{
+		"asix",
+		"ax88179_178a",
+		"ax88796b",
+		"binfmt_misc",
+		"btrfs",
+		"cdc_ether",
+		"cdc_mbim",
+		"cdc_ncm",
+		"cdc_subset",
+		"cdc_wdm",
+		"cxgb",
+		"cxgb3",
+		"cxgb4",
+		"cxgb4vf",
+		"drbd",
+		"ena",
+		"gasket",
+		"net1080",
+		"option",
+		"qmi_wwan",
+		"r8153_ecm",
+		"thunderbolt",
+		"thunderbolt_net",
+		"usb_wwan",
+		"usbnet",
+		"xdma",
+		"zaurus",
+		"zfs",
 	}
 
 	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
-	suite.AssertExpectedModules(suite.ctx, node, expectedModulesModDep)
+	suite.AssertExpectedModules(suite.ctx, node, expectedModules)
 }
 
 // TestExtensionsNutClient verifies nut client is working.
@@ -176,6 +177,159 @@ func (suite *ExtensionsSuiteQEMU) TestExtensionsQEMUGuestAgent() {
 		}, 5*time.Minute,
 		suite.CleanupFailedPods,
 	)
+}
+
+const (
+	libvirtDomainName = "talos-integration-libvirt"
+	libvirtURI        = "qemu+unix:///system?socket=/run/libvirt/virtqemud-sock"
+)
+
+// TestExtensionsLibvirt verifies libvirt can run a QEMU domain and save it across a reboot.
+func (suite *ExtensionsSuiteQEMU) TestExtensionsLibvirt() {
+	if !suite.ExtensionsLibvirt {
+		suite.T().Skip("skipping as libvirt extension integration tests are not enabled")
+	}
+
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
+	nodeCtx := client.WithNode(suite.ctx, node)
+
+	suite.AssertServicesRunning(suite.ctx, node, map[string]string{
+		"ext-virtlockd":    "Running",
+		"ext-virtlogd":     "Running",
+		"ext-virtqemud":    "Running",
+		"ext-virtstoraged": "Running",
+	})
+
+	var (
+		machineType string
+		qemuArch    string
+	)
+
+	switch arch := suite.ReadMachineArch(nodeCtx); arch {
+	case "amd64":
+		machineType = "pc"
+		qemuArch = "x86_64"
+	case "arm64":
+		machineType = "virt"
+		qemuArch = "aarch64"
+	default:
+		suite.Require().FailNow("unsupported architecture", "architecture %q is not supported by the libvirt integration test", arch)
+	}
+
+	domainXMLPath := "/var/lib/libvirt/" + libvirtDomainName + ".xml"
+	domainXML := fmt.Sprintf(`<domain type="kvm">
+  <name>%s</name>
+  <memory unit="MiB">128</memory>
+  <vcpu placement="static">1</vcpu>
+  <os>
+    <type arch="%s" machine="%s">hvm</type>
+  </os>
+  <devices>
+    <emulator>/usr/local/bin/qemu-system-%s</emulator>
+  </devices>
+</domain>
+`, libvirtDomainName, qemuArch, machineType, qemuArch)
+
+	writeDomainXML := fmt.Sprintf(
+		"/nix/var/nix/profiles/default/bin/busybox echo %s | "+
+			"/nix/var/nix/profiles/default/bin/busybox base64 -d > %s",
+		base64.StdEncoding.EncodeToString([]byte(domainXML)), domainXMLPath,
+	)
+	output, exitCode := suite.RunDebugContainer(suite.ctx, node, "/nix/var/nix/profiles/default/bin/sh", "-c", writeDomainXML)
+	suite.Require().EqualValues(0, exitCode, "failed to write libvirt domain XML: %s", output)
+
+	defer func() {
+		cleanup := fmt.Sprintf(
+			"/usr/local/bin/virsh --connect '%s' destroy %s >/dev/null 2>&1 || true; "+
+				"/usr/local/bin/virsh --connect '%s' undefine %s --managed-save >/dev/null 2>&1 || "+
+				"/usr/local/bin/virsh --connect '%s' undefine %s >/dev/null 2>&1 || true; "+
+				"/nix/var/nix/profiles/default/bin/busybox rm -f %s",
+			libvirtURI, libvirtDomainName,
+			libvirtURI, libvirtDomainName,
+			libvirtURI, libvirtDomainName,
+			domainXMLPath,
+		)
+
+		cleanupOutput, cleanupExitCode := suite.RunDebugContainer(suite.ctx, node, "/nix/var/nix/profiles/default/bin/sh", "-c", cleanup)
+		if cleanupExitCode != 0 {
+			suite.T().Logf("failed to clean up libvirt domain: %s", cleanupOutput)
+		}
+	}()
+
+	suite.runVirsh(node, "define", domainXMLPath)
+	suite.runVirsh(node, "start", libvirtDomainName)
+	suite.Require().Equal("running", suite.runVirsh(node, "domstate", libvirtDomainName))
+
+	pidBeforeReboot, err := suite.libvirtDomainPID(nodeCtx)
+	suite.Require().NoError(err)
+	suite.Require().NotZero(pidBeforeReboot, "expected QEMU to run domain %q", libvirtDomainName)
+
+	virtqemudPID, err := safe.ReaderGetByID[*runtime.ServicePID](nodeCtx, suite.Client.COSI, "ext-virtqemud")
+	suite.Require().NoError(err)
+
+	_, err = suite.Client.ServiceRestart(nodeCtx, "ext-virtqemud")
+	suite.Require().NoError(err)
+
+	rtestutils.AssertResource(
+		nodeCtx, suite.T(), suite.Client.COSI,
+		"ext-virtqemud",
+		func(servicePID *runtime.ServicePID, asrt *assert.Assertions) {
+			asrt.NotEqual(virtqemudPID.TypedSpec().PID, servicePID.TypedSpec().PID)
+		},
+	)
+
+	suite.Require().Equal("running", suite.runVirsh(node, "domstate", libvirtDomainName))
+
+	pidAfterServiceRestart, err := suite.libvirtDomainPID(nodeCtx)
+	suite.Require().NoError(err)
+	suite.Require().Equal(pidBeforeReboot, pidAfterServiceRestart, "service restart must preserve the QEMU process")
+
+	suite.AssertRebooted(
+		suite.ctx, node, func(nodeCtx context.Context) error {
+			return base.IgnoreGRPCUnavailable(suite.Client.Reboot(nodeCtx))
+		}, 5*time.Minute,
+	)
+
+	suite.WaitForBootDone(suite.ctx)
+	suite.AssertServicesRunning(suite.ctx, node, map[string]string{"ext-virtqemud": "Running"})
+	suite.Require().Regexp(`(?m)^Managed save:\s+yes$`, suite.runVirsh(node, "dominfo", libvirtDomainName))
+
+	pidAfterReboot, err := suite.libvirtDomainPID(nodeCtx)
+	suite.Require().NoError(err)
+	suite.Require().Zero(pidAfterReboot, "managed-saved domain must not have a running QEMU process")
+
+	suite.runVirsh(node, "start", libvirtDomainName)
+	suite.Require().Equal("running", suite.runVirsh(node, "domstate", libvirtDomainName))
+	suite.Require().Regexp(`(?m)^Managed save:\s+no$`, suite.runVirsh(node, "dominfo", libvirtDomainName))
+
+	pidAfterRestore, err := suite.libvirtDomainPID(nodeCtx)
+	suite.Require().NoError(err)
+	suite.Require().NotZero(pidAfterRestore, "expected QEMU to restore domain %q", libvirtDomainName)
+}
+
+func (suite *ExtensionsSuiteQEMU) runVirsh(node string, args ...string) string {
+	command := append([]string{"/usr/local/bin/virsh", "--connect", libvirtURI}, args...)
+	output, exitCode := suite.RunDebugContainer(suite.ctx, node, command...)
+	suite.Require().EqualValues(0, exitCode, "virsh %s failed: %s", strings.Join(args, " "), output)
+
+	return strings.TrimSpace(output)
+}
+
+func (suite *ExtensionsSuiteQEMU) libvirtDomainPID(ctx context.Context) (int32, error) {
+	response, err := suite.Client.Processes(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list processes: %w", err)
+	}
+
+	for _, message := range response.Messages {
+		for _, process := range message.Processes {
+			if strings.Contains(process.Executable, "/qemu-system-") && strings.Contains(process.Args, "guest="+libvirtDomainName+",") {
+				return process.Pid, nil
+			}
+		}
+	}
+
+	return 0, nil
 }
 
 // TestExtensionsTailscale verifies tailscale is working.
@@ -239,9 +393,19 @@ func (suite *ExtensionsSuiteQEMU) TestExtensionsCrun() {
 	suite.testRuntimeClass("crun", "crun")
 }
 
-// TestExtensionsKataContainers verifies gvisor runtime class is working.
+// TestExtensionsKataContainers verifies that Kata Containers Cloud Hypervisor runtime class is working.
 func (suite *ExtensionsSuiteQEMU) TestExtensionsKataContainers() {
 	suite.testRuntimeClass("kata", "kata")
+}
+
+// TestExtensionsKataContainersQEMU verifies that Kata Containers QEMU runtime class is working.
+func (suite *ExtensionsSuiteQEMU) TestExtensionsKataContainersQEMU() {
+	suite.testRuntimeClass("kata-qemu", "kata-qemu")
+}
+
+// TestExtensionsKataContainersSNP verifies that Kata Containers confidential VMs runtime class is working.
+func (suite *ExtensionsSuiteQEMU) TestExtensionsKataContainersSNP() {
+	suite.testRuntimeClass("kata-qemu-coco-dev", "kata-qemu-coco-dev")
 }
 
 // TestExtensionsYouki verifies youki runtime class is working.
@@ -313,96 +477,6 @@ func (suite *ExtensionsSuiteQEMU) TestExtensionsStargz() {
 	suite.Require().NoError(suite.WaitForPodToBeRunning(suite.ctx, 5*time.Minute, "default", "stargz-hello"))
 }
 
-// TestExtensionsMdADM verifies mdadm is working, udev rules work and the raid is mounted on reboot.
-func (suite *ExtensionsSuiteQEMU) TestExtensionsMdADM() {
-	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
-
-	k8sNode, err := suite.GetK8sNodeByInternalIP(suite.ctx, node)
-	suite.Require().NoError(err)
-
-	nodeName := k8sNode.Name
-
-	userDisks := suite.UserDisks(suite.ctx, node)
-
-	suite.Require().GreaterOrEqual(len(userDisks), 2, "expected at least two user disks to be available")
-
-	userDisksJoined := strings.Join(userDisks[:2], " ")
-
-	mdAdmCreatePodDef, err := suite.NewPrivilegedPod("mdadm-create")
-	suite.Require().NoError(err)
-
-	mdAdmCreatePodDef.WithNodeName(nodeName)
-
-	suite.Require().NoError(mdAdmCreatePodDef.Create(suite.ctx, 5*time.Minute))
-
-	defer mdAdmCreatePodDef.Delete(suite.ctx) //nolint:errcheck
-
-	stdout, _, err := mdAdmCreatePodDef.Exec(
-		suite.ctx,
-		fmt.Sprintf("nsenter --mount=/proc/1/ns/mnt -- mdadm --create /dev/md/testmd --raid-devices=2 --metadata=1.2 --level=1 %s", userDisksJoined),
-	)
-	suite.Require().NoError(err)
-
-	suite.Require().Contains(stdout, "mdadm: array /dev/md/testmd started.")
-
-	defer func() {
-		hostNameStatus, err := safe.StateGetByID[*network.HostnameStatus](client.WithNode(suite.ctx, node), suite.Client.COSI, "hostname")
-		suite.Require().NoError(err)
-
-		hostname := hostNameStatus.TypedSpec().Hostname
-
-		deletePodDef, err := suite.NewPrivilegedPod("mdadm-destroy")
-		suite.Require().NoError(err)
-
-		deletePodDef.WithNodeName(nodeName)
-
-		suite.Require().NoError(deletePodDef.Create(suite.ctx, 5*time.Minute))
-
-		defer deletePodDef.Delete(suite.ctx) //nolint:errcheck
-
-		if _, _, err := deletePodDef.Exec(
-			suite.ctx,
-			fmt.Sprintf("nsenter --mount=/proc/1/ns/mnt -- mdadm --wait --stop /dev/md/%s:testmd", hostname),
-		); err != nil {
-			suite.T().Logf("failed to stop mdadm array: %v", err)
-		}
-
-		if _, _, err := deletePodDef.Exec(
-			suite.ctx,
-			fmt.Sprintf("nsenter --mount=/proc/1/ns/mnt -- mdadm --zero-superblock %s", userDisksJoined),
-		); err != nil {
-			suite.T().Logf("failed to remove md array backed by volumes %s: %v", userDisksJoined, err)
-		}
-	}()
-
-	// now we want to reboot the node and make sure the array is still mounted
-	suite.AssertRebooted(
-		suite.ctx, node, func(nodeCtx context.Context) error {
-			return base.IgnoreGRPCUnavailable(suite.Client.Reboot(nodeCtx))
-		}, 5*time.Minute,
-		suite.CleanupFailedPods,
-	)
-
-	suite.Require().True(suite.mdADMArrayExists(), "expected mdadm array to be present")
-}
-
-func (suite *ExtensionsSuiteQEMU) mdADMArrayExists() bool {
-	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
-
-	ctx := client.WithNode(suite.ctx, node)
-
-	disks, err := safe.StateListAll[*block.Disk](ctx, suite.Client.COSI)
-	suite.Require().NoError(err)
-
-	for disk := range disks.All() {
-		if strings.HasPrefix(disk.TypedSpec().DevPath, "/dev/md") {
-			return true
-		}
-	}
-
-	return false
-}
-
 // TestExtensionsZFS verifies zfs is working, udev rules work and the pool is mounted on reboot.
 func (suite *ExtensionsSuiteQEMU) TestExtensionsZFS() {
 	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
@@ -412,60 +486,29 @@ func (suite *ExtensionsSuiteQEMU) TestExtensionsZFS() {
 
 	suite.Require().NotEmpty(userDisks, "expected at least one user disks to be available")
 
-	k8sNode, err := suite.GetK8sNodeByInternalIP(suite.ctx, node)
-	suite.Require().NoError(err)
-
-	nodeName := k8sNode.Name
-
-	zfsPodDef, err := suite.NewPrivilegedPod("zpool-create")
-	suite.Require().NoError(err)
-
-	zfsPodDef.WithNodeName(nodeName)
-
-	suite.Require().NoError(zfsPodDef.Create(suite.ctx, 5*time.Minute))
-
-	defer zfsPodDef.Delete(suite.ctx) //nolint:errcheck
-
-	stdout, stderr, err := zfsPodDef.Exec(
-		suite.ctx,
-		fmt.Sprintf("nsenter --mount=/proc/1/ns/mnt -- zpool create -m /var/tank tank %s", userDisks[0]),
+	stdout, exitCode := suite.RunDebugContainer(suite.ctx, node,
+		"zpool", "create", "-m", "/var/tank", "tank", userDisks[0],
 	)
-	suite.Require().NoError(err)
-
-	suite.Require().Equal("", stderr)
+	suite.Require().EqualValues(0, exitCode, "zpool create failed: %s", stdout)
 	suite.Require().Equal("", stdout)
 
-	stdout, stderr, err = zfsPodDef.Exec(
-		suite.ctx,
-		"nsenter --mount=/proc/1/ns/mnt -- zfs create -V 1gb tank/vol",
+	stdout, exitCode = suite.RunDebugContainer(suite.ctx, node,
+		"zfs", "create", "-V", "1gb", "tank/vol",
 	)
-	suite.Require().NoError(err)
-
-	suite.Require().Equal("", stderr)
+	suite.Require().EqualValues(0, exitCode, "zfs create failed: %s", stdout)
 	suite.Require().Equal("", stdout)
 
 	defer func() {
-		deletePodDef, err := suite.NewPrivilegedPod("zpool-destroy")
-		suite.Require().NoError(err)
+		suite.RunDebugContainer(suite.ctx, node, "zfs", "destroy", "tank/vol")
 
-		deletePodDef.WithNodeName(nodeName)
+		suite.RunDebugContainer(suite.ctx, node, "zpool", "destroy", "tank")
 
-		suite.Require().NoError(deletePodDef.Create(suite.ctx, 5*time.Minute))
-
-		defer deletePodDef.Delete(suite.ctx) //nolint:errcheck
-
-		if _, _, err := deletePodDef.Exec(
-			suite.ctx,
-			"nsenter --mount=/proc/1/ns/mnt -- zfs destroy tank/vol",
-		); err != nil {
-			suite.T().Logf("failed to remove zfs dataset tank/vol: %v", err)
-		}
-
-		if _, _, err := deletePodDef.Exec(
-			suite.ctx,
-			"nsenter --mount=/proc/1/ns/mnt -- zpool destroy tank",
-		); err != nil {
-			suite.T().Logf("failed to remove zpool tank: %v", err)
+		// Wipe the disk so no zfs label lingers (otherwise the pool is re-discovered
+		// as a volume after the test).
+		if err := suite.Client.BlockDeviceWipe(client.WithNode(suite.ctx, node), &storage.BlockDeviceWipeRequest{
+			Devices: []*storage.BlockDeviceWipeDescriptor{{Device: filepath.Base(userDisks[0])}},
+		}); err != nil {
+			suite.T().Logf("failed to wipe disk %s: %v", userDisks[0], err)
 		}
 	}()
 
@@ -478,7 +521,6 @@ func (suite *ExtensionsSuiteQEMU) TestExtensionsZFS() {
 		suite.ctx, node, func(nodeCtx context.Context) error {
 			return base.IgnoreGRPCUnavailable(suite.Client.Reboot(nodeCtx))
 		}, 5*time.Minute,
-		suite.CleanupFailedPods,
 	)
 
 	suite.EventuallyWithT(func(t *assert.CollectT) {
@@ -529,27 +571,10 @@ func (suite *ExtensionsSuiteQEMU) checkZFSPoolMounted(t *assert.CollectT, node s
 func (suite *ExtensionsSuiteQEMU) TestExtensionsUtilLinuxTools() {
 	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
 
-	k8sNode, err := suite.GetK8sNodeByInternalIP(suite.ctx, node)
-	suite.Require().NoError(err)
-
-	nodeName := k8sNode.Name
-
-	utilLinuxPodDef, err := suite.NewPrivilegedPod("util-linux-tools-test")
-	suite.Require().NoError(err)
-
-	utilLinuxPodDef.WithNodeName(nodeName)
-
-	suite.Require().NoError(utilLinuxPodDef.Create(suite.ctx, 5*time.Minute))
-
-	defer utilLinuxPodDef.Delete(suite.ctx) //nolint:errcheck
-
-	stdout, stderr, err := utilLinuxPodDef.Exec(
-		suite.ctx,
-		"nsenter --mount=/proc/1/ns/mnt -- /usr/local/sbin/fstrim --version",
+	stdout, exitCode := suite.RunDebugContainer(suite.ctx, node,
+		"/usr/local/sbin/fstrim", "--version",
 	)
-	suite.Require().NoError(err)
-
-	suite.Require().Equal("", stderr)
+	suite.Require().EqualValues(0, exitCode, "fstrim --version failed: %s", stdout)
 	suite.Require().Contains(stdout, "fstrim from util-linux")
 }
 
@@ -628,13 +653,14 @@ func (suite *ExtensionsSuiteQEMU) TestLoadedKernelModule() {
 
 	suite.T().Logf("using node %s", node)
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, []resource.ID{
-		"virtio_balloon",
-		"virtio_pci",
-		"virtio_pci_legacy_dev",
-		"virtio_pci_modern_dev",
-	},
-		func(res *runtime.LoadedKernelModule, asrt *assert.Assertions) {
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, []resource.ID{
+			"virtio_balloon",
+			"virtio_pci",
+			"virtio_pci_legacy_dev",
+			"virtio_pci_modern_dev",
+		},
+		func(res *runtime.LoadedKernelModule, asrt *assert.Assertions) { //nolint:staticcheck
 			asrt.NotEmpty(res.TypedSpec().Size, "kernel module size should not be empty")
 			asrt.NotEmpty(res.TypedSpec().Address, "kernel module address should not be empty")
 			asrt.GreaterOrEqual(res.TypedSpec().ReferenceCount, 0, "kernel module instances should be non-negative")

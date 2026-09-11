@@ -1,0 +1,57 @@
+; Compile-time checks on the EFFECTIVE policy after macro/attribute expansion.
+; These protect specific runtime boundaries, not a blanket host-access claim:
+; any_p still has self BPF operations and pod_p still has any_f execute.
+
+; Ordinary pods cannot read or modify Cilium's dedicated host runtime state.
+; Generic getattr/search remain part of the upstream traversal baseline.
+(neverallow pod_t cilium_runtime_t (file (read open write create unlink)))
+(neverallow pod_t cilium_runtime_t (dir (read open write add_name remove_name)))
+(neverallow pod_t cilium_runtime_t (sock_file (write)))
+(neverallow pod_t bpf_t (file (write create unlink)))
+(neverallow pod_t bpf_t (dir (write add_name remove_name)))
+(neverallow pod_t self (perf_event (all)))
+(neverallow pod_t init_t (file (read open)))
+(neverallow pod_t sandboxd_t (file (read open)))
+
+; This intersection must stay empty. Every process can fork itself, so the
+; assertion fails if these constrained domains acquire MCS exemption, even
+; indirectly through an attribute.
+(typeattribute unexpected_mcs_exempt_p)
+(typeattribute mcs_constrained_runtime_p)
+(typeattributeset mcs_constrained_runtime_p (pod_t node_exporter_t sandboxd_t))
+(typeattributeset unexpected_mcs_exempt_p (and mcs_exempt_p mcs_constrained_runtime_p))
+(neverallow unexpected_mcs_exempt_p self (process (fork)))
+
+; Host observers read metadata but cannot control PID 1 or mutate its files.
+(typeattribute runtime_observer_p)
+(typeattributeset runtime_observer_p (falco_t node_exporter_t))
+(neverallow runtime_observer_p init_t (file (write)))
+(neverallow runtime_observer_p init_t (process (ptrace signal sigkill transition)))
+(neverallow falco_t tracefs_t (file (write create relabelfrom relabelto)))
+(neverallow falco_t debugfs_t (file (read open)))
+(neverallow runtime_observer_p sys_containerd_socket_t (sock_file (write)))
+(neverallow runtime_observer_p sys_containerd_t (unix_stream_socket (connectto)))
+(neverallow runtime_observer_p machine_socket_t (sock_file (write)))
+(neverallow runtime_observer_p init_t (unix_stream_socket (connectto)))
+
+; Kata may enter through its finite host-helper label, not arbitrary host tools.
+; Do not turn this into an execute/execute_no_trans denial: those are inherited.
+(neverallow pod_t bin_exec_t (file (entrypoint)))
+
+; Only extension services get immutable extension executable/library rights.
+(typeattribute non_extension_system_container_p)
+(typeattributeset non_extension_system_container_p (and system_container_p (not extension_service_p)))
+(neverallow non_extension_system_container_p bin_exec_t (file (entrypoint execute execute_no_trans)))
+(neverallow non_extension_system_container_p lib_t (file (execute)))
+(neverallow unconfined_container_t sysfs_t (file (write)))
+
+; sandboxd launches services inside the workload namespace; it must not gain
+; machined's machine-management capabilities. Existing service_p/common grants
+; still permit host reads and ordinary device access, so no broader claim is made.
+(neverallow sandboxd_t init_t (process (transition ptrace signal sigkill)))
+(neverallow sandboxd_t self (capability (sys_boot sys_module)))
+(neverallow sandboxd_t module_t (system (module_load)))
+(neverallow sandboxd_t tmpfs_t (system (kexec_image_load kexec_initramfs_load)))
+(neverallow sandboxd_t machine_socket_t (sock_file (write)))
+(neverallow sandboxd_t init_t (unix_stream_socket (connectto)))
+(neverallow sandboxd_t efivarfs_t (file (write)))

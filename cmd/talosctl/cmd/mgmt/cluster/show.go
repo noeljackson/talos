@@ -18,7 +18,6 @@ import (
 	"github.com/siderolabs/gen/xslices"
 	"github.com/spf13/cobra"
 
-	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/provision"
 	"github.com/siderolabs/talos/pkg/provision/providers"
 )
@@ -30,12 +29,12 @@ var showCmd = &cobra.Command{
 	Long:  ``,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.WithContext(context.Background(), show)
+		return show(cmd.Context())
 	},
 }
 
 func show(ctx context.Context) error {
-	provisioner, err := providers.Factory(ctx, provisionerName)
+	provisioner, err := selectProvisioner(ctx)
 	if err != nil {
 		return err
 	}
@@ -48,6 +47,17 @@ func show(ctx context.Context) error {
 	}
 
 	return ShowCluster(cluster)
+}
+
+// selectProvisioner returns the remote provisioner if --remote-endpoint is
+// set on the parent cluster command, otherwise falls back to the legacy
+// per-subcommand --provisioner flag (docker by default).
+func selectProvisioner(ctx context.Context) (provision.Provisioner, error) {
+	if PersistentFlags.RemoteEndpoint != "" {
+		return providers.Factory(ctx, providers.RemoteProviderName, providers.WithRemoteEndpoint(PersistentFlags.RemoteEndpoint))
+	}
+
+	return providers.Factory(ctx, provisionerName)
 }
 
 // ShowCluster prints the details about the cluster to the terminal.
@@ -98,7 +108,8 @@ func ShowCluster(cluster provision.Cluster) error {
 
 		ips := xslices.Map(node.IPs, netip.Addr.String)
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(
+			w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			node.Name,
 			node.Type,
 			strings.Join(ips, ","),

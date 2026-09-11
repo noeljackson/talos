@@ -8,68 +8,56 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/blang/semver/v4"
 	"github.com/siderolabs/gen/xerrors"
-	"google.golang.org/grpc/metadata"
 
-	"github.com/siderolabs/talos/pkg/machinery/api/common"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
+	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 	"github.com/siderolabs/talos/pkg/machinery/version"
 )
 
-// FailIfMultiNodes checks if ctx contains multi-node request metadata.
-func FailIfMultiNodes(ctx context.Context, command string) error {
-	md, ok := metadata.FromOutgoingContext(ctx)
-	if !ok {
-		return nil
-	}
-
-	if len(md.Get("nodes")) <= 1 {
-		return nil
-	}
-
-	return fmt.Errorf("command %q is not supported with multiple nodes", command)
-}
-
-// CheckErrors goes through the returned message list and checks if any messages have errors set.
-func CheckErrors[T interface{ GetMetadata() *common.Metadata }](messages ...T) error {
-	var err error
-
-	for _, msg := range messages {
-		md := msg.GetMetadata()
-		if md != nil && md.Error != "" {
-			err = AppendErrors(err, errors.New(md.Error))
-		}
-	}
-
-	return err
+// ClientFactory is the interface for the client factory.
+type ClientFactory interface {
+	BuildClient(ctx context.Context, node string) (context.Context, *client.Client, error)
+	Nodes() []string
 }
 
 // VersionOutsideRangeError is returned when a node is running a Talos version that is outside the desired range.
 type VersionOutsideRangeError struct{}
 
 // TalosVersionCheck verifies that all nodes are running the desired Talos version.
-func TalosVersionCheck(ctx context.Context, c *client.Client, desired semver.Range) error {
-	serverVersions, err := c.Version(ctx)
-	if err != nil {
-		return fmt.Errorf("error getting server versions: %w", err)
-	}
+func TalosVersionCheck(ctx context.Context, clientFactory ClientFactory, desired semver.Range) error {
+	respCh := multiplex.UnaryViaFactory(
+		ctx, clientFactory,
+		func(ctx context.Context, c *client.Client) (*machine.VersionResponse, error) {
+			return c.Version(ctx)
+		},
+	)
 
 	var errs error
 
-	for _, msg := range serverVersions.GetMessages() {
-		node := msg.GetMetadata().GetHostname()
+	for resp := range respCh {
+		if resp.Err != nil {
+			errs = errors.Join(errs, fmt.Errorf("%s: error getting server version: %w", resp.Node, resp.Err))
 
-		serverVersion, err := semver.ParseTolerant(msg.GetVersion().Tag)
-		if err != nil {
-			return fmt.Errorf("%s: error parsing server version: %w", node, err)
+			continue
 		}
 
-		if !desired(serverVersion) {
-			errs = errors.Join(errs, xerrors.NewTaggedf[VersionOutsideRangeError]("%s: server version %s is outside the desired range", node, serverVersion))
+		for _, msg := range resp.Payload.GetMessages() {
+			serverVersion, err := semver.ParseTolerant(msg.GetVersion().Tag)
+			if err != nil {
+				errs = errors.Join(errs, fmt.Errorf("%s: error parsing server version: %w", resp.Node, err))
+
+				continue
+			}
+
+			if !desired(serverVersion) {
+				errs = errors.Join(errs, xerrors.NewTaggedf[VersionOutsideRangeError]("%s: server version %s is outside the desired range", resp.Node, serverVersion))
+			}
 		}
 	}
 
@@ -77,33 +65,48 @@ func TalosVersionCheck(ctx context.Context, c *client.Client, desired semver.Ran
 }
 
 // ClientVersionCheck verifies that client is not outdated vs. Talos version.
-func ClientVersionCheck(ctx context.Context, c *client.Client) error {
-	// ignore the error, as we are only interested in the nodes which respond
-	serverVersions, _ := c.Version(ctx) //nolint:errcheck
+func ClientVersionCheck(ctx context.Context, clientFactory ClientFactory) error {
+	respCh := multiplex.UnaryViaFactory(
+		ctx, clientFactory,
+		func(ctx context.Context, c *client.Client) (*machine.VersionResponse, error) {
+			return c.Version(ctx)
+		},
+	)
 
 	clientVersion, err := semver.ParseTolerant(version.NewVersion().Tag)
 	if err != nil {
 		return fmt.Errorf("error parsing client version: %w", err)
 	}
 
-	var warnings []string
+	var (
+		warnings []string
+		errs     error
+	)
 
-	for _, msg := range serverVersions.GetMessages() {
-		node := msg.GetMetadata().GetHostname()
+	for resp := range respCh {
+		if resp.Err != nil {
+			errs = errors.Join(errs, fmt.Errorf("%s: error getting server version: %w", resp.Node, resp.Err))
 
-		serverVersion, err := semver.ParseTolerant(msg.GetVersion().Tag)
-		if err != nil {
-			return fmt.Errorf("%s: error parsing server version: %w", node, err)
+			continue
 		}
 
-		if serverVersion.Compare(clientVersion) < 0 {
-			warnings = append(warnings, fmt.Sprintf("%s: server version %s is older than client version %s", node, serverVersion, clientVersion))
+		for _, msg := range resp.Payload.GetMessages() {
+			serverVersion, err := semver.ParseTolerant(msg.GetVersion().Tag)
+			if err != nil {
+				errs = errors.Join(errs, fmt.Errorf("%s: error parsing server version: %w", resp.Node, err))
+
+				continue
+			}
+
+			if serverVersion.Compare(clientVersion) < 0 {
+				warnings = append(warnings, fmt.Sprintf("%s: server version %s is older than client version %s", resp.Node, serverVersion, clientVersion))
+			}
 		}
 	}
 
 	if warnings != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: %s\n", strings.Join(warnings, ", "))
+		fmt.Fprintf(safeout.Stderr(), "WARNING: %s\n", strings.Join(warnings, ", "))
 	}
 
-	return nil
+	return errs
 }

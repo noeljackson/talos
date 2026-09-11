@@ -8,8 +8,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,7 +30,6 @@ import (
 	pprocfs "github.com/prometheus/procfs"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-blockdevice/v2/block"
-	"github.com/siderolabs/go-cmd/pkg/cmd"
 	"github.com/siderolabs/go-cmd/pkg/cmd/proc"
 	"github.com/siderolabs/go-pointer"
 	"github.com/siderolabs/go-procfs/procfs"
@@ -45,6 +43,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/options"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/sdboot"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime/v1alpha1/platform"
+	"github.com/siderolabs/talos/internal/app/machined/pkg/sandboxd"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/events"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services"
@@ -55,17 +54,19 @@ import (
 	"github.com/siderolabs/talos/internal/pkg/logind"
 	mountv3 "github.com/siderolabs/talos/internal/pkg/mount/v3"
 	"github.com/siderolabs/talos/internal/pkg/partition"
-	"github.com/siderolabs/talos/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/conditions"
 	"github.com/siderolabs/talos/pkg/images"
 	"github.com/siderolabs/talos/pkg/kernel/kspp"
 	"github.com/siderolabs/talos/pkg/kubernetes"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
+	configconfig "github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
+	blockcfg "github.com/siderolabs/talos/pkg/machinery/config/types/block"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block/blockhelpers"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	metamachinery "github.com/siderolabs/talos/pkg/machinery/meta"
 	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
+	containersres "github.com/siderolabs/talos/pkg/machinery/resources/containers"
 	crires "github.com/siderolabs/talos/pkg/machinery/resources/cri"
 	resourcefiles "github.com/siderolabs/talos/pkg/machinery/resources/files"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
@@ -73,6 +74,16 @@ import (
 	resourcev1alpha1 "github.com/siderolabs/talos/pkg/machinery/resources/v1alpha1"
 	"github.com/siderolabs/talos/pkg/minimal"
 )
+
+// WaitForUdevd waits for the controller-owned udevd service to become healthy.
+func WaitForUdevd(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, _ *log.Logger, _ runtime.Runtime) error {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+
+		return system.WaitForService(system.StateEventUp, "udevd").Wait(ctx)
+	}, "waitForUdevd"
+}
 
 // WaitForUSB represents the WaitForUSB task.
 func WaitForUSB(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
@@ -211,7 +222,8 @@ func DiskSizeCheck(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 			return nil
 		}
 
-		volumeStatus, err := r.State().V1Alpha2().Resources().WatchFor(ctx,
+		volumeStatus, err := r.State().V1Alpha2().Resources().WatchFor(
+			ctx,
 			blockres.NewVolumeStatus(blockres.NamespaceName, constants.EphemeralPartitionLabel).Metadata(),
 			state.WithCondition(func(r resource.Resource) (bool, error) {
 				volumeStatus, ok := r.(*blockres.VolumeStatus)
@@ -269,52 +281,6 @@ func StartContainerd(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) 
 
 		return system.WaitForService(system.StateEventUp, svc.ID(r)).Wait(ctx)
 	}, "startContainerd"
-}
-
-// WriteUdevRules is the task that writes udev rules to a udev rules file.
-// TODO: frezbo: move this to controller based since writing udev rules doesn't need a restart.
-func WriteUdevRules(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
-	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		rules := r.Config().Machine().Udev().Rules()
-
-		var content strings.Builder
-
-		for _, rule := range rules {
-			content.WriteString(strings.ReplaceAll(rule, "\n", "\\\n"))
-			content.WriteByte('\n')
-		}
-
-		if err = os.WriteFile(constants.UdevRulesPath, []byte(content.String()), 0o644); err != nil {
-			return fmt.Errorf("failed writing custom udev rules: %w", err)
-		}
-
-		if err = selinux.SetLabel(constants.UdevRulesPath, constants.UdevRulesLabel); err != nil {
-			return fmt.Errorf("failed labeling custom udev rules: %w", err)
-		}
-
-		if len(rules) > 0 {
-			if _, err := cmd.RunWithOptions(ctx, "/sbin/udevadm", []string{"control", "--reload"}); err != nil {
-				return err
-			}
-
-			if _, err := cmd.RunWithOptions(ctx, "/sbin/udevadm", []string{"trigger", "--type=devices", "--action=add"}); err != nil {
-				return err
-			}
-
-			if _, err := cmd.RunWithOptions(ctx, "/sbin/udevadm", []string{"trigger", "--type=subsystems", "--action=add"}); err != nil {
-				return err
-			}
-
-			// This ensures that `udevd` finishes processing kernel events, triggered by
-			// `udevd trigger`, to prevent a race condition when a user specifies a path
-			// under `/dev/disk/*` in any disk definitions.
-			_, err := cmd.RunWithOptions(ctx, "/sbin/udevadm", []string{"settle", "--timeout=50"})
-
-			return err
-		}
-
-		return nil
-	}, "writeUdevRules"
 }
 
 // StartMachined represents the task to start machined.
@@ -383,47 +349,9 @@ func StartDashboard(_ runtime.Sequence, _ any) (runtime.TaskExecutionFunc, strin
 	}, "startDashboard"
 }
 
-// StartUdevd represents the task to start udevd.
-func StartUdevd(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
-	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		mp := mountv3.NewSystemOverlay(
-			[]string{constants.UdevDir},
-			constants.UdevDir,
-			logger.Printf,
-			mountv3.WithShared(),
-			mountv3.WithSelinuxLabel(constants.UdevRulesLabel),
-		)
-
-		if _, err = mp.Mount(); err != nil {
-			return err
-		}
-
-		var extraSettleTime time.Duration
-
-		settleTimeStr := procfs.ProcCmdline().Get(constants.KernelParamDeviceSettleTime).First()
-		if settleTimeStr != nil {
-			extraSettleTime, err = time.ParseDuration(*settleTimeStr)
-			if err != nil {
-				return fmt.Errorf("failed to parse %s: %w", constants.KernelParamDeviceSettleTime, err)
-			}
-
-			logger.Printf("extra settle time: %s", extraSettleTime)
-		}
-
-		svc := &services.Udevd{
-			ExtraSettleTime: extraSettleTime,
-		}
-
-		system.Services(r).LoadAndStart(svc)
-
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		defer cancel()
-
-		return system.WaitForService(system.StateEventUp, svc.ID(r)).Wait(ctx)
-	}, "startUdevd"
-}
-
 // StartAllServices represents the task to start the system services.
+//
+//nolint:gocyclo
 func StartAllServices(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
 		// nb: Treating the beginning of "service starts" as the activate event for a normal
@@ -440,27 +368,36 @@ func StartAllServices(runtime.Sequence, any) (runtime.TaskExecutionFunc, string)
 
 		svcs := system.Services(r)
 
-		// load the kubelet service, but don't start it;
-		// KubeletServiceController will start it once it's ready.
-		svcs.Load(
-			&services.Kubelet{},
-		)
+		serviceList := []system.Service{}
 
-		serviceList := []system.Service{
-			&services.CRI{},
+		// When workload isolation is enabled (SecurityProfileConfig), the sandbox
+		// PID+mount namespace must be up before CRI (which DependsOn it and runs
+		// inside it). Skipped in container mode or when isolation is disabled/absent.
+		if sandboxd.Enabled(r) {
+			serviceList = append(serviceList, &services.Sandboxd{})
 		}
+
+		shouldStartEtcd := r.Config() != nil && r.Config().Cluster() != nil && r.Config().Cluster().Etcd().CA() != nil
 
 		switch t := r.Config().Machine().Type(); t {
 		case machine.TypeInit:
-			serviceList = append(serviceList,
+			serviceList = append(
+				serviceList,
 				&services.Trustd{},
-				&services.Etcd{Bootstrap: true},
 			)
+
+			if shouldStartEtcd {
+				serviceList = append(serviceList, &services.Etcd{Bootstrap: true})
+			}
 		case machine.TypeControlPlane:
-			serviceList = append(serviceList,
+			serviceList = append(
+				serviceList,
 				&services.Trustd{},
-				&services.Etcd{},
 			)
+
+			if shouldStartEtcd {
+				serviceList = append(serviceList, &services.Etcd{})
+			}
 		case machine.TypeWorker:
 			// nothing
 		case machine.TypeUnknown:
@@ -476,7 +413,7 @@ func StartAllServices(runtime.Sequence, any) (runtime.TaskExecutionFunc, string)
 		logger.Printf("waiting for %d services", len(svcs.List()))
 
 		for _, svc := range svcs.List() {
-			cond := system.WaitForService(system.StateEventUp, svc.AsProto().GetId())
+			cond := system.WaitForServiceAnyEvent([]system.StateEvent{system.StateEventUp, system.StateEventFinished}, svc.AsProto().GetId())
 			all = append(all, cond)
 		}
 
@@ -506,21 +443,37 @@ func StartAllServices(runtime.Sequence, any) (runtime.TaskExecutionFunc, string)
 	}, "startAllServices"
 }
 
+// PreShutdownServices runs node shutdown hooks while services are still running.
+func PreShutdownServices(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, _ *log.Logger, r runtime.Runtime) error {
+		return system.Services(r).PreShutdown(ctx)
+	}, "preShutdownServices"
+}
+
 // StopServicesEphemeral represents the StopServicesEphemeral task.
 func StopServicesEphemeral(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
 		// stopping 'cri' service stops everything which depends on it (kubelet, etcd, ...)
-		return system.Services(nil).StopWithRevDepenencies(ctx, "cri", "trustd")
+		return system.Services(r).StopWithRevDepenencies(ctx, "cri", "trustd")
 	}, "stopServicesForUpgrade"
 }
 
 // StopAllServices represents the StopAllServices task.
 func StopAllServices(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		system.Services(nil).Shutdown(ctx)
+		system.Services(r).Shutdown(ctx)
 
 		return nil
 	}, "stopAllServices"
+}
+
+// DenyNewServices represents the DenyNewServices task.
+func DenyNewServices(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
+		system.Services(r).DenyNewServices()
+
+		return nil
+	}, "denyNewServices"
 }
 
 // SetupSharedFilesystems represents the SetupSharedFilesystems task.
@@ -541,7 +494,8 @@ func SetupSharedFilesystems(runtime.Sequence, any) (runtime.TaskExecutionFunc, s
 func MountUserDisks(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
 		// wait for user disk config to be ready
-		_, err := r.State().V1Alpha2().Resources().WatchFor(ctx,
+		_, err := r.State().V1Alpha2().Resources().WatchFor(
+			ctx,
 			blockres.NewUserDiskConfigStatus(blockres.NamespaceName, blockres.UserDiskConfigStatusID).Metadata(),
 			state.WithEventTypes(state.Created, state.Updated),
 			state.WithCondition(func(r resource.Resource) (bool, error) {
@@ -616,12 +570,8 @@ func WriteUserFiles(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 				continue
 			}
 
-			// CRI configuration customization
+			// skipping CRI configuration customization file, as it is handled by the cri customization config controller
 			if f.Path() == filepath.Join("/etc", constants.CRICustomizationConfigPart) {
-				if err = injectCRIConfigPatch(ctx, r.State().V1Alpha2().Resources(), []byte(f.Content())); err != nil {
-					result = multierror.Append(result, err)
-				}
-
 				continue
 			}
 
@@ -674,52 +624,6 @@ func WriteUserFiles(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 	}, "writeUserFiles"
 }
 
-func injectCRIConfigPatch(ctx context.Context, st state.State, content []byte) error {
-	// limit overall waiting time
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-
-	etcFileSpec := resourcefiles.NewEtcFileSpec(resourcefiles.NamespaceName, constants.CRICustomizationConfigPart)
-	etcFileSpec.TypedSpec().Mode = 0o600
-	etcFileSpec.TypedSpec().Contents = content
-	etcFileSpec.TypedSpec().SelinuxLabel = constants.EtcSelinuxLabel
-
-	if err := st.Create(ctx, etcFileSpec); err != nil {
-		return err
-	}
-
-	checksumRaw := sha256.Sum256(content)
-	expectedChecksum := hex.EncodeToString(checksumRaw[:])
-	expectedAnnotation := resourcefiles.SourceFileAnnotation + ":" + filepath.Join("/etc", etcFileSpec.Metadata().ID())
-
-	fileSpec, err := st.WatchFor(ctx, resourcefiles.NewEtcFileSpec(resourcefiles.NamespaceName, constants.CRIConfig).Metadata(),
-		state.WithCondition(func(r resource.Resource) (bool, error) {
-			spec, ok := r.(*resourcefiles.EtcFileSpec)
-			if !ok {
-				return false, nil
-			}
-
-			value, ok := spec.Metadata().Annotations().Get(expectedAnnotation)
-
-			return ok && value == expectedChecksum, nil
-		}))
-	if err != nil {
-		return fmt.Errorf("error waiting for file %q to be updated: %w", constants.CRIConfig, err)
-	}
-
-	// wait for the file to be rendered
-	_, err = st.WatchFor(ctx, resourcefiles.NewEtcFileStatus(resourcefiles.NamespaceName, constants.CRIConfig).Metadata(), state.WithCondition(func(r resource.Resource) (bool, error) {
-		fileStatus, ok := r.(*resourcefiles.EtcFileStatus)
-		if !ok {
-			return false, nil
-		}
-
-		return fileStatus.TypedSpec().SpecVersion == fileSpec.Metadata().Version().String(), nil
-	}))
-
-	return err
-}
-
 func existsAndIsFile(p string) (err error) {
 	var info os.FileInfo
 
@@ -750,6 +654,19 @@ func UnmountPodMounts(runtime.Sequence, any) (runtime.TaskExecutionFunc, string)
 
 		rdr := bytes.NewReader(b)
 
+		// promotable system-volume partitions (ETCD/CRI/KUBELET/LOG) are COSI-managed and are
+		// unmounted by UnmountPromotableSystemPartitions after their consumers stop; skip the
+		// partition mountpoints themselves here (their pod/overlay submounts are still unmounted
+		// below) so a still-busy mount, e.g. /var/log held by syslogd, doesn't abort the sequence.
+		promotableMountpoints := map[string]struct{}{
+			constants.EtcdDataPath:          {},
+			constants.CRIContainerdDataPath: {},
+			constants.KubeletDataPath:       {},
+			constants.LogMountPoint:         {},
+		}
+
+		var mountpoints []string
+
 		scanner := bufio.NewScanner(rdr)
 		for scanner.Scan() {
 			fields := strings.Fields(scanner.Text())
@@ -759,20 +676,45 @@ func UnmountPodMounts(runtime.Sequence, any) (runtime.TaskExecutionFunc, string)
 			}
 
 			mountpoint := fields[1]
-			if strings.HasPrefix(mountpoint, constants.EphemeralMountPoint+"/") {
-				logger.Printf("unmounting %s\n", mountpoint)
 
-				if err = mountv3.SafeUnmount(ctx, logger.Printf, mountpoint, false); err != nil {
-					if errors.Is(err, syscall.EINVAL) {
-						log.Printf("ignoring unmount error %s: %v", mountpoint, err)
-					} else {
-						return fmt.Errorf("error unmounting %s: %w", mountpoint, err)
-					}
+			if _, isPromotable := promotableMountpoints[mountpoint]; isPromotable {
+				continue
+			}
+
+			if strings.HasPrefix(mountpoint, constants.EphemeralMountPoint+"/") {
+				mountpoints = append(mountpoints, mountpoint)
+			}
+		}
+
+		if err = scanner.Err(); err != nil {
+			return err
+		}
+
+		// Unmount the deepest paths first: pod/overlay submounts (e.g. under a dedicated
+		// /var/lib/kubelet or /var/lib/containerd system-volume partition) must be released before
+		// their parent mount, otherwise unmounting the dedicated mount point fails with EBUSY and
+		// leaves the EPHEMERAL teardown blocked.
+		slices.SortFunc(mountpoints, func(a, b string) int {
+			return strings.Count(b, "/") - strings.Count(a, "/")
+		})
+
+		var unmountErrors *multierror.Error
+
+		for _, mountpoint := range mountpoints {
+			logger.Printf("unmounting %s\n", mountpoint)
+
+			if err = mountv3.SafeUnmount(ctx, logger.Printf, mountpoint, false, false); err != nil {
+				if errors.Is(err, syscall.EINVAL) {
+					log.Printf("ignoring unmount error %s: %v", mountpoint, err)
+				} else {
+					// don't abort on a single busy mount: keep going so one failure doesn't leave
+					// the remaining (e.g. sibling or parent) mounts mounted.
+					unmountErrors = multierror.Append(unmountErrors, fmt.Errorf("error unmounting %s: %w", mountpoint, err))
 				}
 			}
 		}
 
-		return scanner.Err()
+		return unmountErrors.ErrorOrNil()
 	}, "unmountPodMounts"
 }
 
@@ -819,7 +761,7 @@ func UnmountSystemDiskBindMounts(runtime.Sequence, any) (runtime.TaskExecutionFu
 
 			logger.Printf("unmounting %s\n", mountpoint)
 
-			if err = mountv3.SafeUnmount(ctx, logger.Printf, mountpoint, false); err != nil {
+			if err = mountv3.SafeUnmount(ctx, logger.Printf, mountpoint, false, false); err != nil {
 				if errors.Is(err, syscall.EINVAL) {
 					log.Printf("ignoring unmount error %s: %v", mountpoint, err)
 				} else {
@@ -1456,10 +1398,10 @@ func MountEphemeralPartition(runtime.Sequence, any) (runtime.TaskExecutionFunc, 
 		mountRequest.TypedSpec().VolumeID = constants.EphemeralPartitionLabel
 		mountRequest.TypedSpec().Requester = "sequencer"
 
-		if cfg := r.Config(); cfg != nil {
-			vol, _ := cfg.Volumes().ByName(constants.EphemeralPartitionLabel)
-			mountRequest.TypedSpec().Secure = vol.Mount().Secure()
-		}
+		vol, _ := r.Config().Volumes().ByName(constants.EphemeralPartitionLabel)
+		mountRequest.TypedSpec().Secure = vol.Mount().Secure()
+		mountRequest.TypedSpec().NoExec = false
+		mountRequest.TypedSpec().DisableAccessTime = vol.Mount().DisableAccessTime()
 
 		if err := r.State().V1Alpha2().Resources().Create(ctx, mountRequest); err != nil {
 			return fmt.Errorf("failed to create EPHEMERAL mount request: %w", err)
@@ -1482,17 +1424,86 @@ func UnmountEphemeralPartition(runtime.Sequence, any) (runtime.TaskExecutionFunc
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
 		mountRequest := blockres.NewVolumeMountRequest(blockres.NamespaceName, constants.EphemeralPartitionLabel).Metadata()
 
-		err := r.State().V1Alpha2().Resources().Destroy(ctx, mountRequest)
+		err := r.State().V1Alpha2().Resources().TeardownAndDestroy(ctx, mountRequest)
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				return nil
 			}
 
-			return fmt.Errorf("failed to destroy EPHEMERAL mount request: %w", err)
+			return fmt.Errorf("failed to teardown EPHEMERAL mount request: %w", err)
 		}
 
 		return nil
 	}, "unmountEphemeralPartition"
+}
+
+// MountPromotableSystemPartitions mounts the promotable system-volume partitions (ETCD, CRI,
+// KUBELET, LOG) with a persistent, sequencer-owned mount request, so their mount lifetime is tied
+// to the machine lifecycle (like EPHEMERAL) rather than to the services that consume them.
+//
+// Without this, stopping the sole consuming service (e.g. `talosctl service kubelet restart`)
+// drops the last mount requester and the block controllers unmount the dedicated partition while
+// it is still in use (pod submounts under /var/lib/kubelet, log writers under /var/log), which
+// fails with EBUSY and leaves the service stuck waiting for the volume to be remounted.
+//
+// Only volumes provisioned onto a dedicated partition are mounted here; directory-backed
+// promotable volumes are plain directories under EPHEMERAL and need no persistent mount.
+func MountPromotableSystemPartitions(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+		for _, name := range configconfig.PromotableSystemVolumeNames {
+			vol, ok := r.Config().Volumes().ByName(name)
+			if !ok || !blockcfg.ProvisioningRequested(vol.Provisioning()) {
+				continue
+			}
+
+			mountRequest := blockres.NewVolumeMountRequest(blockres.NamespaceName, name)
+			mountRequest.TypedSpec().VolumeID = name
+			mountRequest.TypedSpec().Requester = "sequencer"
+			mountRequest.TypedSpec().Secure = vol.Mount().Secure()
+			mountRequest.TypedSpec().NoExec = mountRequest.TypedSpec().Secure && (name == constants.EtcdDataVolumeID || name == constants.LogVolumeID)
+			mountRequest.TypedSpec().DisableAccessTime = vol.Mount().DisableAccessTime()
+
+			if err := r.State().V1Alpha2().Resources().Create(ctx, mountRequest); err != nil {
+				if state.IsConflictError(err) {
+					continue
+				}
+
+				return fmt.Errorf("failed to create %q mount request: %w", name, err)
+			}
+
+			if _, err := r.State().V1Alpha2().Resources().WatchFor(
+				ctx,
+				blockres.NewVolumeMountStatus(blockres.NamespaceName, name).Metadata(),
+				state.WithEventTypes(state.Created, state.Updated),
+			); err != nil {
+				return fmt.Errorf("failed to wait for %q to be mounted: %w", name, err)
+			}
+		}
+
+		return nil
+	}, "mountPromotableSystemPartitions"
+}
+
+// UnmountPromotableSystemPartitions destroys the persistent, sequencer-owned mount requests
+// created by MountPromotableSystemPartitions, releasing the sequencer's hold so the promotable
+// partitions can be unmounted by the block controllers before the EPHEMERAL partition they live
+// under is torn down.
+func UnmountPromotableSystemPartitions(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+		for _, name := range configconfig.PromotableSystemVolumeNames {
+			mountRequest := blockres.NewVolumeMountRequest(blockres.NamespaceName, name).Metadata()
+
+			if err := r.State().V1Alpha2().Resources().Destroy(ctx, mountRequest); err != nil {
+				if state.IsNotFoundError(err) {
+					continue
+				}
+
+				return fmt.Errorf("failed to destroy %q mount request: %w", name, err)
+			}
+		}
+
+		return nil
+	}, "unmountPromotableSystemPartitions"
 }
 
 // Install mounts or installs the system partitions.
@@ -1504,7 +1515,7 @@ func Install(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 		case !r.State().Machine().Installed():
 			installerImage := r.Config().Machine().Install().Image()
 			if installerImage == "" {
-				installerImage = images.DefaultInstallerImage
+				installerImage = images.InstallerImage("metal")
 			}
 
 			logger.Printf("waiting for the image cache")
@@ -1877,15 +1888,18 @@ func WaitForCARoots(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
 	}, "waitForCARoots"
 }
 
-// TeardownVolumeLifecycle tears down volume lifecycle resource.
-func TeardownVolumeLifecycle(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+// teardownLifecycleResource tears down a lifecycle barrier resource and waits for it to be released.
+//
+// Such a resource carries no data: the finalizer set is the payload. Every controller that owns
+// something which has to be wound down before a given point in the shutdown holds a finalizer on it,
+// so tearing it down and waiting for that set to empty is how a phase waits for a subsystem to be
+// wound down.
+func teardownLifecycleResource(md *resource.Metadata) runtime.TaskExecutionFunc {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 
-		volumeLifecycle := blockres.NewVolumeLifecycle(blockres.NamespaceName, blockres.VolumeLifecycleID).Metadata()
-
-		_, err := r.State().V1Alpha2().Resources().Teardown(ctx, volumeLifecycle)
+		_, err := r.State().V1Alpha2().Resources().Teardown(ctx, md)
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				return nil
@@ -1894,13 +1908,29 @@ func TeardownVolumeLifecycle(runtime.Sequence, any) (runtime.TaskExecutionFunc, 
 			return err
 		}
 
-		_, err = r.State().V1Alpha2().Resources().WatchFor(ctx, volumeLifecycle, state.WithFinalizerEmpty())
-		if err != nil {
+		if _, err = r.State().V1Alpha2().Resources().WatchFor(ctx, md, state.WithFinalizerEmpty()); err != nil {
 			return err
 		}
 
-		return r.State().V1Alpha2().Resources().Destroy(ctx, volumeLifecycle)
-	}, "teardownLifecycle"
+		return r.State().V1Alpha2().Resources().Destroy(ctx, md)
+	}
+}
+
+// TeardownVolumeLifecycle tears down volume lifecycle resource.
+func TeardownVolumeLifecycle(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+	return teardownLifecycleResource(
+		blockres.NewVolumeLifecycle(blockres.NamespaceName, blockres.VolumeLifecycleID).Metadata(),
+	), "teardownLifecycle"
+}
+
+// TeardownContainerLifecycle tears down the container shutdown barrier resource.
+//
+// Unlike TeardownVolumeLifecycle, this runs before stopServices: that phase is what stops the CRI
+// containerd instance itself, so a barrier torn down after it would find containerd already gone.
+func TeardownContainerLifecycle(runtime.Sequence, any) (runtime.TaskExecutionFunc, string) {
+	return teardownLifecycleResource(
+		containersres.NewContainerLifecycle(containersres.NamespaceName, containersres.ContainerLifecycleID).Metadata(),
+	), "teardownContainerLifecycle"
 }
 
 func pauseOnFailure(callback func(runtime.Sequence, any) (runtime.TaskExecutionFunc, string),

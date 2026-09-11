@@ -8,7 +8,6 @@ package provision
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +32,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/meta"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
@@ -63,7 +63,7 @@ func (suite *MaintenanceSideroLinkSuite) TestAPI() {
 	sourceInstallerImage := fmt.Sprintf(
 		"%s/%s:%s",
 		DefaultSettings.TargetInstallImageRegistry,
-		images.DefaultInstallerImageName,
+		images.DefaultInstallerImageName, //nolint:staticcheck // legacy is only used in tests
 		DefaultSettings.CurrentVersion,
 	)
 
@@ -104,8 +104,7 @@ func (suite *MaintenanceSideroLinkSuite) TestAPI() {
 
 		maintenanceClients[i], err = client.New(
 			suite.ctx,
-			client.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}),
-			client.WithEndpoints(machine.IPs[0].String()),
+			client.WithMaintenanceMode(machine.IPs[0].String(), nil),
 		)
 		suite.Require().NoError(err)
 	}
@@ -137,12 +136,24 @@ func (suite *MaintenanceSideroLinkSuite) TestAPI() {
 	registryMirrorConfig, err := container.New(
 		xslices.Filter(suite.configBundle.WorkerCfg.Documents(), func(doc config.Document) bool {
 			return doc.Kind() == cri.RegistryMirrorConfig
-		})...)
+		})...,
+	)
+	suite.Require().NoError(err)
+
+	hostDNSConfig := network.NewResolverConfigV1Alpha1()
+	hostDNSConfig.ResolverHostDNS = network.HostDNSConfig{
+		HostDNSEnabled: new(true),
+	}
+
+	hostDNSPatch, err := container.New(hostDNSConfig)
 	suite.Require().NoError(err)
 
 	maintenancePatched, err := configpatcher.Apply(
 		configpatcher.WithConfig(sideroLinkConfig),
-		[]configpatcher.Patch{configpatcher.NewStrategicMergePatch(registryMirrorConfig)},
+		[]configpatcher.Patch{
+			configpatcher.NewStrategicMergePatch(registryMirrorConfig),
+			configpatcher.NewStrategicMergePatch(hostDNSPatch),
+		},
 	)
 	suite.Require().NoError(err)
 
@@ -180,8 +191,7 @@ func (suite *MaintenanceSideroLinkSuite) TestAPI() {
 
 		sideroLinkMaintenanceClients[i], err = client.New(
 			suite.ctx,
-			client.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}),
-			client.WithEndpoints(sideroLinkIP.String()),
+			client.WithMaintenanceMode(sideroLinkIP.String(), nil),
 		)
 		suite.Require().NoError(err)
 	}
@@ -336,7 +346,8 @@ func (suite *MaintenanceSideroLinkSuite) TestAPI() {
 		defer cancel()
 
 		for _, maintenanceClient := range sideroLinkMaintenanceClients {
-			rtestutils.AssertResource(ctx, suite.T(), maintenanceClient.COSI, block.SystemDiskID,
+			rtestutils.AssertResource(
+				ctx, suite.T(), maintenanceClient.COSI, block.SystemDiskID,
 				func(systemDisk *block.SystemDisk, asrt *assert.Assertions) {
 					asrt.Equal("/dev/vda", systemDisk.TypedSpec().DevPath)
 				},
@@ -349,7 +360,8 @@ func (suite *MaintenanceSideroLinkSuite) TestAPI() {
 		defer cancel()
 
 		for _, maintenanceClient := range sideroLinkMaintenanceClients {
-			rtestutils.AssertResource(ctx, suite.T(), maintenanceClient.COSI, constants.MetaPartitionLabel,
+			rtestutils.AssertResource(
+				ctx, suite.T(), maintenanceClient.COSI, constants.MetaPartitionLabel,
 				func(volumeStatus *block.VolumeStatus, asrt *assert.Assertions) {
 					asrt.Equal(block.VolumePhaseReady, volumeStatus.TypedSpec().Phase)
 				},

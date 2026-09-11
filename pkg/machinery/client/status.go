@@ -14,8 +14,8 @@ import (
 // Status returns the status if it is a Status error, nil otherwise.
 func Status(err error) *status.Status {
 	type grpcStatus interface {
-		error
 		GRPCStatus() *status.Status
+		error
 	}
 
 	// Don't use FromError to avoid allocation of OK status.

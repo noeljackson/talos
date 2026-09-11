@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -49,11 +49,9 @@ func NewClient(nodename string, clientCert, clientKey, caPEM []byte) (*Client, e
 	kubeletCert, err := os.ReadFile(filepath.Join(constants.KubeletPKIDir, "kubelet.crt"))
 	if err == nil {
 		config.CAData = append(config.CAData, kubeletCert...)
-	} else if err != nil {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		// ignore if file doesn't exist, assume cert isn't self-signed
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("error reading kubelet certificate: %w", err)
-		}
+		return nil, fmt.Errorf("error reading kubelet certificate: %w", err)
 	}
 
 	client := &Client{}
@@ -90,8 +88,8 @@ type PodList struct {
 
 // Pod returns pod details.
 type Pod struct {
-	Metadata Metadata     `json:"metadata"`
-	Status   v1.PodStatus `json:"status"`
+	Metadata Metadata         `json:"metadata"`
+	Status   corev1.PodStatus `json:"status"`
 }
 
 // Metadata is a pod metadata.

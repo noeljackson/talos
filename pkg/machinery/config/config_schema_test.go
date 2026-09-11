@@ -7,7 +7,6 @@ package config_test
 import (
 	_ "embed"
 	"net/netip"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -18,6 +17,7 @@ import (
 
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -55,18 +55,6 @@ func TestSchemaValidation(t *testing.T) {
 				config.ConfigVersion = "v1alpha2"
 			}, nil),
 			expectedErrorContains: `value must be 'v1alpha1'`,
-		},
-		{
-			name: "v1alpha1_invalid-control-plane-endpoint",
-			config: newV1Alpha1Config(t, func(config *v1alpha1.Config) {
-				endpointURL, urlErr := url.Parse("ftp://127.0.0.1:6443")
-				require.NoError(t, urlErr)
-
-				config.ClusterConfig.ControlPlane.Endpoint = &v1alpha1.Endpoint{
-					URL: endpointURL,
-				}
-			}, nil),
-			expectedErrorContains: `does not match pattern '^https://'`,
 		},
 		{
 			name: "v1alpha1_invalid-duration",
@@ -114,7 +102,7 @@ func TestSchemaValidation(t *testing.T) {
 
 				assert.Contains(t, errorsStr, test.expectedErrorContains)
 			} else {
-				assert.NoError(t, testErr)
+				assert.NoError(t, testErr, "config was: %+v", test.config)
 			}
 		})
 	}
@@ -181,7 +169,7 @@ func newRuleConfigV1Alpha1(t *testing.T, modifications func(config *network.Rule
 	config.Ingress = network.IngressConfig{
 		{
 			Subnet: netip.MustParsePrefix("10.42.0.0/16"),
-			Except: network.Prefix{Prefix: netip.MustParsePrefix("10.42.43.0/24")},
+			Except: meta.Prefix{Prefix: netip.MustParsePrefix("10.42.43.0/24")},
 		},
 	}
 

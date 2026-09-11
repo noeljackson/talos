@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/siderolabs/gen/xerrors"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v4"
@@ -23,6 +24,7 @@ import (
 	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/imager"
 	"github.com/siderolabs/talos/pkg/imager/profile"
+	installerexitcode "github.com/siderolabs/talos/pkg/installer/exitcode"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/overlay"
 	"github.com/siderolabs/talos/pkg/reporter"
@@ -47,6 +49,9 @@ var cmdFlags struct {
 	OverlayOptions        []string
 	// Only used when generating a secure boot iso without also providing a secure boot database.
 	SecurebootIncludeWellKnownCerts bool
+	SecurebootSignerAddress         string
+	PCRSignerAddress                string
+	SecurebootEnrollKeys            string
 }
 
 // rootCmd represents the base command when called without any subcommands.
@@ -57,176 +62,236 @@ var rootCmd = &cobra.Command{
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.WithContext(context.Background(), func(ctx context.Context) error {
-			report := reporter.New()
-			report.Report(reporter.Update{
-				Message: "assembling the finalized profile...",
-				Status:  reporter.StatusRunning,
-			})
+		ctx := cmd.Context()
 
-			baseProfile := args[0]
+		report := reporter.New()
+		report.Report(reporter.Update{
+			Message: "assembling the finalized profile...",
+			Status:  reporter.StatusRunning,
+		})
 
-			var prof profile.Profile
+		baseProfile := args[0]
 
-			if baseProfile == "-" {
-				if err := yaml.NewDecoder(os.Stdin).Decode(&prof); err != nil {
-					return err
-				}
-			} else {
-				prof = profile.Profile{
-					BaseProfileName: baseProfile,
-					Arch:            cmdFlags.Arch,
-					Platform:        cmdFlags.Platform,
-					Customization: profile.CustomizationProfile{
-						ExtraKernelArgs: cmdFlags.ExtraKernelArgs,
-						MetaContents:    cmdFlags.MetaValues.GetMetaValues(),
-					},
-				}
+		var prof profile.Profile
 
-				extraOverlayOptions := overlay.ExtraOptions{}
+		if baseProfile == "-" {
+			if err := yaml.NewDecoder(os.Stdin).Decode(&prof); err != nil {
+				return xerrors.NewTaggedf[profile.InvalidInputTag]("%w", err)
+			}
+		} else {
+			prof = profile.Profile{
+				BaseProfileName: baseProfile,
+				Arch:            cmdFlags.Arch,
+				Platform:        cmdFlags.Platform,
+				Customization: profile.CustomizationProfile{
+					ExtraKernelArgs: cmdFlags.ExtraKernelArgs,
+					MetaContents:    cmdFlags.MetaValues.GetMetaValues(),
+				},
+			}
 
-				for _, option := range cmdFlags.OverlayOptions {
-					if strings.HasPrefix(option, "@") {
-						data, err := os.ReadFile(option[1:])
-						if err != nil {
-							return err
-						}
+			extraOverlayOptions := overlay.ExtraOptions{}
 
-						decoder := yaml.NewDecoder(bytes.NewReader(data))
-						decoder.KnownFields(true)
-
-						if err := decoder.Decode(&extraOverlayOptions); err != nil {
-							return err
-						}
-
-						continue
-					}
-
-					k, v, _ := strings.Cut(option, "=")
-
-					if strings.HasPrefix(v, "@") {
-						data, err := os.ReadFile(v[1:])
-						if err != nil {
-							return err
-						}
-
-						v = string(data)
-					}
-
-					extraOverlayOptions[k] = v
-				}
-
-				if cmdFlags.OverlayName != "" || cmdFlags.OverlayImage != "" {
-					prof.Overlay = &profile.OverlayOptions{
-						Name: cmdFlags.OverlayName,
-						Image: profile.ContainerAsset{
-							ImageRef: cmdFlags.OverlayImage,
-						},
-						ExtraOptions: extraOverlayOptions,
-					}
-
-					prof.Input.OverlayInstaller.ImageRef = cmdFlags.OverlayImage
-				}
-
-				prof.Input.SystemExtensions = xslices.Map(
-					cmdFlags.SystemExtensionImages,
-					func(imageRef string) profile.ContainerAsset {
-						return profile.ContainerAsset{
-							ImageRef:      imageRef,
-							ForceInsecure: cmdFlags.Insecure,
-						}
-					},
-				)
-
-				if cmdFlags.OutputKind != "" {
-					outKind, err := profile.OutputKindString(cmdFlags.OutputKind)
+			for _, option := range cmdFlags.OverlayOptions {
+				if strings.HasPrefix(option, "@") {
+					data, err := os.ReadFile(option[1:])
 					if err != nil {
-						return err
+						return xerrors.NewTaggedf[imager.IOTag]("%w", err)
 					}
 
-					prof.Output.Kind = outKind
+					decoder := yaml.NewDecoder(bytes.NewReader(data))
+					decoder.KnownFields(true)
+
+					if err := decoder.Decode(&extraOverlayOptions); err != nil {
+						return xerrors.NewTaggedf[profile.InvalidInputTag]("%w", err)
+					}
+
+					continue
 				}
 
-				if cmdFlags.BaseInstallerImage != "" {
-					prof.Input.BaseInstaller = profile.ContainerAsset{
-						ImageRef:      cmdFlags.BaseInstallerImage,
+				k, v, _ := strings.Cut(option, "=")
+
+				if strings.HasPrefix(v, "@") {
+					data, err := os.ReadFile(v[1:])
+					if err != nil {
+						return xerrors.NewTaggedf[imager.IOTag]("%w", err)
+					}
+
+					v = string(data)
+				}
+
+				extraOverlayOptions[k] = v
+			}
+
+			if cmdFlags.OverlayName != "" || cmdFlags.OverlayImage != "" {
+				prof.Overlay = &profile.OverlayOptions{
+					Name: cmdFlags.OverlayName,
+					Image: profile.ContainerAsset{
+						ImageRef: cmdFlags.OverlayImage,
+					},
+					ExtraOptions: extraOverlayOptions,
+				}
+
+				prof.Input.OverlayInstaller.ImageRef = cmdFlags.OverlayImage
+			}
+
+			prof.Input.SystemExtensions = xslices.Map(
+				cmdFlags.SystemExtensionImages,
+				func(imageRef string) profile.ContainerAsset {
+					return profile.ContainerAsset{
+						ImageRef:      imageRef,
 						ForceInsecure: cmdFlags.Insecure,
 					}
+				},
+			)
+
+			if cmdFlags.OutputKind != "" {
+				outKind, err := profile.OutputKindString(cmdFlags.OutputKind)
+				if err != nil {
+					return xerrors.NewTaggedf[profile.InvalidInputTag]("%w", err)
 				}
 
-				if cmdFlags.ImageCache != "" {
-					parseOpts := []name.Option{name.StrictValidation}
+				prof.Output.Kind = outKind
+			}
 
-					if cmdFlags.Insecure {
-						parseOpts = append(parseOpts, name.Insecure)
-					}
-
-					if _, err := name.ParseReference(cmdFlags.ImageCache, parseOpts...); err == nil {
-						prof.Input.ImageCache = profile.ContainerAsset{
-							ImageRef:      cmdFlags.ImageCache,
-							ForceInsecure: cmdFlags.Insecure,
-						}
-					} else {
-						prof.Input.ImageCache = profile.ContainerAsset{
-							OCIPath: cmdFlags.ImageCache,
-						}
-					}
-				}
-
-				if cmdFlags.SecurebootIncludeWellKnownCerts {
-					if prof.Input.SecureBoot == nil {
-						prof.Input.SecureBoot = &profile.SecureBootAssets{}
-					}
-
-					prof.Input.SecureBoot.IncludeWellKnownCerts = true
-				}
-
-				if cmdFlags.EmbeddedConfigPath != "" {
-					data, err := os.ReadFile(cmdFlags.EmbeddedConfigPath)
-					if err != nil {
-						return fmt.Errorf("error reading embedded config file: %w", err)
-					}
-
-					prof.Customization.EmbeddedMachineConfiguration = string(data)
+			if cmdFlags.BaseInstallerImage != "" {
+				prof.Input.BaseInstaller = profile.ContainerAsset{
+					ImageRef:      cmdFlags.BaseInstallerImage,
+					ForceInsecure: cmdFlags.Insecure,
 				}
 			}
 
-			if err := os.MkdirAll(cmdFlags.OutputPath, 0o755); err != nil {
+			if cmdFlags.ImageCache != "" {
+				parseOpts := []name.Option{name.StrictValidation}
+
+				if cmdFlags.Insecure {
+					parseOpts = append(parseOpts, name.Insecure)
+				}
+
+				if _, err := name.ParseReference(cmdFlags.ImageCache, parseOpts...); err == nil {
+					prof.Input.ImageCache = profile.ContainerAsset{
+						ImageRef:      cmdFlags.ImageCache,
+						ForceInsecure: cmdFlags.Insecure,
+					}
+				} else {
+					prof.Input.ImageCache = profile.ContainerAsset{
+						OCIPath: cmdFlags.ImageCache,
+					}
+				}
+			}
+
+			if cmdFlags.SecurebootIncludeWellKnownCerts {
+				if prof.Input.SecureBoot == nil {
+					prof.Input.SecureBoot = &profile.SecureBootAssets{}
+				}
+
+				prof.Input.SecureBoot.IncludeWellKnownCerts = true
+			}
+
+			if cmdFlags.SecurebootSignerAddress != "" {
+				if prof.Input.SecureBoot == nil {
+					prof.Input.SecureBoot = &profile.SecureBootAssets{}
+				}
+
+				prof.Input.SecureBoot.SecureBootSigner.SignerAddress = cmdFlags.SecurebootSignerAddress
+			}
+
+			if cmdFlags.PCRSignerAddress != "" {
+				if prof.Input.SecureBoot == nil {
+					prof.Input.SecureBoot = &profile.SecureBootAssets{}
+				}
+
+				prof.Input.SecureBoot.PCRSigner.SignerAddress = cmdFlags.PCRSignerAddress
+			}
+
+			if err := applySDBootEnrollKeys(cmdFlags.SecurebootEnrollKeys, &prof.Output); err != nil {
 				return err
 			}
 
-			imager, err := imager.New(prof)
-			if err != nil {
-				return err
+			if cmdFlags.EmbeddedConfigPath != "" {
+				data, err := os.ReadFile(cmdFlags.EmbeddedConfigPath)
+				if err != nil {
+					return xerrors.NewTaggedf[imager.IOTag]("error reading embedded config file: %w", err)
+				}
+
+				prof.Customization.EmbeddedMachineConfiguration = string(data)
 			}
+		}
 
-			if _, err = imager.Execute(ctx, cmdFlags.OutputPath, report); err != nil {
-				report.Report(reporter.Update{
-					Message: err.Error(),
-					Status:  reporter.StatusError,
-				})
+		if err := os.MkdirAll(cmdFlags.OutputPath, 0o755); err != nil {
+			return xerrors.NewTaggedf[imager.IOTag]("%w", err)
+		}
 
-				return err
+		imgr, err := imager.New(prof)
+		if err != nil {
+			return err
+		}
+
+		if _, err = imgr.Execute(ctx, cmdFlags.OutputPath, report); err != nil {
+			report.Report(reporter.Update{
+				Message: err.Error(),
+				Status:  reporter.StatusError,
+			})
+
+			return err
+		}
+
+		if cmdFlags.TarToStdout {
+			if err := archiver.TarGz(ctx, cmdFlags.OutputPath, os.Stdout); err != nil {
+				return xerrors.NewTaggedf[imager.IOTag]("%w", err)
 			}
+		}
 
-			if cmdFlags.TarToStdout {
-				return archiver.TarGz(ctx, cmdFlags.OutputPath, os.Stdout)
-			}
-
-			return nil
-		})
+		return nil
 	},
+}
+
+// applySDBootEnrollKeys applies the --secureboot-enroll-keys flag value to the output profile.
+//
+// The value is set on both the image and ISO options so it applies regardless of the base
+// profile's output kind; the unused options struct is ignored downstream. An empty value is
+// a no-op, leaving the base profile's default (if-safe) in place.
+func applySDBootEnrollKeys(value string, output *profile.Output) error {
+	if value == "" {
+		return nil
+	}
+
+	enrollKeys, err := profile.SDBootEnrollKeysString(value)
+	if err != nil {
+		return xerrors.NewTaggedf[profile.InvalidInputTag]("invalid --secureboot-enroll-keys value: %w", err)
+	}
+
+	if output.ImageOptions == nil {
+		output.ImageOptions = &profile.ImageOptions{}
+	}
+
+	output.ImageOptions.SDBootEnrollKeys = enrollKeys
+
+	if output.ISOOptions == nil {
+		output.ISOOptions = &profile.ISOOptions{}
+	}
+
+	output.ISOOptions.SDBootEnrollKeys = enrollKeys
+
+	return nil
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+	if err := execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(installerexitcode.Resolve(err))
 	}
 }
 
+func execute() error {
+	_, err := cli.WithContextC(context.Background(), rootCmd.ExecuteContextC)
+
+	return err
+}
+
 func init() {
+	rootCmd.SilenceErrors = true
 	rootCmd.PersistentFlags().StringVar(&cmdFlags.Platform, "platform", "", "The value of "+constants.KernelParamPlatform)
 	rootCmd.PersistentFlags().StringVar(&cmdFlags.Arch, "arch", runtime.GOARCH, "The target architecture")
 	rootCmd.PersistentFlags().StringVar(&cmdFlags.BaseInstallerImage, "base-installer-image", "", "Base installer image to use")
@@ -243,5 +308,22 @@ func init() {
 	rootCmd.PersistentFlags().StringArrayVar(&cmdFlags.OverlayOptions, "overlay-option", []string{}, "Extra options to pass to the overlay")
 	rootCmd.PersistentFlags().StringVar(&cmdFlags.EmbeddedConfigPath, "embedded-config-path", "", "Path to a file containing the machine configuration to embed into the image")
 	rootCmd.PersistentFlags().BoolVar(
-		&cmdFlags.SecurebootIncludeWellKnownCerts, "secureboot-include-well-known-certs", false, "Include well-known (Microsoft) UEFI certificates when generating a secure boot database")
+		&cmdFlags.SecurebootIncludeWellKnownCerts, "secureboot-include-well-known-certs", false, "Include well-known (Microsoft) UEFI certificates when generating a secure boot database",
+	)
+	rootCmd.PersistentFlags().StringVar(
+		&cmdFlags.SecurebootSignerAddress, "secureboot-signer-address", "",
+		"gRPC unix:// address of a SecureBoot signer service",
+	)
+	rootCmd.PersistentFlags().StringVar(
+		&cmdFlags.PCRSignerAddress, "pcr-signer-address", "",
+		"gRPC unix:// address of a PCR signer service",
+	)
+	rootCmd.PersistentFlags().StringVar(
+		&cmdFlags.SecurebootEnrollKeys, "secureboot-enroll-keys", "",
+		fmt.Sprintf(
+			"how systemd-boot enrolls SecureBoot keys on first boot (loader.conf secure-boot-enroll), one of: %s. "+
+				"Defaults to if-safe (auto-enrolls only in a VM); use force for unattended bare-metal enrollment when the firmware is in setup mode",
+			strings.Join(profile.SDBootEnrollKeysStrings(), ", "),
+		),
+	)
 }

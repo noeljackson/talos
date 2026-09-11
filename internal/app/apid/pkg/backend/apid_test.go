@@ -138,8 +138,8 @@ func (suite *APIDSuite) TestAppendInfoUnary() {
 	suite.Require().NoError(err)
 
 	suite.Assert().EqualValues([]byte("foobar"), newReply.Messages[0].Bytes)
-	suite.Assert().Equal(suite.b.String(), newReply.Messages[0].Metadata.Hostname)
-	suite.Assert().Empty(newReply.Messages[0].Metadata.Error)
+	suite.Assert().Equal(suite.b.String(), newReply.Messages[0].Metadata.Hostname) //nolint:staticcheck // legacy behavior
+	suite.Assert().Empty(newReply.Messages[0].Metadata.Error)                      //nolint:staticcheck // legacy behavior
 }
 
 func (suite *APIDSuite) TestAppendInfoStreaming() {
@@ -159,15 +159,15 @@ func (suite *APIDSuite) TestAppendInfoStreaming() {
 	suite.Require().NoError(err)
 
 	suite.Assert().EqualValues([]byte("foobar"), newResponse.Bytes)
-	suite.Assert().Equal(suite.b.String(), newResponse.Metadata.Hostname)
-	suite.Assert().Empty(newResponse.Metadata.Error)
+	suite.Assert().Equal(suite.b.String(), newResponse.Metadata.Hostname) //nolint:staticcheck // legacy behavior
+	suite.Assert().Empty(newResponse.Metadata.Error)                      //nolint:staticcheck // legacy behavior
 }
 
 func (suite *APIDSuite) TestAppendInfoStreamingMetadata() {
 	// this tests the case when metadata field is appended twice
 	// to the message, but protobuf merges definitions
 	response := &common.Data{
-		Metadata: &common.Metadata{
+		Metadata: &common.Metadata{ //nolint:staticcheck // legacy behavior
 			Error: "something went wrong",
 		},
 	}
@@ -184,8 +184,8 @@ func (suite *APIDSuite) TestAppendInfoStreamingMetadata() {
 	suite.Require().NoError(err)
 
 	suite.Assert().Nil(newResponse.Bytes)
-	suite.Assert().Equal(suite.b.String(), newResponse.Metadata.Hostname)
-	suite.Assert().Equal("something went wrong", newResponse.Metadata.Error)
+	suite.Assert().Equal(suite.b.String(), newResponse.Metadata.Hostname)    //nolint:staticcheck // legacy behavior
+	suite.Assert().Equal("something went wrong", newResponse.Metadata.Error) //nolint:staticcheck // legacy behavior
 }
 
 func (suite *APIDSuite) TestBuildErrorUnary() {
@@ -198,8 +198,8 @@ func (suite *APIDSuite) TestBuildErrorUnary() {
 	suite.Require().NoError(err)
 
 	suite.Assert().Nil(reply.Messages[0].Bytes)
-	suite.Assert().Equal(suite.b.String(), reply.Messages[0].Metadata.Hostname)
-	suite.Assert().Equal("some error", reply.Messages[0].Metadata.Error)
+	suite.Assert().Equal(suite.b.String(), reply.Messages[0].Metadata.Hostname) //nolint:staticcheck // legacy behavior
+	suite.Assert().Equal("some error", reply.Messages[0].Metadata.Error)        //nolint:staticcheck // legacy behavior
 }
 
 func (suite *APIDSuite) TestBuildErrorStreaming() {
@@ -212,8 +212,8 @@ func (suite *APIDSuite) TestBuildErrorStreaming() {
 	suite.Require().NoError(err)
 
 	suite.Assert().Nil(response.Bytes)
-	suite.Assert().Equal(suite.b.String(), response.Metadata.Hostname)
-	suite.Assert().Equal("some error", response.Metadata.Error)
+	suite.Assert().Equal(suite.b.String(), response.Metadata.Hostname) //nolint:staticcheck // legacy behavior
+	suite.Assert().Equal("some error", response.Metadata.Error)        //nolint:staticcheck // legacy behavior
 }
 
 func TestAPIDSuite(t *testing.T) {
@@ -221,7 +221,8 @@ func TestAPIDSuite(t *testing.T) {
 }
 
 func TestAPIIdiosyncrasies(t *testing.T) {
-	for _, services := range xslices.Map(api.TalosAPIdOne2ManyAPIs(),
+	for _, services := range xslices.Map(
+		api.TalosAPIdOne2ManyAPIs(),
 		func(fd protoreflect.FileDescriptor) protoreflect.ServiceDescriptors {
 			return fd.Services()
 		},

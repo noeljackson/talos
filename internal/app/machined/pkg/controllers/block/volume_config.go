@@ -94,7 +94,8 @@ func (ctrl *VolumeConfigController) Run(ctx context.Context, r controller.Runtim
 
 		// create a volume mount request for the root user volume mount point
 		// to keep it alive and prevent it from being torn down
-		if err := safe.WriterModify(ctx, r,
+		if err := safe.WriterModify(
+			ctx, r,
 			block.NewVolumeMountRequest(block.NamespaceName, constants.UserVolumeMountPoint),
 			func(v *block.VolumeMountRequest) error {
 				v.TypedSpec().Requester = ctrl.Name()
@@ -120,18 +121,9 @@ func (ctrl *VolumeConfigController) Run(ctx context.Context, r controller.Runtim
 			return err
 		}
 
-		transformers := append(volumeconfig.GetSystemVolumeTransformers(ctx, encryptionMeta,
-			ctrl.V1Alpha1Mode.InContainer(), ctrl.V1Alpha1Mode.IsAgent()), volumeconfig.UserVolumeTransformers...)
-
-		var resources []volumeconfig.VolumeResource
-
-		for _, transformer := range transformers {
-			r, err := transformer(cfg)
-			if err != nil {
-				return err
-			}
-
-			resources = append(resources, r...)
+		resources, err := volumeconfig.BuildVolumeResources(ctx, cfg, encryptionMeta, ctrl.V1Alpha1Mode.InContainer(), ctrl.V1Alpha1Mode.IsAgent())
+		if err != nil {
+			return err
 		}
 
 		volumeConfigsByID, volumeMountRequestsByID, err := ctrl.getExistingVolumes(ctx, r)

@@ -32,9 +32,12 @@ type BootstrapManifestsConfigSpec struct {
 
 	PodCIDRs []string `yaml:"podCIDRs" protobuf:"3"`
 
-	ProxyEnabled bool     `yaml:"proxyEnabled" protobuf:"4"`
-	ProxyImage   string   `yaml:"proxyImage" protobuf:"5"`
-	ProxyArgs    []string `yaml:"proxyArgs" protobuf:"6"`
+	ProxyEnabled        bool           `yaml:"proxyEnabled" protobuf:"4"`
+	ProxyImage          string         `yaml:"proxyImage" protobuf:"5"`
+	ProxyArgs           []string       `yaml:"proxyArgs" protobuf:"6"`
+	ProxyConfig         map[string]any `yaml:"proxyConfig" protobuf:"27"`
+	ProxyConfigChecksum string         `yaml:"proxyConfigChecksum" protobuf:"29"`
+	ProxyResources      Resources      `yaml:"proxyResources" protobuf:"28"`
 
 	CoreDNSEnabled bool   `yaml:"coreDNSEnabled" protobuf:"7"`
 	CoreDNSImage   string `yaml:"coreDNSImage" protobuf:"8"`
@@ -42,13 +45,18 @@ type BootstrapManifestsConfigSpec struct {
 	DNSServiceIP   string `yaml:"dnsServiceIP" protobuf:"9"`
 	DNSServiceIPv6 string `yaml:"dnsServiceIPv6" protobuf:"10"`
 
-	FlannelEnabled                    bool     `yaml:"flannelEnabled" protobuf:"11"`
-	FlannelImage                      string   `yaml:"flannelImage" protobuf:"12"`
-	FlannelExtraArgs                  []string `yaml:"flannelExtraArgs" protobuf:"16"`
-	FlannelKubeServiceHost            string   `yaml:"flannelKubeServiceHost" protobuf:"17"`
-	FlannelKubeServicePort            string   `yaml:"flannelKubeServicePort" protobuf:"18"`
-	FlannelKubeNetworkPoliciesEnabled bool     `yaml:"flannelKubeNetworkPoliciesEnabled" protobuf:"19"`
-	FlannelKubeNetworkPoliciesImage   string   `yaml:"flannelKubeNetworkPoliciesImage" protobuf:"20"`
+	FlannelEnabled                    bool           `yaml:"flannelEnabled" protobuf:"11"`
+	FlannelImage                      string         `yaml:"flannelImage" protobuf:"12"`
+	FlannelExtraArgs                  []string       `yaml:"flannelExtraArgs" protobuf:"16"`
+	FlannelKubeServiceHost            string         `yaml:"flannelKubeServiceHost" protobuf:"17"`
+	FlannelKubeServicePort            string         `yaml:"flannelKubeServicePort" protobuf:"18"`
+	FlannelKubeNetworkPoliciesEnabled bool           `yaml:"flannelKubeNetworkPoliciesEnabled" protobuf:"19"`
+	FlannelKubeNetworkPoliciesImage   string         `yaml:"flannelKubeNetworkPoliciesImage" protobuf:"20"`
+	FlannelBackendType                string         `yaml:"flannelBackendType" protobuf:"23"`
+	FlannelBackendPort                uint16         `yaml:"flannelBackendPort" protobuf:"24"`
+	FlannelBackendMTU                 uint32         `yaml:"flannelBackendMTU" protobuf:"22"`
+	FlannelBackendExtraConfig         map[string]any `yaml:"flannelBackendExtraConfig" protobuf:"26"`
+	FlannelResources                  Resources      `yaml:"flannelResources" protobuf:"25"`
 
 	PodSecurityPolicyEnabled bool `yaml:"podSecurityPolicyEnabled" protobuf:"14"`
 

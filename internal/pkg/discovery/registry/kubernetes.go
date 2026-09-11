@@ -15,7 +15,8 @@ import (
 
 	"github.com/siderolabs/gen/value"
 	"github.com/siderolabs/gen/xslices"
-	v1 "k8s.io/api/core/v1"
+	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -76,7 +77,7 @@ func AnnotationsFromAffiliate(affiliate *cluster.Affiliate) map[string]string {
 // If the Node resource doesn't have cluster discovery annotations, nil is returned.
 //
 //nolint:gocyclo
-func AffiliateFromNode(node *v1.Node) *cluster.AffiliateSpec {
+func AffiliateFromNode(node *corev1.Node) *cluster.AffiliateSpec {
 	nodeID, ok := node.Annotations[constants.ClusterNodeIDAnnotation]
 	if !ok {
 		// skip the node, not part of the cluster discovery process
@@ -95,7 +96,7 @@ func AffiliateFromNode(node *v1.Node) *cluster.AffiliateSpec {
 	affiliate.Nodename = node.Name
 
 	for _, addr := range node.Status.Addresses {
-		if addr.Type == v1.NodeHostName {
+		if addr.Type == corev1.NodeHostName {
 			affiliate.Hostname = addr.Address
 
 			break
@@ -218,7 +219,7 @@ func (r *Kubernetes) Push(ctx context.Context, affiliate *cluster.Affiliate) err
 		return fmt.Errorf("failed to marshal new data for node %q: %w", node.Name, err)
 	}
 
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, v1.Node{})
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, corev1.Node{})
 	if err != nil {
 		return fmt.Errorf("failed to create two way merge patch: %w", err)
 	}
@@ -267,15 +268,10 @@ func (r *Kubernetes) List(localNodeName string) ([]*cluster.AffiliateSpec, error
 }
 
 // Watch starts watching Node state and notifies on updates via notify channel.
-//
-// Watch errors are reported via the returned error channel, so that the caller can
-// rebuild the client (and with it, the credentials read off the disk) if the watch
-// keeps failing.
-func (r *Kubernetes) Watch(ctx context.Context) (<-chan struct{}, <-chan error, func(), error) {
+func (r *Kubernetes) Watch(ctx context.Context, logger *zap.Logger) (<-chan struct{}, func(), error) {
 	informerFactory := informers.NewSharedInformerFactory(r.client.Clientset, constants.KubernetesInformerDefaultResyncPeriod)
 
 	notifyCh := make(chan struct{}, 1)
-	watchErrCh := make(chan error, 1)
 
 	notify := func(_ any) {
 		select {
@@ -286,13 +282,10 @@ func (r *Kubernetes) Watch(ctx context.Context) (<-chan struct{}, <-chan error, 
 
 	r.nodes = informerFactory.Core().V1().Nodes()
 
-	if err := r.nodes.Informer().SetWatchErrorHandler(func(_ *cache.Reflector, err error) {
-		select {
-		case watchErrCh <- err:
-		default:
-		}
+	if err := r.nodes.Informer().SetWatchErrorHandler(func(r *cache.Reflector, err error) {
+		logger.Error("kubernetes registry node watch error", zap.Error(err))
 	}); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to set watch error handler: %w", err)
+		return nil, nil, fmt.Errorf("failed to set watch error handler: %w", err)
 	}
 
 	if _, err := r.nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -300,10 +293,10 @@ func (r *Kubernetes) Watch(ctx context.Context) (<-chan struct{}, <-chan error, 
 		DeleteFunc: notify,
 		UpdateFunc: func(_, _ any) { notify(nil) },
 	}); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to add event handler: %w", err)
+		return nil, nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
 	informerFactory.Start(ctx.Done())
 
-	return notifyCh, watchErrCh, informerFactory.Shutdown, nil
+	return notifyCh, informerFactory.Shutdown, nil
 }

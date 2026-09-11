@@ -16,7 +16,7 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/optional"
 	"go.uber.org/zap"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 
 	k8sadapter "github.com/siderolabs/talos/internal/app/machined/pkg/adapters/k8s"
 	v1alpha1runtime "github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
@@ -27,6 +27,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
+	"github.com/siderolabs/talos/pkg/machinery/resources/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/resources/time"
 	"github.com/siderolabs/talos/pkg/machinery/resources/v1alpha1"
 )
@@ -91,6 +92,11 @@ func (ctrl *MachineStatusController) Inputs() []controller.Input {
 			Type:      k8s.NodeStatusType,
 			Kind:      controller.InputWeak,
 		},
+		{
+			Namespace: secrets.NamespaceName,
+			Type:      secrets.KubeletType,
+			Kind:      controller.InputWeak,
+		},
 	}
 }
 
@@ -136,6 +142,17 @@ func (ctrl *MachineStatusController) Run(ctx context.Context, r controller.Runti
 			machineType = machineTypeResource.MachineType()
 		}
 
+		hasKubernetes := true
+
+		_, err = safe.ReaderGetByID[*secrets.Kubelet](ctx, r, secrets.KubeletID)
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				hasKubernetes = false
+			} else {
+				return fmt.Errorf("error getting kubelet config: %w", err)
+			}
+		}
+
 		ctrl.mu.Lock()
 		currentStage := ctrl.currentStage
 		ctrl.mu.Unlock()
@@ -144,7 +161,7 @@ func (ctrl *MachineStatusController) Run(ctx context.Context, r controller.Runti
 
 		var unmetConditions []runtime.UnmetCondition
 
-		for _, check := range ctrl.getReadinessChecks(currentStage, machineType) {
+		for _, check := range ctrl.getReadinessChecks(currentStage, machineType, hasKubernetes) {
 			if err := check.f(ctx, r); err != nil {
 				ready = false
 
@@ -180,23 +197,36 @@ type readinessCheck struct {
 	f    func(context.Context, controller.Runtime) error
 }
 
-func (ctrl *MachineStatusController) getReadinessChecks(stage runtime.MachineStage, machineType machine.Type) []readinessCheck {
+func (ctrl *MachineStatusController) getReadinessChecks(stage runtime.MachineStage, machineType machine.Type, hasKubernetes bool) []readinessCheck {
 	requiredServices := []string{
 		"apid",
 		"machined",
-		"kubelet",
+	}
+
+	if hasKubernetes {
+		requiredServices = append(
+			requiredServices,
+			"kubelet",
+		)
 	}
 
 	if machineType.IsControlPlane() {
-		requiredServices = append(requiredServices,
-			"etcd",
+		if hasKubernetes {
+			requiredServices = append(
+				requiredServices,
+				"etcd",
+			)
+		}
+
+		requiredServices = append(
+			requiredServices,
 			"trustd",
 		)
 	}
 
 	switch stage { //nolint:exhaustive
 	case runtime.MachineStageBooting, runtime.MachineStageRunning:
-		return []readinessCheck{
+		checks := []readinessCheck{
 			{
 				name: "time",
 				f:    ctrl.timeSyncCheck,
@@ -213,11 +243,16 @@ func (ctrl *MachineStatusController) getReadinessChecks(stage runtime.MachineSta
 				name: "staticPods",
 				f:    ctrl.staticPodsCheck,
 			},
-			{
+		}
+
+		if hasKubernetes {
+			checks = append(checks, readinessCheck{
 				name: "nodeReady",
 				f:    ctrl.nodeReadyCheck,
-			},
+			})
 		}
+
+		return checks
 	default:
 		return nil
 	}
@@ -322,17 +357,17 @@ func (ctrl *MachineStatusController) staticPodsCheck(ctx context.Context, r cont
 		}
 
 		switch status.Phase {
-		case v1.PodPending, v1.PodFailed, v1.PodUnknown:
+		case corev1.PodPending, corev1.PodFailed, corev1.PodUnknown:
 			problems = append(problems, fmt.Sprintf("%s %s", staticPod.Metadata().ID(), strings.ToLower(string(status.Phase))))
-		case v1.PodSucceeded:
+		case corev1.PodSucceeded:
 			// do nothing, terminal phase
-		case v1.PodRunning:
+		case corev1.PodRunning:
 			// check readiness
 			ready := false
 
 			for _, condition := range status.Conditions {
-				if condition.Type == v1.PodReady {
-					ready = condition.Status == v1.ConditionTrue
+				if condition.Type == corev1.PodReady {
+					ready = condition.Status == corev1.ConditionTrue
 
 					break
 				}

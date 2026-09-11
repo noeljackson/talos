@@ -1,0 +1,1 @@
+(neverallow kubelet_t cilium_runtime_t (dir (add_name)))

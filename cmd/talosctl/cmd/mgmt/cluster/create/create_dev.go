@@ -10,34 +10,60 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/siderolabs/go-kubeconfig"
+	"google.golang.org/grpc/codes"
 	"k8s.io/client-go/tools/clientcmd"
 
 	clustercmd "github.com/siderolabs/talos/cmd/talosctl/cmd/mgmt/cluster"
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/mgmt/cluster/create/clusterops"
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/mgmt/cluster/create/clusterops/configmaker"
+	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/provision/access"
-	"github.com/siderolabs/talos/pkg/provision/providers"
+	"github.com/siderolabs/talos/pkg/provision/providers/remote"
 )
 
 //nolint:gocyclo,cyclop
 func createDevCluster(ctx context.Context, cOps clusterops.Common, qOps clusterops.Qemu) error {
-	if err := downloadBootAssets(ctx, &qOps); err != nil {
+	provisioner, err := selectProvisioner(ctx, cOps)
+	if err != nil {
+		return err
+	}
+
+	if rp, ok := provisioner.(*remote.Provisioner); ok {
+		// Delegating to a remote-provision server: target the server's
+		// architecture (it runs the VMs), and skip the local download —
+		// boot assets are uploaded or fetched server-side.
+		arch, archErr := rp.ServerArch(ctx)
+		if archErr != nil {
+			return archErr
+		}
+
+		qOps.TargetArch = arch
+
+		// Resolve ${ARCH} now: the QEMU provisioner substitutes it
+		// server-side, but the client-side artifact upload needs real
+		// paths to read.
+		for _, p := range []*string{
+			&qOps.NodeVmlinuzPath,
+			&qOps.NodeInitramfsPath,
+			&qOps.NodeISOPath,
+			&qOps.NodeUSBPath,
+			&qOps.NodeUKIPath,
+			&qOps.NodeDiskImagePath,
+		} {
+			*p = strings.ReplaceAll(*p, constants.ArchVariable, arch)
+		}
+	} else if err := downloadBootAssets(ctx, &qOps); err != nil {
 		return err
 	}
 
 	if cOps.TalosVersion == "" {
 		parts := strings.Split(qOps.NodeInstallImage, ":")
 		cOps.TalosVersion = parts[len(parts)-1]
-	}
-
-	provisioner, err := providers.Factory(ctx, providers.QemuProviderName)
-	if err != nil {
-		return err
 	}
 
 	clusterConfigs, err := configmaker.GetQemuConfigs(configmaker.QemuOptions{
@@ -57,21 +83,6 @@ func createDevCluster(ctx context.Context, cOps clusterops.Common, qOps clustero
 	cluster, err := provisioner.Create(ctx, clusterConfigs.ClusterRequest, clusterConfigs.ProvisionOptions...)
 	if err != nil {
 		return err
-	}
-
-	if qOps.DebugShellEnabled {
-		fmt.Println("You can now connect to debug shell on any node using these commands:")
-
-		for _, node := range clusterConfigs.ClusterRequest.Nodes {
-			talosDir, err := clientconfig.GetTalosDirectory()
-			if err != nil {
-				return err
-			}
-
-			fmt.Printf("socat - UNIX-CONNECT:%s\n", filepath.Join(talosDir, "clusters", cOps.RootOps.ClusterName, node.Name+".serial"))
-		}
-
-		return nil
 	}
 
 	// Create and save the talosctl configuration file.
@@ -97,18 +108,24 @@ func saveConfig(talosConfigObj *clientconfig.Config, talosconfigPath string) (er
 	return c.Save(talosconfigPath)
 }
 
+//nolint:gocyclo
 func mergeKubeconfig(ctx context.Context, clusterAccess *access.Adapter) error {
+	k8sconfig, err := clusterAccess.Kubeconfig(ctx)
+	if err != nil {
+		if client.StatusCode(err) == codes.FailedPrecondition {
+			// no Kubernetes, skip kubeconfig
+			return nil
+		}
+
+		return fmt.Errorf("error fetching kubeconfig: %w", err)
+	}
+
 	kubeconfigPath, err := kubeconfig.SinglePath()
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "\nmerging kubeconfig into %q\n", kubeconfigPath)
-
-	k8sconfig, err := clusterAccess.Kubeconfig(ctx)
-	if err != nil {
-		return fmt.Errorf("error fetching kubeconfig: %w", err)
-	}
 
 	kubeConfig, err := clientcmd.Load(k8sconfig)
 	if err != nil {

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	containerdapi "github.com/containerd/containerd/v2/client"
-	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/cap"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
@@ -28,6 +27,7 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-retry/retry"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/etcdutl/v3/snapshot"
 
@@ -55,6 +55,7 @@ import (
 	etcdresource "github.com/siderolabs/talos/pkg/machinery/resources/etcd"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	timeresource "github.com/siderolabs/talos/pkg/machinery/resources/time"
 )
 
@@ -113,7 +114,8 @@ func (e *Etcd) PreFunc(ctx context.Context, r runtime.Runtime) error {
 		return fmt.Errorf("failed to get etcd spec: %w", err)
 	}
 
-	img, err := image.Pull(containerdctx,
+	img, err := image.PullWithRetriesAndTimeout(
+		containerdctx,
 		cri.RegistryBuilder(r.State().V1Alpha2().Resources()),
 		r.State().V1Alpha2().Resources(),
 		client, spec.TypedSpec().Image,
@@ -212,8 +214,6 @@ func (e *Etcd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		env = append(env, "ETCD_UNSUPPORTED_ARCH="+goruntime.GOARCH)
 	}
 
-	env = append(env, "ETCD_CIPHER_SUITES=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305") //nolint:lll
-
 	if e.learnerMemberID != 0 {
 		var promoteCtx context.Context
 
@@ -228,35 +228,29 @@ func (e *Etcd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		}()
 	}
 
-	return restart.New(containerd.NewRunner(
-		r.Config().Debug(),
-		&args,
-		runner.WithLoggingManager(r.Logging()),
-		runner.WithNamespace(constants.SystemContainerdNamespace),
-		runner.WithContainerImage(e.imgRef),
-		runner.WithEnv(env),
-		runner.WithCgroupPath(constants.CgroupEtcd),
-		runner.WithSelinuxLabel(constants.SELinuxLabelEtcd),
-		runner.WithOCISpecOpts(
-			oci.WithDroppedCapabilities(cap.Known()),
-			oci.WithHostNamespace(specs.NetworkNamespace),
-			oci.WithMounts(mounts),
-			oci.WithUser(fmt.Sprintf("%d:%d", constants.EtcdUserID, constants.EtcdUserID)),
-			func(_ context.Context, _ oci.Client, _ *containers.Container, spec *oci.Spec) error {
-				// bump the etcd open file limit
-				spec.Process.Rlimits = []specs.POSIXRlimit{
-					{
-						Type: "RLIMIT_NOFILE",
-						Hard: uint64(10240),
-						Soft: uint64(10240),
-					},
-				}
-
-				return nil
-			},
+	return restart.New(
+		containerd.NewRunner(
+			r.Config().Debug(),
+			&args,
+			runner.WithLoggingManager(r.Logging()),
+			runner.WithNamespace(constants.SystemContainerdNamespace),
+			runner.WithContainerImage(e.imgRef),
+			runner.WithEnv(env),
+			runner.WithCgroupPath(constants.CgroupEtcd),
+			runner.WithSelinuxLabel(constants.SELinuxLabelEtcd),
+			runner.WithOCISpecOpts(
+				oci.WithDroppedCapabilities(cap.Known()),
+				oci.WithHostNamespace(specs.NetworkNamespace),
+				oci.WithMounts(mounts),
+				oci.WithUIDGID(constants.EtcdUserID, constants.EtcdUserID),
+				oci.WithRlimit(&specs.POSIXRlimit{
+					Type: "RLIMIT_NOFILE",
+					Hard: uint64(10240),
+					Soft: uint64(10240),
+				}),
+			),
+			runner.WithOOMScoreAdj(-998),
 		),
-		runner.WithOOMScoreAdj(-998),
-	),
 		restart.WithType(restart.Forever),
 	), nil
 }
@@ -287,7 +281,8 @@ func (e *Etcd) HealthSettings(runtime.Runtime) *health.Settings {
 }
 
 func waitPKI(ctx context.Context, r runtime.Runtime) error {
-	_, err := r.State().V1Alpha2().Resources().WatchFor(ctx,
+	_, err := r.State().V1Alpha2().Resources().WatchFor(
+		ctx,
 		resource.NewMetadata(etcdresource.NamespaceName, etcdresource.PKIStatusType, etcdresource.PKIID, resource.VersionUndefined),
 		state.WithEventTypes(state.Created, state.Updated),
 	)
@@ -295,6 +290,7 @@ func waitPKI(ctx context.Context, r runtime.Runtime) error {
 	return err
 }
 
+//nolint:gocyclo
 func addMember(ctx context.Context, r runtime.Runtime, addrs []string, name string) (*clientv3.MemberListResponse, uint64, error) {
 	client, err := etcd.NewClientFromControlPlaneIPs(ctx, r.State().V1Alpha2().Resources())
 	if err != nil {
@@ -325,6 +321,21 @@ func addMember(ctx context.Context, r runtime.Runtime, addrs []string, name stri
 
 	add, err := client.MemberAddAsLearner(ctx, addrs)
 	if err != nil {
+		if errors.Is(err, rpctypes.ErrPeerURLExist) {
+			// member already exists with the same peer URLs, see if it's ourselves as a learner
+			// we can't really say for sure, but we try to match the peer URLs, and name should
+			// be still empty at this point
+			for _, member := range list.Members {
+				if slices.Equal(member.PeerURLs, addrs) {
+					if member.IsLearner && member.Name == "" {
+						return list, member.ID, nil
+					}
+				}
+			}
+
+			return nil, 0, fmt.Errorf("member already exists with the same peer URLs %q, but is not a learner: %w", addrs, err)
+		}
+
 		return nil, 0, fmt.Errorf("error adding member: %w", err)
 	}
 
@@ -353,7 +364,8 @@ func buildInitialCluster(ctx context.Context, r runtime.Runtime, name string, pe
 		lastNag time.Time
 	)
 
-	err = retry.Constant(constants.EtcdJoinTimeout,
+	err = retry.Constant(
+		constants.EtcdJoinTimeout,
 		retry.WithUnits(3*time.Second),
 		retry.WithJitter(time.Second),
 		retry.WithErrorLogging(true),
@@ -437,23 +449,24 @@ func (e *Etcd) argsForInit(ctx context.Context, r runtime.Runtime, spec *etcdres
 	_, upgraded = r.State().Machine().Meta().ReadTag(meta.Upgrade)
 
 	denyListArgs := argsbuilder.Args{
-		"name":                               {spec.Name},
-		"auto-tls":                           {"false"},
-		"peer-auto-tls":                      {"false"},
-		"data-dir":                           {constants.EtcdDataPath},
-		"listen-peer-urls":                   {formatEtcdURLs(spec.ListenPeerAddresses, constants.EtcdPeerPort)},
-		"listen-client-urls":                 {formatEtcdURLs(spec.ListenClientAddresses, constants.EtcdClientPort)},
-		"client-cert-auth":                   {"true"},
-		"cert-file":                          {constants.EtcdCert},
-		"key-file":                           {constants.EtcdKey},
-		"trusted-ca-file":                    {constants.EtcdCACert},
-		"peer-client-cert-auth":              {"true"},
-		"peer-cert-file":                     {constants.EtcdPeerCert},
-		"peer-key-file":                      {constants.EtcdPeerKey},
-		"peer-trusted-ca-file":               {constants.EtcdCACert},
-		"experimental-initial-corrupt-check": {"true"},
-		"experimental-watch-progress-notify-interval": {"5s"},
-		"experimental-compact-hash-check-enabled":     {"true"},
+		"name":                           {spec.Name},
+		"auto-tls":                       {"false"},
+		"peer-auto-tls":                  {"false"},
+		"data-dir":                       {constants.EtcdDataPath},
+		"listen-peer-urls":               {formatEtcdURLs(spec.ListenPeerAddresses, constants.EtcdPeerPort)},
+		"listen-client-urls":             {formatEtcdURLs(spec.ListenClientAddresses, constants.EtcdClientPort)},
+		"listen-client-http-urls":        {formatEtcdURLs(spec.ListenClientAddresses, constants.EtcdClientHTTPPort)},
+		"client-cert-auth":               {"true"},
+		"cert-file":                      {constants.EtcdCert},
+		"key-file":                       {constants.EtcdKey},
+		"trusted-ca-file":                {constants.EtcdCACert},
+		"peer-client-cert-auth":          {"true"},
+		"peer-cert-file":                 {constants.EtcdPeerCert},
+		"peer-key-file":                  {constants.EtcdPeerKey},
+		"peer-trusted-ca-file":           {constants.EtcdCACert},
+		"feature-gates":                  {"InitialCorruptCheck=true", "CompactHashCheck=true"},
+		"watch-progress-notify-interval": {"5s"},
+		"tls-min-version":                {"TLS1.3"},
 	}
 
 	extraArgs := make(argsbuilder.Args, len(spec.ExtraArgs))
@@ -496,13 +509,15 @@ func (e *Etcd) argsForInit(ctx context.Context, r runtime.Runtime, spec *etcdres
 	}
 
 	if !extraArgs.Contains("initial-advertise-peer-urls") {
-		denyListArgs.Set("initial-advertise-peer-urls",
+		denyListArgs.Set(
+			"initial-advertise-peer-urls",
 			argsbuilder.Value{formatEtcdURLs(spec.AdvertisedAddresses, constants.EtcdPeerPort)},
 		)
 	}
 
 	if !extraArgs.Contains("advertise-client-urls") {
-		denyListArgs.Set("advertise-client-urls",
+		denyListArgs.Set(
+			"advertise-client-urls",
 			argsbuilder.Value{formatEtcdURLs(spec.AdvertisedAddresses, constants.EtcdClientPort)},
 		)
 	}
@@ -519,23 +534,24 @@ func (e *Etcd) argsForInit(ctx context.Context, r runtime.Runtime, spec *etcdres
 //nolint:gocyclo
 func (e *Etcd) argsForControlPlane(ctx context.Context, r runtime.Runtime, spec *etcdresource.SpecSpec) error {
 	denyListArgs := argsbuilder.Args{
-		"name":                               {spec.Name},
-		"auto-tls":                           {"false"},
-		"peer-auto-tls":                      {"false"},
-		"data-dir":                           {constants.EtcdDataPath},
-		"listen-peer-urls":                   {formatEtcdURLs(spec.ListenPeerAddresses, constants.EtcdPeerPort)},
-		"listen-client-urls":                 {formatEtcdURLs(spec.ListenClientAddresses, constants.EtcdClientPort)},
-		"client-cert-auth":                   {"true"},
-		"cert-file":                          {constants.EtcdCert},
-		"key-file":                           {constants.EtcdKey},
-		"trusted-ca-file":                    {constants.EtcdCACert},
-		"peer-client-cert-auth":              {"true"},
-		"peer-cert-file":                     {constants.EtcdPeerCert},
-		"peer-key-file":                      {constants.EtcdPeerKey},
-		"peer-trusted-ca-file":               {constants.EtcdCACert},
-		"experimental-initial-corrupt-check": {"true"},
-		"experimental-watch-progress-notify-interval": {"5s"},
-		"experimental-compact-hash-check-enabled":     {"true"},
+		"name":                           {spec.Name},
+		"auto-tls":                       {"false"},
+		"peer-auto-tls":                  {"false"},
+		"data-dir":                       {constants.EtcdDataPath},
+		"listen-peer-urls":               {formatEtcdURLs(spec.ListenPeerAddresses, constants.EtcdPeerPort)},
+		"listen-client-urls":             {formatEtcdURLs(spec.ListenClientAddresses, constants.EtcdClientPort)},
+		"listen-client-http-urls":        {formatEtcdURLs(spec.ListenClientAddresses, constants.EtcdClientHTTPPort)},
+		"client-cert-auth":               {"true"},
+		"cert-file":                      {constants.EtcdCert},
+		"key-file":                       {constants.EtcdKey},
+		"trusted-ca-file":                {constants.EtcdCACert},
+		"peer-client-cert-auth":          {"true"},
+		"peer-cert-file":                 {constants.EtcdPeerCert},
+		"peer-key-file":                  {constants.EtcdPeerKey},
+		"peer-trusted-ca-file":           {constants.EtcdCACert},
+		"feature-gates":                  {"InitialCorruptCheck=true", "CompactHashCheck=true"},
+		"watch-progress-notify-interval": {"5s"},
+		"tls-min-version":                {"TLS1.3"},
 	}
 
 	extraArgs := make(argsbuilder.Args, len(spec.ExtraArgs))
@@ -586,13 +602,15 @@ func (e *Etcd) argsForControlPlane(ctx context.Context, r runtime.Runtime, spec 
 	}
 
 	if !extraArgs.Contains("advertise-client-urls") {
-		denyListArgs.Set("advertise-client-urls",
+		denyListArgs.Set(
+			"advertise-client-urls",
 			argsbuilder.Value{formatEtcdURLs(spec.AdvertisedAddresses, constants.EtcdClientPort)},
 		)
 	}
 
 	if !extraArgs.Contains("initial-advertise-peer-urls") {
-		denyListArgs.Set("initial-advertise-peer-urls",
+		denyListArgs.Set(
+			"initial-advertise-peer-urls",
 			argsbuilder.Value{formatEtcdURLs(spec.AdvertisedAddresses, constants.EtcdPeerPort)},
 		)
 	}
@@ -778,6 +796,13 @@ func IsDirEmpty(name string) (bool, error) {
 //
 // Current instance of etcd (not joined yet) is stopped, and new instance is started in bootstrap mode.
 func BootstrapEtcd(ctx context.Context, r runtime.Runtime, req *machineapi.BootstrapRequest) error {
+	// Reject bootstrap if an unattended install is in progress.
+	if status, err := safe.ReaderGetByID[*runtimeres.UnattendedInstallStatus](
+		ctx, r.State().V1Alpha2().Resources(), runtimeres.UnattendedInstallStatusID,
+	); err == nil && status.TypedSpec().Phase != runtimeres.UnattendedInstallPhaseInstalled {
+		return fmt.Errorf("bootstrap is not allowed during unattended install (phase: %s)", status.TypedSpec().Phase)
+	}
+
 	if err := system.Services(r).Stop(ctx, "etcd"); err != nil {
 		return fmt.Errorf("failed to stop etcd: %w", err)
 	}

@@ -8,6 +8,7 @@ package block
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 
 	"github.com/cosi-project/runtime/pkg/resource"
@@ -19,7 +20,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/resources/v1alpha1"
 )
 
-//go:generate go tool github.com/siderolabs/deep-copy -type DeviceSpec -type DiscoveredVolumeSpec -type DiscoveryRefreshRequestSpec -type DiscoveryRefreshStatusSpec -type DiskSpec -type MountRequestSpec -type MountStatusSpec -type ParameterSpec -type SwapStatusSpec -type SymlinkSpec -type SystemDiskSpec -type UserDiskConfigStatusSpec -type VolumeConfigSpec -type VolumeLifecycleSpec -type VolumeMountRequestSpec -type VolumeMountStatusSpec -type VolumeStatusSpec -type ZswapStatusSpec -header-file ../../../../hack/boilerplate.txt -o deep_copy.generated.go .
+//go:generate go tool github.com/siderolabs/deep-copy -type DeviceSpec -type DiscoveredVolumeSpec -type DiscoveredVolumesStatusSpec -type DiscoveryRefreshRequestSpec -type DiscoveryRefreshStatusSpec -type DiskSpec -type FSScrubScheduleSpec -type FSScrubStatusSpec -type MountRequestSpec -type MountStatusSpec -type ParameterSpec -type SwapStatusSpec -type SymlinkSpec -type SystemDiskSpec -type UserDiskConfigStatusSpec -type VolumeConfigSpec -type VolumeLifecycleSpec -type VolumeMountRequestSpec -type VolumeMountStatusSpec -type VolumeStatusSpec -type VolumeTrimScheduleSpec -type ZswapStatusSpec -header-file ../../../../hack/boilerplate.txt -o deep_copy.generated.go .
 
 //go:generate go tool github.com/dmarkham/enumer -type=VolumeType,VolumePhase,FilesystemType,EncryptionKeyType,EncryptionProviderType,FSParameterType -linecomment -text
 
@@ -87,7 +88,56 @@ func GetSystemDisk(ctx context.Context, st state.State) (*SystemDiskSpec, error)
 	return systemDisk.TypedSpec(), nil
 }
 
-// GetSystemDiskPaths returns the path(s) of system disk and STATE/EPHEMERAL partitions.
+// GetSystemDiskDevicePaths returns the system disk path and all block devices
+// which recursively back it.
+func GetSystemDiskDevicePaths(ctx context.Context, st state.State) ([]string, error) {
+	systemDisk, err := GetSystemDisk(ctx, st)
+	if err != nil || systemDisk == nil {
+		return nil, err
+	}
+
+	devices, err := safe.StateListAll[*Device](ctx, st)
+	if err != nil {
+		return nil, fmt.Errorf("error listing block devices: %w", err)
+	}
+
+	devicesByID := map[string]*Device{}
+	for device := range devices.All() {
+		devicesByID[device.Metadata().ID()] = device
+	}
+
+	paths := map[string]struct{}{systemDisk.DevPath: {}}
+	pending := []string{systemDisk.DiskID}
+	visited := map[string]struct{}{}
+
+	for len(pending) > 0 {
+		deviceID := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+
+		if _, ok := visited[deviceID]; ok {
+			continue
+		}
+
+		visited[deviceID] = struct{}{}
+		paths[filepath.Join("/dev", deviceID)] = struct{}{}
+
+		device, ok := devicesByID[deviceID]
+		if !ok {
+			return nil, fmt.Errorf("block device %q backing the system disk is missing", deviceID)
+		}
+
+		if device.TypedSpec().Parent != "" {
+			pending = append(pending, device.TypedSpec().Parent)
+		}
+
+		pending = append(pending, device.TypedSpec().Secondaries...)
+	}
+
+	return maps.Keys(paths), nil
+}
+
+// GetSystemDiskPaths returns the path(s) of system disk and STATE, EPHEMERAL,
+// CRI, KUBELET, and ETCD partitions (if not backed by EPHEMERAL).
 //
 // This is a legacy method to map old concept of system disk wipe into new volume subsystem.
 func GetSystemDiskPaths(ctx context.Context, st state.State) ([]string, error) {
@@ -104,7 +154,14 @@ func GetSystemDiskPaths(ctx context.Context, st state.State) ([]string, error) {
 	}
 
 	// fetch additional system volumes (which might be on the same or other disks)
-	for _, volumeID := range []string{constants.StatePartitionLabel, constants.EphemeralPartitionLabel} {
+	for _, volumeID := range []string{
+		constants.StatePartitionLabel,
+		constants.EphemeralPartitionLabel,
+		constants.EtcdDataVolumeID,
+		constants.KubeletDataVolumeID,
+		constants.CRIContainerdVolumeID,
+		constants.LogVolumeID,
+	} {
 		volumeStatus, err := safe.ReaderGetByID[*VolumeStatus](ctx, st, volumeID)
 		if err != nil {
 			if state.IsNotFoundError(err) {

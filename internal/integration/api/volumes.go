@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/stretchr/testify/assert"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/siderolabs/talos/internal/integration/base"
@@ -32,10 +33,16 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/cel"
 	"github.com/siderolabs/talos/pkg/machinery/cel/celenv"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
+	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	blockcfg "github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	cricfg "github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
+	crires "github.com/siderolabs/talos/pkg/machinery/resources/cri"
+	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
 
 // VolumesSuite ...
@@ -178,9 +185,13 @@ func (suite *VolumesSuite) TestDisks() {
 
 				if suite.Cluster != nil {
 					// running on our own provider, transport should be always detected
-					if disk.TypedSpec().BusPath == "/virtual" {
+					switch {
+					case strings.HasPrefix(disk.Metadata().ID(), "dm-"):
+						// device-mapper disks report a "dm" transport
+						suite.Assert().Equal("dm", disk.TypedSpec().Transport, "disk: %s", disk.Metadata().ID())
+					case disk.TypedSpec().BusPath == "/virtual":
 						suite.Assert().Empty(disk.TypedSpec().Transport, "disk: %s", disk.Metadata().ID())
-					} else {
+					default:
 						suite.Assert().NotEmpty(disk.TypedSpec().Transport, "disk: %s", disk.Metadata().ID())
 					}
 				}
@@ -198,142 +209,6 @@ func (suite *VolumesSuite) TestDisks() {
 			suite.T().Logf("disks: %v", diskNames)
 		})
 	}
-}
-
-// TestLVMActivation verifies that LVM volume group is activated after reboot.
-func (suite *VolumesSuite) TestLVMActivation() {
-	if suite.SelinuxEnforcing {
-		suite.T().Skip("skipping tests with nsenter in SELinux enforcing mode")
-	}
-
-	if testing.Short() {
-		suite.T().Skip("skipping test in short mode.")
-	}
-
-	if suite.Cluster == nil || suite.Cluster.Provisioner() != base.ProvisionerQEMU {
-		suite.T().Skip("skipping test for non-qemu provisioner")
-	}
-
-	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
-
-	k8sNode, err := suite.GetK8sNodeByInternalIP(suite.ctx, node)
-	suite.Require().NoError(err)
-
-	nodeName := k8sNode.Name
-
-	userDisks := suite.UserDisks(suite.ctx, node)
-
-	if len(userDisks) < 2 {
-		suite.T().Skipf("skipping test, not enough user disks available on node %s/%s: %q", node, nodeName, userDisks)
-	}
-
-	userDisksJoined := strings.Join(userDisks[:2], " ")
-
-	suite.T().Logf("creating LVM volume group on node %s/%s with disks %s", node, nodeName, userDisksJoined)
-
-	podDef, err := suite.NewPrivilegedPod("pv-create")
-	suite.Require().NoError(err)
-
-	podDef = podDef.WithNodeName(nodeName)
-
-	suite.Require().NoError(podDef.Create(suite.ctx, 5*time.Minute))
-
-	defer podDef.Delete(suite.ctx) //nolint:errcheck
-
-	stdout, _, err := podDef.Exec(
-		suite.ctx,
-		fmt.Sprintf("nsenter --mount=/proc/1/ns/mnt -- vgcreate --nolocking vg0 %s", userDisksJoined),
-	)
-	suite.Require().NoError(err)
-
-	suite.Require().Contains(stdout, "Volume group \"vg0\" successfully created")
-
-	stdout, _, err = podDef.Exec(
-		suite.ctx,
-		"nsenter --mount=/proc/1/ns/mnt -- lvcreate --mirrors=1 --type=raid1 --nosync -n lv0 -L 1G vg0",
-	)
-	suite.Require().NoError(err)
-
-	suite.Require().Contains(stdout, "Logical volume \"lv0\" created.")
-
-	stdout, _, err = podDef.Exec(
-		suite.ctx,
-		"nsenter --mount=/proc/1/ns/mnt -- lvcreate -n lv1 -L 1G vg0",
-	)
-	suite.Require().NoError(err)
-
-	suite.Require().Contains(stdout, "Logical volume \"lv1\" created.")
-
-	defer suite.deleteLVMVolumes(node, nodeName, userDisksJoined)
-
-	suite.T().Logf("rebooting node %s/%s", node, nodeName)
-
-	// now we want to reboot the node and make sure the array is still mounted
-	suite.AssertRebooted(
-		suite.ctx, node, func(nodeCtx context.Context) error {
-			return base.IgnoreGRPCUnavailable(suite.Client.Reboot(nodeCtx))
-		}, 5*time.Minute,
-		suite.CleanupFailedPods,
-	)
-
-	suite.T().Logf("verifying LVM activation %s/%s", node, nodeName)
-
-	suite.Require().Eventually(func() bool {
-		return suite.lvmVolumeExists(node, []string{"lv0", "lv1"})
-	}, 5*time.Second, 1*time.Second, "LVM volume group was not activated after reboot")
-}
-
-func (suite *VolumesSuite) deleteLVMVolumes(node, nodeName, userDisksJoined string) {
-	suite.T().Logf("removing LVM volumes %s/%s", node, nodeName)
-
-	deletePodDef, err := suite.NewPrivilegedPod("pv-destroy")
-	suite.Require().NoError(err)
-
-	deletePodDef = deletePodDef.WithNodeName(nodeName)
-
-	suite.Require().NoError(deletePodDef.Create(suite.ctx, 5*time.Minute))
-
-	defer deletePodDef.Delete(suite.ctx) //nolint:errcheck
-
-	if _, _, err := deletePodDef.Exec(
-		suite.ctx,
-		"nsenter --mount=/proc/1/ns/mnt -- vgremove --nolocking --yes vg0",
-	); err != nil {
-		suite.T().Logf("failed to remove pv vg0: %v", err)
-	}
-
-	if _, _, err := deletePodDef.Exec(
-		suite.ctx,
-		fmt.Sprintf("nsenter --mount=/proc/1/ns/mnt -- pvremove --nolocking --yes %s", userDisksJoined),
-	); err != nil {
-		suite.T().Logf("failed to remove pv backed by volumes %s: %v", userDisksJoined, err)
-	}
-}
-
-func (suite *VolumesSuite) lvmVolumeExists(node string, expectedVolumes []string) bool {
-	ctx := client.WithNode(suite.ctx, node)
-
-	disks, err := safe.StateListAll[*block.Disk](ctx, suite.Client.COSI)
-	suite.Require().NoError(err)
-
-	foundVolumes := xslices.ToSet(expectedVolumes)
-
-	// device-mapper volumes will have udevd-created symlinks which contain volume name
-	for disk := range disks.All() {
-		if strings.HasPrefix(disk.TypedSpec().DevPath, "/dev/dm") {
-			for _, volumeName := range expectedVolumes {
-				for _, symlink := range disk.TypedSpec().Symlinks {
-					if strings.Contains(symlink, volumeName) {
-						foundVolumes[volumeName] = struct{}{}
-
-						suite.T().Logf("found LVM volume %s as disk %s with symlink %s", volumeName, disk.Metadata().ID(), symlink)
-					}
-				}
-			}
-		}
-	}
-
-	return len(foundVolumes) == len(expectedVolumes)
 }
 
 // TestSymlinks that Talos can update disk symlinks on the fly.
@@ -388,7 +263,8 @@ func (suite *VolumesSuite) TestSymlinks() {
 	expectedSymlink := "/dev/disk/by-uuid/" + fsUUID
 
 	// Talos should report a symlink to the disk via FS UUID
-	_, err = suite.Client.COSI.WatchFor(client.WithNode(suite.ctx, node), block.NewDisk(block.NamespaceName, userDiskName).Metadata(),
+	_, err = suite.Client.COSI.WatchFor(
+		client.WithNode(suite.ctx, node), block.NewDisk(block.NamespaceName, userDiskName).Metadata(),
 		state.WithCondition(func(r resource.Resource) (bool, error) {
 			disk, ok := r.(*block.Disk)
 			if !ok {
@@ -412,7 +288,8 @@ func (suite *VolumesSuite) TestSymlinks() {
 	}))
 
 	// Talos should remove a symlink to the disk
-	_, err = suite.Client.COSI.WatchFor(client.WithNode(suite.ctx, node), block.NewDisk(block.NamespaceName, userDiskName).Metadata(),
+	_, err = suite.Client.COSI.WatchFor(
+		client.WithNode(suite.ctx, node), block.NewDisk(block.NamespaceName, userDiskName).Metadata(),
 		state.WithCondition(func(r resource.Resource) (bool, error) {
 			disk, ok := r.(*block.Disk)
 			if !ok {
@@ -434,7 +311,8 @@ func (suite *VolumesSuite) TestUserVolumesStatus() {
 			userVolumeIDs := rtestutils.ResourceIDs[*block.VolumeStatus](ctx, suite.T(), suite.Client.COSI, state.WithLabelQuery(resource.LabelExists(block.UserVolumeLabel)))
 
 			// check that the volumes are ready
-			rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI,
+			rtestutils.AssertResources(
+				ctx, suite.T(), suite.Client.COSI,
 				userVolumeIDs,
 				func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 					asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
@@ -446,7 +324,8 @@ func (suite *VolumesSuite) TestUserVolumesStatus() {
 			}
 
 			// check that the volumes are mounted
-			rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI,
+			rtestutils.AssertResources(
+				ctx, suite.T(), suite.Client.COSI,
 				userVolumeIDs,
 				func(vs *block.MountStatus, _ *assert.Assertions) {},
 			)
@@ -460,7 +339,8 @@ func (suite *VolumesSuite) TestVolumesStatus() {
 		suite.Run(node, func() {
 			ctx := client.WithNode(suite.ctx, node)
 
-			rtestutils.AssertAll(ctx, suite.T(), suite.Client.COSI,
+			rtestutils.AssertAll(
+				ctx, suite.T(), suite.Client.COSI,
 				func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 					asrt.Contains([]block.VolumePhase{block.VolumePhaseReady, block.VolumePhaseMissing}, vs.TypedSpec().Phase)
 				},
@@ -470,6 +350,8 @@ func (suite *VolumesSuite) TestVolumesStatus() {
 }
 
 // TestUserVolumesPartition performs a series of operations on user volumes: creating, destroying, verifying, etc.
+//
+//nolint:gocyclo
 func (suite *VolumesSuite) TestUserVolumesPartition() {
 	if testing.Short() {
 		suite.T().Skip("skipping test in short mode.")
@@ -532,6 +414,10 @@ func (suite *VolumesSuite) TestUserVolumesPartition() {
 		doc.ProvisioningSpec.ProvisioningMinSize = blockcfg.MustByteSize("100MiB")
 		doc.ProvisioningSpec.ProvisioningMaxSize = blockcfg.MustSize("-60%")
 
+		doc.TrimSpec = &blockcfg.TrimConfig{
+			TrimInterval: time.Hour,
+		}
+
 		return doc
 	})...)
 
@@ -544,6 +430,10 @@ func (suite *VolumesSuite) TestUserVolumesPartition() {
 		doc.ProvisioningSpec.ProvisioningMinSize = blockcfg.MustByteSize("100MiB")
 		doc.ProvisioningSpec.ProvisioningMaxSize = blockcfg.MustSize("20%")
 
+		doc.TrimSpec = &blockcfg.TrimConfig{
+			TrimEnabled: new(false),
+		}
+
 		return doc
 	})...)
 
@@ -552,7 +442,8 @@ func (suite *VolumesSuite) TestUserVolumesPartition() {
 	// create user volumes
 	suite.PatchMachineConfig(ctx, configDocs...)
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -561,6 +452,36 @@ func (suite *VolumesSuite) TestUserVolumesPartition() {
 	// check that the volumes are mounted
 	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
 		func(vs *block.MountStatus, _ *assert.Assertions) {})
+
+	// the volumes have a bit different trim settings, let's verify that the trim schedule is updated accordingly
+	//
+	// the third volume has trim disabled, so it should not have a schedule at all
+	//
+	// first, verify if default trim interval is enabled
+	testCfg, err := suite.ReadConfigFromNode(ctx)
+	suite.Require().NoError(err)
+
+	defaultTrimScheduleEnabled := testCfg.FilesystemTrimConfig() != nil
+
+	userVolumesWithTrimSchedule := userVolumeIDs[:1]
+	if !defaultTrimScheduleEnabled {
+		// if the default schedule is not enabled, the volume 0 will not get a trim schedule
+		userVolumesWithTrimSchedule = userVolumeIDs[1:2]
+	}
+
+	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumesWithTrimSchedule,
+		func(vs *block.VolumeTrimSchedule, asrt *assert.Assertions) {
+			expectedInterval := constants.DefaultFilesystemTrimInterval
+
+			if vs.Metadata().ID() == userVolumeIDs[1] {
+				expectedInterval = time.Hour
+			}
+
+			asrt.Equal(expectedInterval, vs.TypedSpec().Interval)
+		},
+	)
+
+	rtestutils.AssertNoResource[*block.VolumeTrimSchedule](ctx, suite.T(), suite.Client.COSI, userVolumeIDs[2])
 
 	// create a pod using user volumes
 	podDef, err := suite.NewPod("user-volume-test")
@@ -659,7 +580,8 @@ func (suite *VolumesSuite) TestUserVolumesPartition() {
 	configDocs[0].(*blockcfg.UserVolumeConfigV1Alpha1).FilesystemSpec.ProjectQuotaSupportConfig = new(true)
 	suite.PatchMachineConfig(ctx, configDocs[0])
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -682,6 +604,349 @@ func (suite *VolumesSuite) TestUserVolumesPartition() {
 	for _, userVolumeID := range userVolumeIDs {
 		rtestutils.AssertNoResource[*block.VolumeStatus](ctx, suite.T(), suite.Client.COSI, userVolumeID)
 	}
+
+	suite.Require().EventuallyWithT(func(collect *assert.CollectT) {
+		// a little retry loop, as the device might be considered busy for a little while after unmounting
+		asrt := assert.New(collect)
+
+		asrt.NoError(suite.Client.BlockDeviceWipe(ctx, &storage.BlockDeviceWipeRequest{
+			Devices: []*storage.BlockDeviceWipeDescriptor{
+				{
+					Device: filepath.Base(userDisks[0]),
+					Method: storage.BlockDeviceWipeDescriptor_FAST,
+				},
+			},
+		}))
+	}, time.Minute, time.Second, "failed to wipe disk %s", userDisks[0])
+
+	// wait for the discovered volume reflect wiped status
+	rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI, filepath.Base(userDisks[0]),
+		func(dv *block.DiscoveredVolume, asrt *assert.Assertions) {
+			asrt.Empty(dv.TypedSpec().Name, "expected discovered volume %s to be wiped", dv.Metadata().ID())
+		})
+}
+
+// TestPromoteSystemVolumeRejected verifies that attempting to promote a promotable system volume
+// (ETCD/CRI/KUBELET/LOG) from a directory to a dedicated partition on an already-running node is
+// rejected by config validation. The backing of these volumes is fixed at cluster creation.
+func (suite *VolumesSuite) TestPromoteSystemVolumeRejected() {
+	if testing.Short() {
+		suite.T().Skip("skipping test in short mode.")
+	}
+
+	if suite.Cluster == nil || suite.Cluster.Provisioner() != base.ProvisionerQEMU {
+		suite.T().Skip("skipping test for non-qemu provisioner")
+	}
+
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
+
+	ctx := client.WithNode(suite.ctx, node)
+
+	userDisks := suite.UserDisks(suite.ctx, node)
+
+	if len(userDisks) < 1 {
+		suite.T().Skipf("skipping test, not enough user disks available on node %s: %q", node, userDisks)
+	}
+
+	disk, err := safe.StateGetByID[*block.Disk](ctx, suite.Client.COSI, filepath.Base(userDisks[0]))
+	suite.Require().NoError(err)
+
+	cfg, err := suite.ReadConfigFromNode(ctx)
+	suite.Require().NoError(err)
+
+	// Exercise every promotable system volume (ETCD/CRI/KUBELET/LOG). Which ones default to a
+	// directory under EPHEMERAL vs. a dedicated partition depends on the node's config patches, so
+	// only the directory-backed ones are candidates for a (rejected) promotion here.
+	for _, volumeID := range config.PromotableSystemVolumeNames {
+		suite.Run(volumeID, func() {
+			// Only a directory-backed volume can be (attempted to be) promoted; skip the ones that
+			// are already dedicated partitions.
+			vs, err := safe.ReaderGetByID[*block.VolumeStatus](ctx, suite.Client.COSI, volumeID)
+			suite.Require().NoError(err)
+
+			if vs.TypedSpec().Type != block.VolumeTypeDirectory {
+				suite.T().Skipf("skipping, %s is not a directory on node %s", volumeID, node)
+			}
+
+			suite.T().Logf("attempting to promote %s volume on node %s with disk %s (expected to be rejected)", volumeID, node, userDisks[0])
+
+			doc := blockcfg.NewVolumeConfigV1Alpha1()
+			doc.MetaName = volumeID
+			doc.ProvisioningSpec.DiskSelectorSpec.Match = cel.MustExpression(
+				cel.ParseBooleanExpression(fmt.Sprintf("'%s' in disk.symlinks", disk.TypedSpec().Symlinks[0]), celenv.DiskLocator()),
+			)
+			doc.ProvisioningSpec.ProvisioningMinSize = blockcfg.MustByteSize("100MiB")
+			doc.ProvisioningSpec.ProvisioningMaxSize = blockcfg.MustSize("2GiB")
+
+			docBytes, err := yaml.Marshal(doc)
+			suite.Require().NoError(err)
+
+			patch, err := configpatcher.LoadPatch(docBytes)
+			suite.Require().NoError(err)
+
+			patchedOut, err := configpatcher.Apply(configpatcher.WithConfig(cfg), []configpatcher.Patch{patch})
+			suite.Require().NoError(err)
+
+			patchedCfg, err := patchedOut.Config()
+			suite.Require().NoError(err)
+
+			cfgBytes, err := patchedCfg.Bytes()
+			suite.Require().NoError(err)
+
+			_, err = suite.Client.ApplyConfiguration(ctx, &machineapi.ApplyConfigurationRequest{
+				Data: cfgBytes,
+				Mode: machineapi.ApplyConfigurationRequest_AUTO,
+			})
+			suite.Require().Error(err, "promoting a system volume on a running node must be rejected")
+			suite.Require().Contains(err.Error(), "cannot be changed after creation",
+				"rejection error must reference the create-only constraint")
+
+			// The volume must still be a directory: the config was rejected, nothing changed.
+			vs, err = safe.ReaderGetByID[*block.VolumeStatus](ctx, suite.Client.COSI, volumeID)
+			suite.Require().NoError(err)
+			suite.Require().Equal(block.VolumeTypeDirectory, vs.TypedSpec().Type,
+				"%s must remain a directory after the rejected apply", volumeID)
+		})
+	}
+}
+
+// TestDemoteSystemVolumeRejected verifies that attempting to demote a promotable system volume
+// (ETCD/CRI/KUBELET/LOG) from a dedicated partition back to a directory on an already-running node
+// is rejected by config validation. The backing of these volumes is fixed at cluster creation.
+//
+// On the QEMU integration cluster the control plane nodes provision these volumes as dedicated
+// partitions (via hack/test/patches/dedicated-system-volumes-controlplane.yaml), so a control plane
+// node is used.
+func (suite *VolumesSuite) TestDemoteSystemVolumeRejected() {
+	if testing.Short() {
+		suite.T().Skip("skipping test in short mode.")
+	}
+
+	if suite.Cluster == nil || suite.Cluster.Provisioner() != base.ProvisionerQEMU {
+		suite.T().Skip("skipping test for non-qemu provisioner")
+	}
+
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
+
+	ctx := client.WithNode(suite.ctx, node)
+
+	cfg, err := suite.ReadConfigFromNode(ctx)
+	suite.Require().NoError(err)
+
+	// Exercise every promotable system volume (ETCD/CRI/KUBELET/LOG) provisioned as a dedicated
+	// partition on the control plane.
+	for _, volumeID := range config.PromotableSystemVolumeNames {
+		suite.Run(volumeID, func() {
+			// Verify the volume is currently a dedicated partition (the control plane default in this cluster).
+			vs, err := safe.ReaderGetByID[*block.VolumeStatus](ctx, suite.Client.COSI, volumeID)
+			suite.Require().NoError(err)
+
+			if vs.TypedSpec().Type != block.VolumeTypePartition {
+				suite.T().Skipf("skipping, %s is not a dedicated partition on node %s", volumeID, node)
+			}
+
+			// Removing the VolumeConfig document requests the volume to revert to a directory, which
+			// is a forbidden migration off a dedicated partition.
+			remaining := xslices.Filter(cfg.Documents(), func(doc config.Document) bool {
+				if doc.Kind() != blockcfg.VolumeConfigKind {
+					return true
+				}
+
+				namedDoc, ok := doc.(config.NamedDocument)
+
+				return !ok || namedDoc.Name() != volumeID
+			})
+
+			if len(remaining) == len(cfg.Documents()) {
+				suite.T().Skipf("skipping, no %s VolumeConfig document present on node %s", volumeID, node)
+			}
+
+			suite.T().Logf("attempting to demote %s volume on node %s by removing its VolumeConfig (expected to be rejected)", volumeID, node)
+
+			ctr, err := container.New(remaining...)
+			suite.Require().NoError(err)
+
+			cfgBytes, err := ctr.Bytes()
+			suite.Require().NoError(err)
+
+			_, err = suite.Client.ApplyConfiguration(ctx, &machineapi.ApplyConfigurationRequest{
+				Data: cfgBytes,
+				Mode: machineapi.ApplyConfigurationRequest_AUTO,
+			})
+			suite.Require().Error(err, "demoting a system volume on a running node must be rejected")
+			suite.Require().Contains(err.Error(), "cannot be removed",
+				"rejection error must reference the create-only constraint")
+
+			// The volume must still be a partition: the config was rejected, nothing changed.
+			vs, err = safe.ReaderGetByID[*block.VolumeStatus](ctx, suite.Client.COSI, volumeID)
+			suite.Require().NoError(err)
+			suite.Require().Equal(block.VolumeTypePartition, vs.TypedSpec().Type,
+				"%s must remain a dedicated partition after the rejected apply", volumeID)
+		})
+	}
+}
+
+// TestUserVolumeBTRFS verifies a user volume with BTRFS filesystem.
+//
+// The test only runs if the btrfs extension is loaded.
+func (suite *VolumesSuite) TestUserVolumeBTRFS() {
+	if suite.Cluster == nil || suite.Cluster.Provisioner() != base.ProvisionerQEMU {
+		suite.T().Skip("skipping test for non-qemu provisioner")
+	}
+
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
+	ctx := client.WithNode(suite.ctx, node)
+
+	extensions, err := safe.StateListAll[*runtime.ExtensionStatus](ctx, suite.Client.COSI)
+	suite.Require().NoError(err)
+
+	extensionFound := false
+
+	for ext := range extensions.All() {
+		if ext.TypedSpec().Metadata.Name == "btrfs" {
+			extensionFound = true
+
+			break
+		}
+	}
+
+	if !extensionFound {
+		suite.T().Skip("skipping test, btrfs extension is not loaded")
+	}
+
+	k8sNode, err := suite.GetK8sNodeByInternalIP(suite.ctx, node)
+	suite.Require().NoError(err)
+
+	nodeName := k8sNode.Name
+
+	userDisks := suite.UserDisks(suite.ctx, node)
+
+	if len(userDisks) < 1 {
+		suite.T().Skipf("skipping test, not enough user disks available on node %s/%s: %q", node, nodeName, userDisks)
+	}
+
+	suite.T().Logf("verifying btrfs user volumes on node %s/%s with disk %s", node, nodeName, userDisks[0])
+
+	loadModuleDoc := map[string]any{
+		"machine": map[string]any{
+			"kernel": map[string]any{
+				"modules": []any{
+					map[string]any{
+						"name": "btrfs",
+					},
+				},
+			},
+		},
+	}
+
+	suite.PatchMachineConfig(ctx, loadModuleDoc)
+
+	rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI, "btrfs", func(*runtime.KernelModuleStatus, *assert.Assertions) {})
+
+	disk, err := safe.StateGetByID[*block.Disk](ctx, suite.Client.COSI, filepath.Base(userDisks[0]))
+	suite.Require().NoError(err)
+
+	volumeID := fmt.Sprintf("%04x", rand.Int31())
+	userVolumeID := constants.UserVolumePrefix + volumeID
+
+	doc := blockcfg.NewUserVolumeConfigV1Alpha1()
+	doc.MetaName = volumeID
+	doc.ProvisioningSpec.DiskSelectorSpec.Match = cel.MustExpression(
+		cel.ParseBooleanExpression(fmt.Sprintf("'%s' in disk.symlinks", disk.TypedSpec().Symlinks[0]), celenv.DiskLocator()),
+	)
+	doc.ProvisioningSpec.ProvisioningMinSize = blockcfg.MustByteSize("100MiB")
+	doc.ProvisioningSpec.ProvisioningMaxSize = blockcfg.MustSize("1GiB")
+	doc.FilesystemSpec.FilesystemType = block.FilesystemTypeBtrfs
+
+	// create user volume
+	suite.PatchMachineConfig(ctx, doc)
+
+	rtestutils.AssertResource(
+		ctx, suite.T(), suite.Client.COSI, userVolumeID,
+		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
+			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
+		},
+	)
+
+	// check that the volumes are mounted
+	rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI, userVolumeID,
+		func(vs *block.MountStatus, _ *assert.Assertions) {})
+
+	// create a pod using user volumes
+	podDef, err := suite.NewPod("user-volume-test")
+	suite.Require().NoError(err)
+
+	// using subdirectory here to test that the hostPath mount is properly propagated into the kubelet
+	podDef = podDef.WithNodeName(nodeName).
+		WithNamespace("kube-system").
+		WithHostVolumeMount(filepath.Join(constants.UserVolumeMountPoint, volumeID, "data"), "/mnt/data")
+
+	suite.Require().NoError(podDef.Create(suite.ctx, 1*time.Minute))
+
+	_, _, err = podDef.Exec(suite.ctx, "mkdir -p /mnt/data/test")
+	suite.Require().NoError(err)
+
+	suite.Require().NoError(podDef.Delete(suite.ctx))
+
+	// verify that directory exists
+	expectedPath := filepath.Join(constants.UserVolumeMountPoint, volumeID, "data", "test")
+
+	stream, err := suite.Client.LS(ctx, &machineapi.ListRequest{
+		Root:  expectedPath,
+		Types: []machineapi.ListRequest_Type{machineapi.ListRequest_DIRECTORY},
+	})
+
+	suite.Require().NoError(err)
+
+	suite.Require().NoError(helpers.ReadGRPCStream(stream, func(info *machineapi.FileInfo, _ string, _ bool) error {
+		suite.T().Logf("found %s on node %s", info.Name, node)
+		suite.Require().Equal(expectedPath, info.Name, "expected %s to exist", expectedPath)
+
+		return nil
+	}))
+
+	// verify that volume labels are set properly
+	dvs, err := safe.StateListAll[*block.DiscoveredVolume](ctx, suite.Client.COSI)
+	suite.Require().NoError(err)
+
+	found := false
+	volumeSize := uint64(0)
+
+	for dv := range dvs.All() {
+		if dv.TypedSpec().PartitionLabel == userVolumeID {
+			found = true
+			volumeSize = dv.TypedSpec().Size
+
+			suite.Assert().Equal("btrfs", dv.TypedSpec().Name, "expected filesystem type to be btrfs for %s", dv.Metadata().ID())
+		}
+	}
+
+	suite.Require().True(found, "expected to find discovered volume with label %s", userVolumeID)
+
+	// now unmount the volume, set it to grow, re-mount and re-check
+	suite.RemoveMachineConfigDocumentsByName(ctx, blockcfg.UserVolumeConfigKind, volumeID)
+	rtestutils.AssertNoResource[*block.VolumeStatus](ctx, suite.T(), suite.Client.COSI, userVolumeID)
+
+	doc.ProvisioningSpec.ProvisioningMaxSize = blockcfg.Size{}
+	doc.ProvisioningSpec.ProvisioningGrow = new(true)
+	suite.PatchMachineConfig(ctx, doc)
+
+	rtestutils.AssertResource(
+		ctx, suite.T(), suite.Client.COSI, userVolumeID,
+		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
+			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
+			asrt.Greater(vs.TypedSpec().Size, volumeSize, "volume should grow")
+		},
+	)
+
+	// check that the volumes are mounted
+	rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI, userVolumeID,
+		func(vs *block.MountStatus, _ *assert.Assertions) {})
+
+	// clean up
+	suite.RemoveMachineConfigDocumentsByName(ctx, blockcfg.UserVolumeConfigKind, volumeID)
+
+	rtestutils.AssertNoResource[*block.VolumeStatus](ctx, suite.T(), suite.Client.COSI, userVolumeID)
 
 	suite.Require().EventuallyWithT(func(collect *assert.CollectT) {
 		// a little retry loop, as the device might be considered busy for a little while after unmounting
@@ -760,7 +1025,8 @@ func (suite *VolumesSuite) TestUserVolumesDisk() {
 	// create user volumes
 	suite.PatchMachineConfig(ctx, configDocs...)
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -857,7 +1123,8 @@ func (suite *VolumesSuite) TestUserVolumesDisk() {
 	configDocs[0].(*blockcfg.UserVolumeConfigV1Alpha1).FilesystemSpec.ProjectQuotaSupportConfig = new(true)
 	suite.PatchMachineConfig(ctx, configDocs[0])
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -944,7 +1211,8 @@ func (suite *VolumesSuite) TestUserVolumesDirectory() {
 	// create user volumes
 	suite.PatchMachineConfig(ctx, configDocs...)
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -995,7 +1263,8 @@ func (suite *VolumesSuite) TestUserVolumesDirectory() {
 	// re-create the volume
 	suite.PatchMachineConfig(ctx, configDocs[0])
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, userVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -1066,7 +1335,8 @@ func (suite *VolumesSuite) TestRawVolumes() {
 	// create raw volumes
 	suite.PatchMachineConfig(ctx, configDocs...)
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, rawVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, rawVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -1112,7 +1382,8 @@ func (suite *VolumesSuite) TestRawVolumes() {
 	// re-create the volume
 	suite.PatchMachineConfig(ctx, configDocs[0])
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, rawVolumeIDs,
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, rawVolumeIDs,
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -1195,7 +1466,8 @@ func (suite *VolumesSuite) TestExistingVolumes() {
 	// create user volumes
 	suite.PatchMachineConfig(ctx, userVolumeDoc)
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, []resource.ID{userVolumeID},
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, []resource.ID{userVolumeID},
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -1222,7 +1494,8 @@ func (suite *VolumesSuite) TestExistingVolumes() {
 	suite.PatchMachineConfig(ctx, existingVolumeDoc)
 
 	// wait for the existing volume to be discovered
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, []resource.ID{existingVolumeID},
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, []resource.ID{existingVolumeID},
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 			asrt.Equal(userDisks[0], vs.TypedSpec().ParentLocation)
@@ -1373,7 +1646,8 @@ func (suite *VolumesSuite) TestExternalVolumesVirtiofs() {
 	suite.PatchMachineConfig(ctx, externalVolumeDoc)
 
 	// wait for the external volume to be discovered
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, []resource.ID{externalVolumeID},
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, []resource.ID{externalVolumeID},
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -1471,7 +1745,8 @@ func (suite *VolumesSuite) TestVolumeProvisioningErrors() {
 
 		suite.T().Logf("verifying volume %s on node %s/%s fails with no disks matched", userVolumeID, node, nodeName)
 
-		rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, []string{userVolumeID},
+		rtestutils.AssertResources(
+			ctx, suite.T(), suite.Client.COSI, []string{userVolumeID},
 			func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 				asrt.Equalf(block.VolumePhaseFailed, vs.TypedSpec().Phase,
 					"Expected %q, but got %q (%s)", block.VolumePhaseFailed, vs.TypedSpec().Phase, vs.Metadata().ID())
@@ -1519,7 +1794,8 @@ func (suite *VolumesSuite) TestVolumeProvisioningErrors() {
 
 		suite.T().Logf("verifying volume %s on node %s/%s fails with multiple disks matched", userVolumeID, node, nodeName)
 
-		rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, []string{userVolumeID},
+		rtestutils.AssertResources(
+			ctx, suite.T(), suite.Client.COSI, []string{userVolumeID},
 			func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 				asrt.Equalf(block.VolumePhaseFailed, vs.TypedSpec().Phase,
 					"Expected %q, but got %q (%s)", block.VolumePhaseFailed, vs.TypedSpec().Phase, vs.Metadata().ID())
@@ -1548,7 +1824,8 @@ func (suite *VolumesSuite) TestSwapStatus() {
 				suite.T().Skipf("skipping test, no swap volumes found on node %s", node)
 			}
 
-			rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI,
+			rtestutils.AssertResources(
+				ctx, suite.T(), suite.Client.COSI,
 				xslices.Map(slices.Collect(swapVolumes.All()), func(sv *block.VolumeConfig) string {
 					return sv.Metadata().ID()
 				}),
@@ -1564,7 +1841,8 @@ func (suite *VolumesSuite) TestSwapStatus() {
 				return sv.TypedSpec().MountLocation
 			})
 
-			rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI,
+			rtestutils.AssertResources(
+				ctx, suite.T(), suite.Client.COSI,
 				deviceNames,
 				func(vs *block.SwapStatus, asrt *assert.Assertions) {},
 			)
@@ -1630,7 +1908,8 @@ func (suite *VolumesSuite) TestSwapOnOff() {
 
 	swapVolumeID := constants.SwapVolumePrefix + doc.MetaName
 
-	rtestutils.AssertResources(ctx, suite.T(), suite.Client.COSI, []string{swapVolumeID},
+	rtestutils.AssertResources(
+		ctx, suite.T(), suite.Client.COSI, []string{swapVolumeID},
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equalf(block.VolumePhaseReady, vs.TypedSpec().Phase, "Expected %q, but got %q (%s)", block.VolumePhaseReady, vs.TypedSpec().Phase, vs.Metadata().ID())
 		},
@@ -1682,13 +1961,199 @@ func (suite *VolumesSuite) TestZswapStatus() {
 				suite.T().Skipf("skipping test, zswap is not enabled on node %s", node)
 			}
 
-			rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI,
+			rtestutils.AssertResource(
+				ctx, suite.T(), suite.Client.COSI,
 				block.ZswapStatusID,
 				func(vs *block.ZswapStatus, asrt *assert.Assertions) {
 					suite.T().Logf("zswap total size %s, stored pages %d", vs.TypedSpec().TotalSizeHuman, vs.TypedSpec().StoredPages)
 				},
 			)
 		})
+	}
+}
+
+// TestFSTrimDefaultSchedule verifies that the default schedule for filesystem trimming is applied.
+func (suite *VolumesSuite) TestFSTrimDefaultSchedule() {
+	// TODO: we can remove this skip clause once TF provider in contrib is updated
+	// to Talos 1.14 machinery.
+	if suite.Cluster == nil || suite.Cluster.Provisioner() != base.ProvisionerQEMU {
+		suite.T().Skip("skipping test for non-qemu provisioner")
+	}
+
+	// confirm the defaults by reading the config from a single node
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
+	cfg, err := suite.ReadConfigFromNode(client.WithNode(suite.ctx, node))
+	suite.Require().NoError(err)
+
+	if cfg.FilesystemTrimConfig() == nil {
+		suite.T().Skipf("skipping test, filesystem trimming is not enabled by default")
+	}
+
+	for _, node := range suite.DiscoverNodeInternalIPs(suite.ctx) {
+		suite.Run(node, func() {
+			ctx := client.WithNode(suite.ctx, node)
+
+			var shouldHaveSchedule, shouldNotHaveSchedule []string
+
+			for _, name := range []string{constants.EphemeralPartitionLabel, constants.StatePartitionLabel} {
+				vs, err := safe.StateGetByID[*block.VolumeStatus](ctx, suite.Client.COSI, name)
+				suite.Require().NoError(err)
+
+				if vs.TypedSpec().EncryptionProvider == block.EncryptionProviderLUKS2 && !vs.TypedSpec().EncryptionAllowDiscards {
+					shouldNotHaveSchedule = append(shouldNotHaveSchedule, name)
+				} else {
+					shouldHaveSchedule = append(shouldHaveSchedule, name)
+				}
+			}
+
+			if len(shouldHaveSchedule) > 0 {
+				rtestutils.AssertResources(
+					ctx, suite.T(), suite.Client.COSI,
+					shouldHaveSchedule,
+					func(schedule *block.VolumeTrimSchedule, asrt *assert.Assertions) {
+						asrt.Equal(constants.DefaultFilesystemTrimInterval, schedule.TypedSpec().Interval)
+						asrt.NotZero(schedule.TypedSpec().NextTrim)
+					},
+				)
+			}
+
+			for _, name := range shouldNotHaveSchedule {
+				rtestutils.AssertNoResource[*block.VolumeTrimSchedule](ctx, suite.T(), suite.Client.COSI, name)
+			}
+		})
+	}
+}
+
+// TestImageCacheLocalEnabledWithoutCacheVolume verifies that enabling the local image cache on a node
+// without a cache volume doesn't cause VolumeMountRequest create/delete churn.
+func (suite *VolumesSuite) TestImageCacheLocalEnabledWithoutCacheVolume() {
+	node := suite.RandomDiscoveredNodeInternalIP()
+	ctx := client.WithNode(suite.ctx, node)
+
+	suite.T().Logf("using node %s", node)
+
+	cfg, err := suite.ReadConfigFromNode(ctx)
+	suite.Require().NoError(err)
+
+	originalImageCacheDocs := filterImageCacheConfigDocs(cfg.Documents())
+	if cfg.ImageCacheConfig() != nil && len(originalImageCacheDocs) == 0 {
+		suite.T().Skip("image cache is configured via v1alpha1 machine config")
+	}
+
+	defer func() {
+		suite.RemoveMachineConfigDocuments(ctx, cricfg.ImageCacheConfig)
+
+		if len(originalImageCacheDocs) > 0 {
+			patches := make([]any, 0, len(originalImageCacheDocs))
+			for _, doc := range originalImageCacheDocs {
+				patches = append(patches, doc)
+			}
+
+			suite.PatchMachineConfig(ctx, patches...)
+		}
+	}()
+
+	suite.RemoveMachineConfigDocuments(ctx, cricfg.ImageCacheConfig)
+
+	imageCacheCfg := cricfg.NewImageCacheConfigV1Alpha1()
+	imageCacheCfg.LocalConfig.ConfigEnabled = new(bool)
+	*imageCacheCfg.LocalConfig.ConfigEnabled = true
+
+	suite.PatchMachineConfig(ctx, imageCacheCfg)
+
+	volumeIDs := []resource.ID{constants.ImageCacheISOLabel, constants.ImageCachePartitionLabel}
+	rtestutils.AssertResources(
+		ctx,
+		suite.T(),
+		suite.Client.COSI,
+		volumeIDs,
+		func(*block.VolumeStatus, *assert.Assertions) {},
+	)
+
+	for _, id := range volumeIDs {
+		volumeStatus, err := safe.StateGetByID[*block.VolumeStatus](ctx, suite.Client.COSI, id)
+		suite.Require().NoError(err)
+
+		if volumeStatus.TypedSpec().Phase == block.VolumePhaseReady {
+			suite.T().Skipf("node has ready image cache volume %q", id)
+		}
+	}
+
+	rtestutils.AssertResources(
+		ctx,
+		suite.T(),
+		suite.Client.COSI,
+		[]resource.ID{crires.ImageCacheConfigID},
+		func(cfg *crires.ImageCacheConfig, asrt *assert.Assertions) {
+			asrt.Equal(crires.ImageCacheStatusDisabled, cfg.TypedSpec().Status)
+			asrt.Equal(crires.ImageCacheCopyStatusSkipped, cfg.TypedSpec().CopyStatus)
+			asrt.Empty(cfg.TypedSpec().Roots)
+		},
+	)
+
+	ctrlName := "cri.ImageCacheConfigController"
+	mountRequestIDs := []resource.ID{
+		ctrlName + "-" + constants.ImageCacheISOLabel,
+		ctrlName + "-" + constants.ImageCachePartitionLabel,
+	}
+
+	rtestutils.AssertResources(
+		ctx,
+		suite.T(),
+		suite.Client.COSI,
+		mountRequestIDs,
+		func(vmr *block.VolumeMountRequest, asrt *assert.Assertions) {
+			asrt.Equal(ctrlName, vmr.TypedSpec().Requester)
+		},
+	)
+
+	suite.assertImageCacheMountRequestsStable(ctx, mountRequestIDs, 10*time.Second)
+}
+
+func filterImageCacheConfigDocs(docs []config.Document) []config.Document {
+	result := make([]config.Document, 0, len(docs))
+
+	for _, doc := range docs {
+		if doc.Kind() == cricfg.ImageCacheConfig {
+			result = append(result, doc)
+		}
+	}
+
+	return result
+}
+
+func (suite *VolumesSuite) assertImageCacheMountRequestsStable(ctx context.Context, ids []resource.ID, duration time.Duration) {
+	versions := make(map[resource.ID]resource.Version, len(ids))
+
+	for _, id := range ids {
+		vmr, err := safe.StateGetByID[*block.VolumeMountRequest](ctx, suite.Client.COSI, id)
+		suite.Require().NoError(err)
+
+		versions[id] = vmr.Metadata().Version()
+	}
+
+	deadline := time.After(duration)
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			suite.Require().NoError(ctx.Err())
+		case <-deadline:
+			return
+		case <-ticker.C:
+			for _, id := range ids {
+				vmr, err := safe.StateGetByID[*block.VolumeMountRequest](ctx, suite.Client.COSI, id)
+				suite.Require().NoError(err)
+				suite.Require().True(
+					versions[id].Equal(vmr.Metadata().Version()),
+					"image cache mount request %q changed while cache was enabled without a backing volume",
+					id,
+				)
+			}
+		}
 	}
 }
 

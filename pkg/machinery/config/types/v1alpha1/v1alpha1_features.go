@@ -7,45 +7,12 @@ package v1alpha1
 import (
 	"github.com/siderolabs/go-pointer"
 
-	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 )
-
-// KubernetesTalosAPIAccess implements config.Features interface.
-func (f *FeaturesConfig) KubernetesTalosAPIAccess() config.KubernetesTalosAPIAccess {
-	return f.KubernetesTalosAPIAccessConfig
-}
 
 // DiskQuotaSupportEnabled implements config.Features interface.
 func (f *FeaturesConfig) DiskQuotaSupportEnabled() bool {
 	return pointer.SafeDeref(f.DiskQuotaSupport)
-}
-
-// HostDNS implements config.Features interface.
-func (f *FeaturesConfig) HostDNS() config.HostDNS {
-	if f.HostDNSSupport == nil {
-		return &HostDNSConfig{}
-	}
-
-	return f.HostDNSSupport
-}
-
-// KubePrism implements config.Features interface.
-func (f *FeaturesConfig) KubePrism() config.KubePrism {
-	if f.KubePrismSupport == nil {
-		return &KubePrism{}
-	}
-
-	return f.KubePrismSupport
-}
-
-// ImageCache implements config.Features interface.
-func (f *FeaturesConfig) ImageCache() config.ImageCache {
-	if f.ImageCacheSupport == nil {
-		return &ImageCacheConfig{}
-	}
-
-	return f.ImageCacheSupport
 }
 
 // NodeAddressSortAlgorithm implements config.Features interface.
@@ -64,12 +31,14 @@ func (f *FeaturesConfig) NodeAddressSortAlgorithm() nethelpers.AddressSortAlgori
 
 const defaultKubePrismPort = 7445
 
-// Enabled implements [config.KubePrism].
+// Enabled is  a legacy method.
+//
+// New implementation returns nil interface if the feature is not enabled.
 func (a *KubePrism) Enabled() bool {
 	return pointer.SafeDeref(a.ServerEnabled)
 }
 
-// Port implements [config.KubePrism].
+// Port implements [config.K8sKubePrismConfig].
 func (a *KubePrism) Port() int {
 	if a.ServerPort == 0 {
 		return defaultKubePrismPort
@@ -78,17 +47,25 @@ func (a *KubePrism) Port() int {
 	return a.ServerPort
 }
 
-// Enabled implements config.HostDNS.
-func (h *HostDNSConfig) Enabled() bool {
-	return pointer.SafeDeref(h.HostDNSEnabled)
+// TLSServerName implements [config.K8sKubePrismConfig].
+func (a *KubePrism) TLSServerName() string {
+	return ""
 }
 
-// ForwardKubeDNSToHost implements config.HostDNS.
+// K8sKubePrismConfigSignal implements [config.K8sKubePrismConfig] interface.
+func (a *KubePrism) K8sKubePrismConfigSignal() {}
+
+// HostDNSEnabled implements config.NetworkHostDNSConfig interface.
+func (h *HostDNSConfig) HostDNSEnabled() bool {
+	return pointer.SafeDeref(h.HostDNSConfigEnabled)
+}
+
+// ForwardKubeDNSToHost implements config.NetworkHostDNSConfig interface.
 func (h *HostDNSConfig) ForwardKubeDNSToHost() bool {
 	return pointer.SafeDeref(h.HostDNSForwardKubeDNSToHost)
 }
 
-// ResolveMemberNames implements config.HostDNS.
+// ResolveMemberNames implements config.NetworkHostDNSConfig interface.
 func (h *HostDNSConfig) ResolveMemberNames() bool {
 	return pointer.SafeDeref(h.HostDNSResolveMemberNames)
 }

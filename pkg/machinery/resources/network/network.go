@@ -87,5 +87,6 @@ const (
 	LinkKindBond      = "bond"
 	LinkKindBridge    = "bridge"
 	LinkKindVRF       = "vrf"
+	LinkKindVeth      = "veth"
 	LinkKindWireguard = "wireguard"
 )

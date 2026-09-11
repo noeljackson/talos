@@ -5,11 +5,24 @@
 package config
 
 import (
+	"time"
+
 	"github.com/siderolabs/gen/optional"
 
 	"github.com/siderolabs/talos/pkg/machinery/cel"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 )
+
+// PromotableSystemVolumeNames are the system volumes that default to a directory under the
+// EPHEMERAL volume but may instead be placed on a dedicated partition (via provisioning) at
+// cluster creation. The backing (directory vs. dedicated partition) is fixed at creation time.
+var PromotableSystemVolumeNames = []string{
+	constants.EtcdDataVolumeID,
+	constants.CRIContainerdVolumeID,
+	constants.KubeletDataVolumeID,
+	constants.LogVolumeID,
+}
 
 // VolumesConfig defines the interface to access volume configuration.
 type VolumesConfig interface {
@@ -23,8 +36,11 @@ type VolumesConfig interface {
 type VolumeConfig interface {
 	NamedDocument
 	Provisioning() VolumeProvisioningConfig
+	Filesystem() SystemVolumeFilesystemConfig
 	Encryption() EncryptionConfig
 	Mount() VolumeMountConfig
+	VolumeTrimConfigProvider
+	VolumeScrubConfigProvider
 }
 
 // VolumeProvisioningConfig defines the interface to access volume provisioning configuration.
@@ -51,10 +67,12 @@ func (w volumesConfigWrapper) ByName(name string) (VolumeConfig, bool) {
 		}
 	}
 
-	return emptyVolumeConfig{}, false
+	return emptyVolumeConfig{secure: name != constants.EphemeralPartitionLabel}, false
 }
 
-type emptyVolumeConfig struct{}
+type emptyVolumeConfig struct {
+	secure bool
+}
 
 func (emptyVolumeConfig) Name() string {
 	return ""
@@ -62,6 +80,14 @@ func (emptyVolumeConfig) Name() string {
 
 func (emptyVolumeConfig) Provisioning() VolumeProvisioningConfig {
 	return emptyVolumeConfig{}
+}
+
+func (config emptyVolumeConfig) Filesystem() SystemVolumeFilesystemConfig {
+	return config
+}
+
+func (emptyVolumeConfig) XFS() XFSFilesystemConfig {
+	return nil
 }
 
 func (emptyVolumeConfig) Encryption() EncryptionConfig {
@@ -92,18 +118,28 @@ func (emptyVolumeConfig) MaxSizeNegative() bool {
 	return false
 }
 
-func (emptyVolumeConfig) Mount() VolumeMountConfig {
-	return emptyVolumeMountConfig{}
+func (config emptyVolumeConfig) Mount() VolumeMountConfig {
+	return emptyVolumeMountConfig(config)
 }
 
-type emptyVolumeMountConfig struct{}
+func (emptyVolumeConfig) Trim() VolumeTrimConfig {
+	return nil
+}
+
+func (emptyVolumeConfig) Scrub() VolumeScrubConfig {
+	return nil
+}
+
+type emptyVolumeMountConfig struct {
+	secure bool
+}
 
 func (emptyVolumeMountConfig) DisableAccessTime() bool {
 	return false
 }
 
-func (emptyVolumeMountConfig) Secure() bool {
-	return true
+func (config emptyVolumeMountConfig) Secure() bool {
+	return config.secure
 }
 
 func (emptyVolumeMountConfig) ReadOnly() bool {
@@ -119,6 +155,8 @@ type UserVolumeConfig interface {
 	Filesystem() FilesystemConfig
 	Encryption() EncryptionConfig
 	Mount() UserVolumeMountConfig
+	VolumeTrimConfigProvider
+	VolumeScrubConfigProvider
 }
 
 // RawVolumeConfig defines the interface to access raw volume configuration.
@@ -135,6 +173,8 @@ type ExistingVolumeConfig interface {
 	ExistingVolumeConfigSignal()
 	VolumeDiscovery() VolumeDiscoveryConfig
 	Mount() ExistingVolumeMountConfig
+	VolumeTrimConfigProvider
+	VolumeScrubConfigProvider
 }
 
 // ExternalVolumeConfig defines the interface to access external volume configuration.
@@ -146,6 +186,8 @@ type ExternalVolumeConfig interface {
 }
 
 // VolumeDiscoveryConfig defines the interface to discover volumes.
+//
+//nolint:iface
 type VolumeDiscoveryConfig interface {
 	VolumeSelector() cel.Expression
 }
@@ -153,13 +195,11 @@ type VolumeDiscoveryConfig interface {
 // VolumeMountConfig defines the interface to access volume mount configuration.
 type VolumeMountConfig interface {
 	Secure() bool
+	DisableAccessTime() bool
 }
 
 // UserVolumeMountConfig defines the interface to access volume mount configuration.
-type UserVolumeMountConfig interface {
-	VolumeMountConfig
-	DisableAccessTime() bool
-}
+type UserVolumeMountConfig = VolumeMountConfig
 
 // ExistingVolumeMountConfig defines the interface to access volume mount configuration.
 type ExistingVolumeMountConfig interface {
@@ -181,10 +221,25 @@ type ExternalVolumeMountConfigSpec interface {
 
 // FilesystemConfig defines the interface to access filesystem configuration.
 type FilesystemConfig interface {
+	SystemVolumeFilesystemConfig
 	// Type returns the filesystem type.
 	Type() block.FilesystemType
 	// ProjectQuotaSupport returns true if the filesystem should support project quotas.
 	ProjectQuotaSupport() bool
+}
+
+// SystemVolumeFilesystemConfig is the subset of the filesystem configuration which can be set for
+// system volumes (the filesystem type is fixed, and project quota support comes from machine
+// features).
+type SystemVolumeFilesystemConfig interface {
+	// XFS returns the XFS-specific filesystem configuration, if any.
+	XFS() XFSFilesystemConfig
+}
+
+// XFSFilesystemConfig defines the interface to access XFS-specific filesystem configuration.
+type XFSFilesystemConfig interface {
+	// MinAllocationGroupSize returns the minimum XFS allocation group size in bytes.
+	MinAllocationGroupSize() optional.Optional[uint64]
 }
 
 // SwapVolumeConfig defines the interface to access swap volume configuration.
@@ -200,4 +255,54 @@ type ZswapConfig interface {
 	ZswapConfigSignal()
 	MaxPoolPercent() int
 	ShrinkerEnabled() bool
+}
+
+// FilesystemTrimConfig defines the interface to access global filesystem trim configuration.
+type FilesystemTrimConfig interface {
+	FilesystemTrimConfigSignal()
+	// Interval returns the global trim interval for filesystems which support trimming.
+	Interval() time.Duration
+}
+
+// VolumeTrimConfigProvider defines the interface to access per-volume trim configuration.
+type VolumeTrimConfigProvider interface {
+	// Trim returns the per-volume trim configuration, or nil if not set.
+	Trim() VolumeTrimConfig
+}
+
+// VolumeTrimConfig defines the interface to access per-volume filesystem trim configuration.
+//
+// It overrides the global filesystem trim configuration for the volume.
+//
+//nolint:iface
+type VolumeTrimConfig interface {
+	// Enabled returns whether trimming is enabled for the volume (if explicitly set).
+	Enabled() optional.Optional[bool]
+	// Interval returns the trim interval for the volume (if explicitly set), overriding the global interval.
+	Interval() optional.Optional[time.Duration]
+}
+
+// FilesystemScrubConfig defines the interface to access global filesystem scrub configuration.
+type FilesystemScrubConfig interface {
+	FilesystemScrubConfigSignal()
+	// Interval returns the global scrub interval (if explicitly set).
+	Interval() optional.Optional[time.Duration]
+}
+
+// VolumeScrubConfigProvider defines the interface to access per-volume scrub configuration.
+type VolumeScrubConfigProvider interface {
+	// Scrub returns the per-volume scrub configuration, or nil if not set.
+	Scrub() VolumeScrubConfig
+}
+
+// VolumeScrubConfig defines the interface to access per-volume filesystem scrub configuration.
+//
+// It overrides the global filesystem scrub configuration for the volume.
+//
+//nolint:iface
+type VolumeScrubConfig interface {
+	// Enabled returns whether scrubbing is enabled for the volume (if explicitly set).
+	Enabled() optional.Optional[bool]
+	// Interval returns the scrub interval for the volume (if explicitly set), overriding the global interval.
+	Interval() optional.Optional[time.Duration]
 }

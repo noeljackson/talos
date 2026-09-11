@@ -6,10 +6,12 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"time"
 
+	"github.com/containerd/cgroups/v3/cgroup2"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -19,7 +21,6 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime/logging"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/events"
-	"github.com/siderolabs/talos/internal/app/machined/pkg/system/pid"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
@@ -27,9 +28,27 @@ import (
 type Runner interface {
 	fmt.Stringer
 	Open() error
-	Run(events.Recorder, pid.Recorder) error
-	Stop() error
+	// Run runs the process to completion and reports how it ended.
+	//
+	// Canceling ctx asks the process to stop gracefully, and Run returns once it has. A Runner may be
+	// run more than once, which is what lets the restart wrapper drive it.
+	Run(ctx context.Context, eventSink events.Recorder, onStart OnStart) (Status, error)
 	Close() error
+}
+
+// OnStart is a callback, called with the process PID when it's started.
+type OnStart func(pid int32)
+
+// Status is how a single run ended.
+type Status struct {
+	// Started reports whether the process ever ran. When it is false the run failed before that
+	// point, which is a different thing from a process that ran and exited.
+	Started bool
+	// ExitCode is the process's exit code, and is meaningful only when Started.
+	//
+	// A runner which cannot observe a numeric exit code reports zero and describes the failure in
+	// its error instead.
+	ExitCode int
 }
 
 // Args represents the required options for services.
@@ -70,6 +89,14 @@ type Options struct {
 	OOMScoreAdj int
 	// CgroupPath (optional) sets the cgroup path to use
 	CgroupPath string
+	// CgroupResources (optional) sets the resource limits for the cgroup; when nil they come from
+	// the built-in table keyed by cgroup name.
+	CgroupResources *cgroup2.Resources
+	// LogID (optional) is the identifier the process's log is registered under; defaults to the
+	// runner's ID.
+	LogID string
+	// HostNetworkFiles mounts the host's /etc/hosts and /etc/resolv.conf into the container.
+	HostNetworkFiles bool
 	// OverrideSeccompProfile default Linux seccomp profile.
 	OverrideSeccompProfile func(*specs.LinuxSeccomp)
 	// DroppedCapabilities is the list of capabilities to drop.
@@ -92,6 +119,11 @@ type Options struct {
 	IOPriority optional.Optional[IOPriorityParam]
 	// SchedulingPolicy is the scheduling policy of the process.
 	SchedulingPolicy optional.Optional[uint]
+	// Sandbox, when non-nil, returns the launcher for the shared sandbox
+	// PID+mount namespace; the process is launched inside it instead of the host
+	// namespace. It is evaluated at each (re)launch so a recreated namespace is
+	// picked up; a nil return means the namespace is not currently available.
+	Sandbox func() runtime.SandboxLauncher
 }
 
 // Option is the functional option func.
@@ -107,6 +139,7 @@ func DefaultOptions() *Options {
 		ContainerdAddress:       constants.CRIContainerdAddress,
 		Stdin:                   nil,
 		OOMScoreAdj:             0,
+		HostNetworkFiles:        true,
 	}
 }
 
@@ -184,6 +217,37 @@ func WithOOMScoreAdj(score int) Option {
 func WithCgroupPath(path string) Option {
 	return func(args *Options) {
 		args.CgroupPath = path
+	}
+}
+
+// WithCgroupResources sets the resource limits for the cgroup.
+//
+// Without this the limits come from the built-in table keyed by cgroup name, which is what the Talos
+// services want; a caller running arbitrary workloads has limits of its own to apply.
+func WithCgroupResources(resources *cgroup2.Resources) Option {
+	return func(args *Options) {
+		args.CgroupResources = resources
+	}
+}
+
+// WithLogID sets the identifier the process's log is registered under.
+//
+// It defaults to the runner's ID. Setting it apart matters when the process ID is not the identity
+// the logs should follow, e.g. one container restarted as a succession of differently-named
+// instances whose output belongs in one place.
+func WithLogID(id string) Option {
+	return func(args *Options) {
+		args.LogID = id
+	}
+}
+
+// WithHostNetworkFiles controls whether the host's /etc/hosts and /etc/resolv.conf are mounted in.
+//
+// On by default, which is what a service sharing the host network wants; a container with a network
+// namespace of its own has no business seeing them.
+func WithHostNetworkFiles(enabled bool) Option {
+	return func(args *Options) {
+		args.HostNetworkFiles = enabled
 	}
 }
 
@@ -292,5 +356,15 @@ const (
 func WithSchedulingPolicy(policy uint) Option {
 	return func(args *Options) {
 		args.SchedulingPolicy = optional.Some(policy)
+	}
+}
+
+// WithSandbox causes the process to be launched inside the shared
+// sandbox PID+mount namespace. The getter is evaluated at each launch; a nil
+// getter is a no-op (host namespace), and a getter returning nil means the
+// namespace is not yet available (the launch is retried).
+func WithSandbox(launcher func() runtime.SandboxLauncher) Option {
+	return func(args *Options) {
+		args.Sandbox = launcher
 	}
 }

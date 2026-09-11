@@ -7,7 +7,6 @@ package lifecycle
 
 import (
 	"fmt"
-	"log"
 	"path/filepath"
 	"sync"
 
@@ -89,7 +88,7 @@ func (s *Service) Install(req *machine.LifecycleServiceInstallRequest, ss grpc.S
 		return status.Error(codes.InvalidArgument, fmt.Sprintf("invalid disk path: %v", err))
 	}
 
-	log.Printf("starting installation: installer_image=%s, disk=%s\n", installerImage, targetDisk)
+	s.logger.Info("starting installation", zap.String("installer_image", installerImage), zap.String("disk", targetDisk))
 
 	//nolint:dupl
 	err = runInstallerContainer(ctx,
@@ -103,6 +102,7 @@ func (s *Service) Install(req *machine.LifecycleServiceInstallRequest, ss grpc.S
 			opts: []install.Option{
 				install.WithForce(true),
 				install.WithZero(false),
+				install.WithGrubUseUKICmdline(true),
 			},
 			send: func(msg string) error {
 				s.logger.Info("installation progress", zap.String("message", msg))
@@ -117,9 +117,9 @@ func (s *Service) Install(req *machine.LifecycleServiceInstallRequest, ss grpc.S
 			},
 			sendExitCode: func(exitCode int32) error {
 				if exitCode == 0 {
-					log.Printf("installation completed successfully: exit_code=%d\n", exitCode)
+					s.logger.Info("installation completed", zap.Int32("exit_code", exitCode))
 				} else {
-					log.Printf("installation failed: exit_code=%d\n", exitCode)
+					s.logger.Warn("installation failed", zap.Int32("exit_code", exitCode))
 				}
 
 				return ss.Send(&machine.LifecycleServiceInstallResponse{
@@ -196,7 +196,7 @@ func (s *Service) Upgrade(req *machine.LifecycleServiceUpgradeRequest, ss grpc.S
 
 	devname := systemDisk.DevPath
 
-	log.Printf("starting upgrade: installer_image=%s, disk=%s\n", installerImage, devname)
+	s.logger.Info("starting upgrade", zap.String("installer_image", installerImage), zap.String("disk", devname))
 
 	//nolint:dupl
 	err = runInstallerContainer(ctx,
@@ -224,9 +224,9 @@ func (s *Service) Upgrade(req *machine.LifecycleServiceUpgradeRequest, ss grpc.S
 			},
 			sendExitCode: func(exitCode int32) error {
 				if exitCode == 0 {
-					log.Printf("upgrade completed successfully: exit_code=%d\n", exitCode)
+					s.logger.Info("upgrade completed", zap.Int32("exit_code", exitCode))
 				} else {
-					log.Printf("upgrade failed: exit_code=%d\n", exitCode)
+					s.logger.Warn("upgrade failed", zap.Int32("exit_code", exitCode))
 				}
 
 				return ss.Send(&machine.LifecycleServiceUpgradeResponse{

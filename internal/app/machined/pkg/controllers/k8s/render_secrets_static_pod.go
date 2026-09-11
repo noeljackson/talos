@@ -20,7 +20,6 @@ import (
 	"github.com/siderolabs/gen/xslices"
 	"go.uber.org/zap"
 
-	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/k8s/internal/k8stemplates"
 	"github.com/siderolabs/talos/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
@@ -66,6 +65,12 @@ func (ctrl *RenderSecretsStaticPodController) Inputs() []controller.Input {
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.EtcdType,
 			ID:        optional.Some(secrets.EtcdID),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: k8s.NamespaceName,
+			Type:      k8s.EtcdEncryptionConfigType,
+			ID:        optional.Some(k8s.EtcdEncryptionConfigID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -140,16 +145,21 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 			return fmt.Errorf("error getting secrets resource: %w", err)
 		}
 
+		etcdEncryptionConfig, err := safe.ReaderGetByID[*k8s.EtcdEncryptionConfig](ctx, r, k8s.EtcdEncryptionConfigID)
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				continue
+			}
+
+			return fmt.Errorf("error getting etcd encryption config: %w", err)
+		}
+
 		rootEtcdSecrets := rootEtcdRes.TypedSpec()
 		rootK8sSecrets := rootK8sRes.TypedSpec()
 		etcdSecrets := etcdRes.TypedSpec()
 		k8sSecrets := secretsRes.TypedSpec()
 		k8sCerts := certsRes.TypedSpec()
-
-		serviceAccountKey, err := rootK8sSecrets.ServiceAccount.GetKey()
-		if err != nil {
-			return fmt.Errorf("error parsing service account key: %w", err)
-		}
+		etcdEncryption := etcdEncryptionConfig.TypedSpec()
 
 		type secret struct {
 			getter       func() *x509.PEMEncodedCertificateAndKey
@@ -208,15 +218,19 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 					{
 						getter: func() *x509.PEMEncodedCertificateAndKey {
 							return &x509.PEMEncodedCertificateAndKey{
-								Crt: serviceAccountKey.GetPublicKeyPEM(),
-								Key: serviceAccountKey.GetPrivateKeyPEM(),
+								Crt: bytes.Join(xslices.Map(rootK8sSecrets.ServiceAccountAcceptedKeys, func(ca *x509.PEMEncodedKey) []byte { return ca.Key }), nil),
+								Key: rootK8sSecrets.ServiceAccount.Key,
 							}
 						},
 						certFilename: "service-account.pub",
 						keyFilename:  "service-account.key",
 					},
 					{
-						getter:       func() *x509.PEMEncodedCertificateAndKey { return rootK8sSecrets.AggregatorCA },
+						getter: func() *x509.PEMEncodedCertificateAndKey {
+							return &x509.PEMEncodedCertificateAndKey{
+								Crt: bytes.Join(xslices.Map(rootK8sSecrets.AcceptedAggregatorCAs, func(ca *x509.PEMEncodedCertificate) []byte { return ca.Crt }), nil),
+							}
+						},
 						certFilename: "aggregator-ca.crt",
 					},
 					{
@@ -229,7 +243,7 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 					{
 						filename: "encryptionconfig.yaml",
 						contentFunc: func() ([]byte, error) {
-							return k8stemplates.Marshal(k8stemplates.APIServerEncryptionConfig(rootK8sSecrets))
+							return []byte(etcdEncryption.Configuration), nil
 						},
 					},
 				},
@@ -249,8 +263,7 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 					{
 						getter: func() *x509.PEMEncodedCertificateAndKey {
 							return &x509.PEMEncodedCertificateAndKey{
-								Crt: serviceAccountKey.GetPublicKeyPEM(),
-								Key: serviceAccountKey.GetPrivateKeyPEM(),
+								Key: rootK8sSecrets.ServiceAccount.Key,
 							}
 						},
 						keyFilename: "service-account.key",

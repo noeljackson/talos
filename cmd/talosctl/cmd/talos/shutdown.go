@@ -14,6 +14,7 @@ import (
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/action"
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 )
 
 var shutdownCmdFlags struct {
@@ -37,27 +38,45 @@ var shutdownCmd = &cobra.Command{
 			client.WithShutdownForce(shutdownCmdFlags.force),
 		}
 
+		ctx := cmd.Context()
+
+		clientFactory, err := NewClientFactory(ctx, &shutdownCmdFlags, action.GRPCDialOptions()...)
+		if err != nil {
+			return err
+		}
+
+		defer clientFactory.Close() //nolint:errcheck
+
 		if !shutdownCmdFlags.wait {
-			return WithClient(func(ctx context.Context, c *client.Client) error {
-				if err := helpers.ClientVersionCheck(ctx, c); err != nil {
-					return err
-				}
+			if err := helpers.ClientVersionCheck(ctx, clientFactory); err != nil {
+				return err
+			}
 
-				if err := c.Shutdown(ctx, opts...); err != nil {
-					return fmt.Errorf("error executing shutdown: %s", err)
-				}
+			responseChan := multiplex.UnaryViaFactory(
+				ctx, clientFactory,
+				func(ctx context.Context, c *client.Client) (struct{}, error) {
+					return struct{}{}, c.Shutdown(ctx, opts...)
+				},
+			)
 
-				return nil
-			})
+			var errs error
+
+			for resp := range responseChan {
+				if resp.Err != nil {
+					errs = errors.Join(errs, fmt.Errorf("error executing shutdown on node %s: %w", resp.Node, resp.Err))
+				}
+			}
+
+			return errs
 		}
 
 		return action.NewTracker(
-			&GlobalArgs,
+			clientFactory,
 			action.StopAllServicesEventFn,
 			shutdownGetActorID,
 			action.WithDebug(shutdownCmdFlags.debug),
 			action.WithTimeout(shutdownCmdFlags.timeout),
-		).Run()
+		).Run(ctx)
 	},
 }
 

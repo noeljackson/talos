@@ -83,11 +83,9 @@ func TestDefaultKernelArgs(t *testing.T) {
 			name: "latest",
 
 			expected: []string{
-				"init_on_alloc=1",
 				"slab_nomerge=",
 				"pti=on",
 				"consoleblank=0",
-				"nvme_core.io_timeout=4294967295",
 				"printk.devkmsg=on",
 				"selinux=1",
 				"module.sig_enforce=1",
@@ -144,6 +142,21 @@ func TestDefaultKernelArgs(t *testing.T) {
 				"proc_mem.force_override=never",
 			},
 		},
+		{
+			name: "v1.14",
+
+			quirks: quirks.New("v1.14.0"),
+
+			expected: []string{
+				"slab_nomerge=",
+				"pti=on",
+				"consoleblank=0",
+				"printk.devkmsg=on",
+				"selinux=1",
+				"module.sig_enforce=1",
+				"proc_mem.force_override=never",
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -166,9 +179,21 @@ func TestSecureBootArgs(t *testing.T) {
 		{
 			name: "latest",
 
-			expected: []string{
-				"lockdown=confidentiality",
-			},
+			expected: []string{},
+		},
+		{
+			name: "v1.13",
+
+			quirks: quirks.New("v1.13.0"),
+
+			expected: []string{"lockdown=confidentiality"},
+		},
+		{
+			name: "v1.14",
+
+			quirks: quirks.New("v1.14.0"),
+
+			expected: []string{},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

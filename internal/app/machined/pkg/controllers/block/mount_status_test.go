@@ -41,17 +41,22 @@ func (suite *MountStatusSuite) TestReconcile() {
 		VolumeID:     "volume1",
 		Requesters:   []string{"requester1", "requester2"},
 		RequesterIDs: []string{"requester1/volume1", "requester2/volume1"},
+		Secure:       true,
+		NoExec:       true,
 	}
 	mountStatus1.TypedSpec().Target = "/target"
 	suite.Create(mountStatus1)
 
 	// mount status is exploded into volume mount statuses
-	ctest.AssertResources(suite,
+	ctest.AssertResources(
+		suite,
 		[]resource.ID{"requester1/volume1", "requester2/volume1"},
 		func(vms *block.VolumeMountStatus, asrt *assert.Assertions) {
 			asrt.Equal("volume1", vms.Metadata().Labels().Raw()["mount-status-id"])
 			asrt.Equal("volume1", vms.TypedSpec().VolumeID)
 			asrt.Equal("/target", vms.TypedSpec().Target)
+			asrt.True(vms.TypedSpec().Secure)
+			asrt.True(vms.TypedSpec().NoExec)
 		},
 	)
 
@@ -96,17 +101,22 @@ func (suite *MountStatusSuite) TestReconcileRequesterGoingOut() {
 		VolumeID:     "volume1",
 		Requesters:   []string{"requester1", "requester2"},
 		RequesterIDs: []string{"requester1/volume1", "requester2/volume1"},
+		Secure:       true,
+		NoExec:       true,
 	}
 	mountStatus1.TypedSpec().Target = "/target"
 	suite.Create(mountStatus1)
 
 	// mount status is exploded into volume mount statuses
-	ctest.AssertResources(suite,
+	ctest.AssertResources(
+		suite,
 		[]resource.ID{"requester1/volume1", "requester2/volume1"},
 		func(vms *block.VolumeMountStatus, asrt *assert.Assertions) {
 			asrt.Equal("volume1", vms.Metadata().Labels().Raw()["mount-status-id"])
 			asrt.Equal("volume1", vms.TypedSpec().VolumeID)
 			asrt.Equal("/target", vms.TypedSpec().Target)
+			asrt.True(vms.TypedSpec().Secure)
+			asrt.True(vms.TypedSpec().NoExec)
 		},
 	)
 

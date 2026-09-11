@@ -13,6 +13,7 @@ import (
 	"strconv"
 
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-procfs/procfs"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
@@ -62,10 +63,18 @@ func (d *DigitalOcean) ParseMetadata(metadata *MetadataConfig) (*runtime.Platfor
 			}
 		}
 
-		networkConfig.Resolvers = append(networkConfig.Resolvers, network.ResolverSpecSpec{
-			DNSServers:  dnsIPs,
+		resolverSpec := network.ResolverSpecSpec{
+			NameServers: xslices.Map(dnsIPs, func(addr netip.Addr) network.NameServerSpec {
+				return network.NameServerSpec{
+					Addr:     addr,
+					Protocol: nethelpers.DNSProtocolDefault,
+				}
+			}),
 			ConfigLayer: network.ConfigPlatform,
-		})
+		}
+		resolverSpec.Convert()
+
+		networkConfig.Resolvers = append(networkConfig.Resolvers, resolverSpec)
 	}
 
 	networkConfig.Links = append(networkConfig.Links, network.LinkSpecSpec{
@@ -85,7 +94,8 @@ func (d *DigitalOcean) ParseMetadata(metadata *MetadataConfig) (*runtime.Platfor
 
 			publicIPs = append(publicIPs, iface.IPv4.IPAddress)
 
-			networkConfig.Addresses = append(networkConfig.Addresses,
+			networkConfig.Addresses = append(
+				networkConfig.Addresses,
 				network.AddressSpecSpec{
 					ConfigLayer: network.ConfigPlatform,
 					LinkName:    "eth0",
@@ -140,7 +150,8 @@ func (d *DigitalOcean) ParseMetadata(metadata *MetadataConfig) (*runtime.Platfor
 			}
 
 			publicIPs = append(publicIPs, iface.IPv6.IPAddress)
-			networkConfig.Addresses = append(networkConfig.Addresses,
+			networkConfig.Addresses = append(
+				networkConfig.Addresses,
 				network.AddressSpecSpec{
 					ConfigLayer: network.ConfigPlatform,
 					LinkName:    "eth0",
@@ -180,7 +191,8 @@ func (d *DigitalOcean) ParseMetadata(metadata *MetadataConfig) (*runtime.Platfor
 				return nil, fmt.Errorf("failed to parse ip address: %w", err)
 			}
 
-			networkConfig.Addresses = append(networkConfig.Addresses,
+			networkConfig.Addresses = append(
+				networkConfig.Addresses,
 				network.AddressSpecSpec{
 					ConfigLayer: network.ConfigPlatform,
 					LinkName:    "eth0",
@@ -208,7 +220,8 @@ func (d *DigitalOcean) ParseMetadata(metadata *MetadataConfig) (*runtime.Platfor
 				return nil, fmt.Errorf("failed to parse ip address: %w", err)
 			}
 
-			networkConfig.Addresses = append(networkConfig.Addresses,
+			networkConfig.Addresses = append(
+				networkConfig.Addresses,
 				network.AddressSpecSpec{
 					ConfigLayer: network.ConfigPlatform,
 					LinkName:    ifName,

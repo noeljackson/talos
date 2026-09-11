@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
@@ -246,7 +246,8 @@ func (ctrl *EndpointController) updateEndpointsResource(
 
 	slices.SortFunc(addrs, func(a, b netip.Addr) int { return a.Compare(b) })
 
-	if err := safe.WriterModify(ctx,
+	if err := safe.WriterModify(
+		ctx,
 		r,
 		k8s.NewEndpoint(k8s.ControlPlaneNamespaceName, k8s.ControlPlaneAPIServerEndpointsID),
 		func(r *k8s.Endpoint) error {
@@ -296,7 +297,7 @@ func (ctrl *EndpointController) watchKubernetesEndpointSlices(ctx context.Contex
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	notifyCh, watchErrCh, watchCloser, err := kubernetesEndpointSliceWatcher(ctx, client)
+	notifyCh, watchCloser, err := kubernetesEndpointSliceWatcher(ctx, logger, client)
 	if err != nil {
 		return fmt.Errorf("error watching Kubernetes endpoint slice: %w", err)
 	}
@@ -307,30 +308,11 @@ func (ctrl *EndpointController) watchKubernetesEndpointSlices(ctx context.Contex
 		watchCloser()
 	}()
 
-	var watchErrors int
-
 	for {
 		select {
 		case endpoints := <-notifyCh:
-			watchErrors = 0
-
 			if err = ctrl.updateEndpointsResource(ctx, r, logger, endpoints); err != nil {
 				return err
-			}
-		case watchErr := <-watchErrCh:
-			watchErrors++
-
-			logger.Error("kubernetes endpoint watch error", zap.Error(watchErr), zap.Int("error_count", watchErrors))
-
-			if watchErrors >= watchErrorsThreshold {
-				// The watch is failing persistently: give up on this client and let the caller
-				// build a new one. On a worker that also re-reads the kubelet credentials off
-				// disk, which is what recovers a client pinned to a rotated client certificate.
-				logger.Info("restarting Kubernetes endpoint watch with a new client")
-
-				r.QueueReconcile()
-
-				return nil
 			}
 		case <-ctx.Done():
 			return nil
@@ -343,49 +325,34 @@ func (ctrl *EndpointController) watchKubernetesEndpointSlices(ctx context.Contex
 	}
 }
 
-func kubernetesEndpointSliceWatcher(ctx context.Context, client *kubernetes.Client) (chan *discoveryv1.EndpointSlice, <-chan error, func(), error) {
+func kubernetesEndpointSliceWatcher(ctx context.Context, logger *zap.Logger, client *kubernetes.Client) (chan *discoveryv1.EndpointSlice, func(), error) {
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		client.Clientset, constants.KubernetesInformerDefaultResyncPeriod,
 		informers.WithNamespace(corev1.NamespaceDefault),
-		informers.WithTweakListOptions(func(options *v1.ListOptions) {
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
 			options.FieldSelector = fields.OneTermEqualSelector("metadata.name", "kubernetes").String()
 		}),
 	)
 
 	notifyCh := make(chan *discoveryv1.EndpointSlice, 1)
-	watchErrCh := make(chan error, 1)
 
 	informer := informerFactory.Discovery().V1().EndpointSlices().Informer()
 
-	if err := informer.SetWatchErrorHandler(func(_ *cache.Reflector, err error) {
-		select {
-		case watchErrCh <- err:
-		default:
-		}
+	if err := informer.SetWatchErrorHandler(func(r *cache.Reflector, err error) {
+		logger.Error("kubernetes endpoint watch error", zap.Error(err))
 	}); err != nil {
-		return nil, nil, nil, fmt.Errorf("error setting watch error handler: %w", err)
-	}
-
-	// Every notification carries the endpoint slice itself, so a send can't be dropped the way
-	// a bare "something changed" notification could be; it is given up only once the watch
-	// context is canceled, as otherwise a handler blocked on a full channel with no reader left
-	// would deadlock the `informerFactory.Shutdown()` which follows the cancel.
-	notify := func(endpointSlice *discoveryv1.EndpointSlice) {
-		select {
-		case notifyCh <- endpointSlice:
-		case <-ctx.Done():
-		}
+		return nil, nil, fmt.Errorf("error setting watch error handler: %w", err)
 	}
 
 	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { notify(obj.(*discoveryv1.EndpointSlice)) },
-		DeleteFunc: func(_ any) { notify(&discoveryv1.EndpointSlice{}) },
-		UpdateFunc: func(_, obj any) { notify(obj.(*discoveryv1.EndpointSlice)) },
+		AddFunc:    func(obj any) { notifyCh <- obj.(*discoveryv1.EndpointSlice) },
+		DeleteFunc: func(_ any) { notifyCh <- &discoveryv1.EndpointSlice{} },
+		UpdateFunc: func(_, obj any) { notifyCh <- obj.(*discoveryv1.EndpointSlice) },
 	}); err != nil {
-		return nil, nil, nil, fmt.Errorf("error adding watch event handler: %w", err)
+		return nil, nil, fmt.Errorf("error adding watch event handler: %w", err)
 	}
 
 	informerFactory.Start(ctx.Done())
 
-	return notifyCh, watchErrCh, informerFactory.Shutdown, nil
+	return notifyCh, informerFactory.Shutdown, nil
 }

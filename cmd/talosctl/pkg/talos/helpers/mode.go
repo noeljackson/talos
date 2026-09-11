@@ -6,14 +6,13 @@ package helpers
 
 import (
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
 	"github.com/siderolabs/gen/maps"
 	"github.com/spf13/cobra"
 
-	"github.com/siderolabs/talos/pkg/cli"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 )
 
@@ -24,15 +23,13 @@ type Mode struct {
 }
 
 func (m Mode) String() string {
-	switch m.Mode {
+	switch m.Mode { //nolint:exhaustive
 	case machine.ApplyConfigurationRequest_TRY:
 		return modeTry
 	case machine.ApplyConfigurationRequest_AUTO:
 		return modeAuto
 	case machine.ApplyConfigurationRequest_NO_REBOOT:
 		return modeNoReboot
-	case machine.ApplyConfigurationRequest_REBOOT:
-		return modeReboot
 	case machine.ApplyConfigurationRequest_STAGED:
 		return modeStaged
 	default:
@@ -63,7 +60,6 @@ func (m *Mode) Type() string {
 const (
 	modeAuto     = "auto"
 	modeNoReboot = "no-reboot"
-	modeReboot   = "reboot"
 	modeStaged   = "staged"
 	modeTry      = "try"
 )
@@ -73,7 +69,6 @@ func AddModeFlags(mode *Mode, command *cobra.Command) {
 	modes := map[string]machine.ApplyConfigurationRequest_Mode{
 		modeAuto:     machine.ApplyConfigurationRequest_AUTO,
 		modeNoReboot: machine.ApplyConfigurationRequest_NO_REBOOT,
-		modeReboot:   machine.ApplyConfigurationRequest_REBOOT,
 		modeStaged:   machine.ApplyConfigurationRequest_STAGED,
 		modeTry:      machine.ApplyConfigurationRequest_TRY,
 	}
@@ -88,11 +83,11 @@ func AddModeFlags(mode *Mode, command *cobra.Command) {
 func PrintApplyResults(resp *machine.ApplyConfigurationResponse) {
 	for _, m := range resp.GetMessages() {
 		for _, w := range m.GetWarnings() {
-			cli.Warning("%s", w)
+			safeout.Warningf("%s", w)
 		}
 
 		if m.ModeDetails != "" {
-			fmt.Fprintln(os.Stderr, m.ModeDetails)
+			fmt.Fprintln(safeout.Stderr(), m.ModeDetails)
 		}
 	}
 }

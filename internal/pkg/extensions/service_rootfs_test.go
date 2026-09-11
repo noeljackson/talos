@@ -53,3 +53,51 @@ func TestEnsureServiceRootfsMountpoints(t *testing.T) {
 		assert.NoDirExists(t, filepath.Join(outsidePath, "lib"))
 	})
 }
+
+func TestEnsureServiceRootfsMountpointsInRootRejectsSymlinkedRoots(t *testing.T) {
+	for _, linkedPath := range []string{"usr", "usr/local/lib/containers", "usr/local/lib/containers/service"} {
+		t.Run(linkedPath, func(t *testing.T) {
+			extensionRoot := t.TempDir()
+			outsidePath := t.TempDir()
+			symlinkPath := filepath.Join(extensionRoot, linkedPath)
+			require.NoError(t, os.MkdirAll(filepath.Dir(symlinkPath), 0o755))
+			require.NoError(t, os.Symlink(outsidePath, symlinkPath))
+
+			err := extensions.EnsureServiceRootfsMountpointsInRoot(extensionRoot, "usr/local/lib/containers/service", extensions.ImplicitServiceRootfsMountpoints())
+			require.ErrorContains(t, err, "error opening extension service rootfs")
+			entries, err := os.ReadDir(outsidePath)
+			require.NoError(t, err)
+			assert.Empty(t, entries)
+		})
+	}
+}
+
+func TestEnsureServiceRootfsMountpointsUnknownType(t *testing.T) {
+	for _, shape := range []string{"absent", "file", "directory"} {
+		t.Run(shape, func(t *testing.T) {
+			rootfsPath := t.TempDir()
+			destination := filepath.Join(rootfsPath, "etc/os-release")
+			switch shape {
+			case "file":
+				require.NoError(t, os.MkdirAll(filepath.Dir(destination), 0o755))
+				require.NoError(t, os.WriteFile(destination, []byte("existing release"), 0o600))
+			case "directory":
+				require.NoError(t, os.MkdirAll(destination, 0o700))
+			}
+
+			err := extensions.EnsureServiceRootfsMountpoints(rootfsPath, []extensions.ServiceRootfsMountpoint{{Destination: "/etc/os-release", TypeUnknown: true}})
+			require.NoError(t, err)
+
+			switch shape {
+			case "absent":
+				assert.NoDirExists(t, filepath.Dir(destination))
+			case "file":
+				contents, err := os.ReadFile(destination)
+				require.NoError(t, err)
+				assert.Equal(t, "existing release", string(contents))
+			case "directory":
+				assert.DirExists(t, destination)
+			}
+		})
+	}
+}

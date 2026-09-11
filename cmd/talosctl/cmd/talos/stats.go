@@ -6,22 +6,24 @@ package talos
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/peer"
 
-	"github.com/siderolabs/talos/pkg/cli"
-	"github.com/siderolabs/talos/pkg/machinery/api/common"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
-	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 )
+
+var statsCmdFlags struct {
+	containerNamespaceFlag
+}
 
 // statsCmd represents the stats command.
 var statsCmd = &cobra.Command{
@@ -30,68 +32,74 @@ var statsCmd = &cobra.Command{
 	Long:  ``,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			var (
-				namespace string
-				driver    common.ContainerDriver
-			)
+		ctx := cmd.Context()
 
-			if kubernetesFlag {
-				namespace = constants.K8sContainerdNamespace
-				driver = common.ContainerDriver_CRI
-			} else {
-				namespace = constants.SystemContainerdNamespace
-				driver = common.ContainerDriver_CONTAINERD
-			}
+		clientFactory, err := NewClientFactory(ctx, &statsCmdFlags)
+		if err != nil {
+			return err
+		}
 
-			var remotePeer peer.Peer
+		defer clientFactory.Close() //nolint:errcheck
 
-			resp, err := c.Stats(ctx, namespace, driver, grpc.Peer(&remotePeer))
-			if err != nil {
-				if resp == nil {
-					return fmt.Errorf("error getting stats: %s", err)
+		namespace, driver, err := statsCmdFlags.resolveContainerNamespace()
+		if err != nil {
+			return err
+		}
+
+		responseChan := multiplex.UnaryViaFactory(
+			ctx, clientFactory,
+			func(ctx context.Context, c *client.Client) (*machineapi.StatsResponse, error) {
+				return c.Stats(ctx, namespace, driver)
+			},
+		)
+
+		w := tabwriter.NewWriter(safeout.Stdout(), 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "NODE\tNAMESPACE\tID\tMEMORY(MB)\tCPU")
+
+		flushTimer := time.NewTimer(outputFlushInterval)
+		defer flushTimer.Stop()
+
+		flushTimer.Stop()
+
+		var errs error
+
+		for {
+			select {
+			case resp, ok := <-responseChan:
+				if !ok {
+					return errors.Join(errs, w.Flush())
 				}
 
-				cli.Warning("%s", err)
-			}
+				if resp.Err != nil {
+					errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
+				} else {
+					for _, msg := range resp.Payload.Messages {
+						slices.SortFunc(msg.Stats, func(a, b *machineapi.Stat) int { return strings.Compare(a.Id, b.Id) })
 
-			return statsRender(&remotePeer, resp)
-		})
+						for _, s := range msg.Stats {
+							display := s.Id
+							if s.Id != s.PodId {
+								// container in a sandbox
+								display = "└─ " + display
+							}
+
+							safeout.Fprintf(w, "%s\t%s\t%s\t%.2f\t%d\n", resp.Node, s.Namespace, display, float64(s.MemoryUsage)*1e-6, s.CpuUsage)
+						}
+					}
+				}
+
+				flushTimer.Reset(outputFlushInterval)
+			case <-flushTimer.C:
+				if err := w.Flush(); err != nil {
+					errs = errors.Join(errs, fmt.Errorf("error flushing output: %w", err))
+				}
+			}
+		}
 	},
 }
 
-func statsRender(remotePeer *peer.Peer, resp *machineapi.StatsResponse) error {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-
-	fmt.Fprintln(w, "NODE\tNAMESPACE\tID\tMEMORY(MB)\tCPU")
-
-	defaultNode := client.AddrFromPeer(remotePeer)
-
-	for _, msg := range resp.Messages {
-		slices.SortFunc(msg.Stats, func(a, b *machineapi.Stat) int { return strings.Compare(a.Id, b.Id) })
-
-		for _, s := range msg.Stats {
-			display := s.Id
-			if s.Id != s.PodId {
-				// container in a sandbox
-				display = "└─ " + display
-			}
-
-			node := defaultNode
-
-			if msg.Metadata != nil {
-				node = msg.Metadata.Hostname
-			}
-
-			fmt.Fprintf(w, "%s\t%s\t%s\t%.2f\t%d\n", node, s.Namespace, display, float64(s.MemoryUsage)*1e-6, s.CpuUsage)
-		}
-	}
-
-	return w.Flush()
-}
-
 func init() {
-	statsCmd.Flags().BoolVarP(&kubernetesFlag, "kubernetes", "k", false, "use the k8s.io containerd namespace")
+	addContainerNamespaceFlags(statsCmd, &statsCmdFlags.containerNamespaceFlag)
 
 	statsCmd.Flags().Bool("use-cri", false, "use the CRI driver")
 	statsCmd.Flags().MarkHidden("use-cri") //nolint:errcheck

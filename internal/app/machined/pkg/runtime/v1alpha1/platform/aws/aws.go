@@ -26,6 +26,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/internal/netutils"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/imager/quirks"
+	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
@@ -224,10 +225,18 @@ func (a *AWS) ParseMetadata(metadata *MetadataConfig) (*runtime.PlatformNetworkC
 
 			dns, _ := netip.ParseAddr(awsIPv6DNSServer) //nolint:errcheck
 
-			networkConfig.Resolvers = append(networkConfig.Resolvers, network.ResolverSpecSpec{
-				DNSServers:  []netip.Addr{dns},
+			resolverSpec := network.ResolverSpecSpec{
+				NameServers: []network.NameServerSpec{
+					{
+						Addr:     dns,
+						Protocol: nethelpers.DNSProtocolDefault,
+					},
+				},
 				ConfigLayer: network.ConfigPlatform,
-			})
+			}
+			resolverSpec.Convert()
+
+			networkConfig.Resolvers = append(networkConfig.Resolvers, resolverSpec)
 		}
 	}
 
@@ -309,11 +318,22 @@ func (a *AWS) Mode() runtime.Mode {
 }
 
 // KernelArgs implements the runtime.Platform interface.
-func (a *AWS) KernelArgs(string, quirks.Quirks) procfs.Parameters {
-	return []*procfs.Parameter{
+func (a *AWS) KernelArgs(_ string, q quirks.Quirks) procfs.Parameters {
+	result := []*procfs.Parameter{
 		procfs.NewParameter("console").Append("tty1").Append("ttyS0"),
 		procfs.NewParameter(constants.KernelParamNetIfnames).Append("0"),
 	}
+
+	if q.NvmeCoreIoTimeoutAWSOnly() {
+		// AWS recommends setting the nvme_core.io_timeout to the highest value possible.
+		// See https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nvme-ebs-volumes.html.
+		result = append(
+			result,
+			procfs.NewParameter("nvme_core.io_timeout").Append("4294967295"),
+		)
+	}
+
+	return result
 }
 
 // NetworkConfiguration implements the runtime.Platform interface.

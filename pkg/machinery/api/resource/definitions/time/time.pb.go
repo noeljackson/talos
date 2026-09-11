@@ -124,19 +124,85 @@ func (x *AdjtimeStatusSpec) GetState() string {
 	return ""
 }
 
+// NTPStatusSpec describes the state of the NTP client.
+type NTPStatusSpec struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SpikeDetected indicates that the last time measurement was discarded by the spike filter.
+	//
+	// A discarded measurement is not applied to the clock at all, so a filter which keeps
+	// rejecting looks exactly like a clock which is never corrected.
+	SpikeDetected bool `protobuf:"varint,1,opt,name=spike_detected,json=spikeDetected,proto3" json:"spike_detected,omitempty"`
+	// ConsecutiveSpikes is the number of time measurements discarded in a row by the spike filter.
+	ConsecutiveSpikes int64 `protobuf:"varint,2,opt,name=consecutive_spikes,json=consecutiveSpikes,proto3" json:"consecutive_spikes,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *NTPStatusSpec) Reset() {
+	*x = NTPStatusSpec{}
+	mi := &file_resource_definitions_time_time_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NTPStatusSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NTPStatusSpec) ProtoMessage() {}
+
+func (x *NTPStatusSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_resource_definitions_time_time_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NTPStatusSpec.ProtoReflect.Descriptor instead.
+func (*NTPStatusSpec) Descriptor() ([]byte, []int) {
+	return file_resource_definitions_time_time_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *NTPStatusSpec) GetSpikeDetected() bool {
+	if x != nil {
+		return x.SpikeDetected
+	}
+	return false
+}
+
+func (x *NTPStatusSpec) GetConsecutiveSpikes() int64 {
+	if x != nil {
+		return x.ConsecutiveSpikes
+	}
+	return 0
+}
+
 // StatusSpec describes time sync state.
+//
+// This spec is used as a reconcile trigger by other controllers (most notably the
+// certificate generating ones in the `secrets` package), so it should only ever carry
+// fields which change rarely: anything which changes on every NTP poll belongs in
+// [NTPStatusSpec] instead.
 type StatusSpec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Synced        bool                   `protobuf:"varint,1,opt,name=synced,proto3" json:"synced,omitempty"`
-	Epoch         int64                  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	SyncDisabled  bool                   `protobuf:"varint,3,opt,name=sync_disabled,json=syncDisabled,proto3" json:"sync_disabled,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Synced indicates whether time is in sync.
+	Synced bool `protobuf:"varint,1,opt,name=synced,proto3" json:"synced,omitempty"`
+	// Epoch is incremented every time clock jumps more than 15min.
+	Epoch int64 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// SyncDisabled indicates if time sync is disabled.
+	SyncDisabled  bool `protobuf:"varint,3,opt,name=sync_disabled,json=syncDisabled,proto3" json:"sync_disabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StatusSpec) Reset() {
 	*x = StatusSpec{}
-	mi := &file_resource_definitions_time_time_proto_msgTypes[1]
+	mi := &file_resource_definitions_time_time_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -148,7 +214,7 @@ func (x *StatusSpec) String() string {
 func (*StatusSpec) ProtoMessage() {}
 
 func (x *StatusSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_resource_definitions_time_time_proto_msgTypes[1]
+	mi := &file_resource_definitions_time_time_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -161,7 +227,7 @@ func (x *StatusSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusSpec.ProtoReflect.Descriptor instead.
 func (*StatusSpec) Descriptor() ([]byte, []int) {
-	return file_resource_definitions_time_time_proto_rawDescGZIP(), []int{1}
+	return file_resource_definitions_time_time_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *StatusSpec) GetSynced() bool {
@@ -199,7 +265,10 @@ const file_resource_definitions_time_time_proto_rawDesc = "" +
 	"\bconstant\x18\x06 \x01(\x03R\bconstant\x12\x1f\n" +
 	"\vsync_status\x18\a \x01(\bR\n" +
 	"syncStatus\x12\x14\n" +
-	"\x05state\x18\b \x01(\tR\x05state\"_\n" +
+	"\x05state\x18\b \x01(\tR\x05state\"e\n" +
+	"\rNTPStatusSpec\x12%\n" +
+	"\x0espike_detected\x18\x01 \x01(\bR\rspikeDetected\x12-\n" +
+	"\x12consecutive_spikes\x18\x02 \x01(\x03R\x11consecutiveSpikes\"_\n" +
 	"\n" +
 	"StatusSpec\x12\x16\n" +
 	"\x06synced\x18\x01 \x01(\bR\x06synced\x12\x14\n" +
@@ -219,16 +288,17 @@ func file_resource_definitions_time_time_proto_rawDescGZIP() []byte {
 	return file_resource_definitions_time_time_proto_rawDescData
 }
 
-var file_resource_definitions_time_time_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_resource_definitions_time_time_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_resource_definitions_time_time_proto_goTypes = []any{
 	(*AdjtimeStatusSpec)(nil),   // 0: talos.resource.definitions.time.AdjtimeStatusSpec
-	(*StatusSpec)(nil),          // 1: talos.resource.definitions.time.StatusSpec
-	(*durationpb.Duration)(nil), // 2: google.protobuf.Duration
+	(*NTPStatusSpec)(nil),       // 1: talos.resource.definitions.time.NTPStatusSpec
+	(*StatusSpec)(nil),          // 2: talos.resource.definitions.time.StatusSpec
+	(*durationpb.Duration)(nil), // 3: google.protobuf.Duration
 }
 var file_resource_definitions_time_time_proto_depIdxs = []int32{
-	2, // 0: talos.resource.definitions.time.AdjtimeStatusSpec.offset:type_name -> google.protobuf.Duration
-	2, // 1: talos.resource.definitions.time.AdjtimeStatusSpec.max_error:type_name -> google.protobuf.Duration
-	2, // 2: talos.resource.definitions.time.AdjtimeStatusSpec.est_error:type_name -> google.protobuf.Duration
+	3, // 0: talos.resource.definitions.time.AdjtimeStatusSpec.offset:type_name -> google.protobuf.Duration
+	3, // 1: talos.resource.definitions.time.AdjtimeStatusSpec.max_error:type_name -> google.protobuf.Duration
+	3, // 2: talos.resource.definitions.time.AdjtimeStatusSpec.est_error:type_name -> google.protobuf.Duration
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
@@ -247,7 +317,7 @@ func file_resource_definitions_time_time_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_resource_definitions_time_time_proto_rawDesc), len(file_resource_definitions_time_time_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -5,11 +5,32 @@
 package services
 
 import (
+	"context"
+
 	"github.com/containerd/containerd/v2/pkg/oci"
-	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/siderolabs/gen/xslices"
+
+	"github.com/siderolabs/talos/internal/app/machined/pkg/system/runner"
 	extservices "github.com/siderolabs/talos/pkg/machinery/extensions/services"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
+
+// ExtensionSELinuxLabel exposes the opt-in extension process label for tests.
+func ExtensionSELinuxLabel(security extservices.Security) string {
+	return extensionSELinuxLabel(security)
+}
+
+// EnsureExtensionRootfsMountpoints exposes extension rootfs preparation for tests.
+func EnsureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
+	return ensureExtensionRootfsMountpoints(rootfsPath, mounts)
+}
+
+// CreateOverlayMountRequests exposes createOverlayMountRequests for tests.
+func CreateOverlayMountRequests(ctx context.Context, st state.State) error {
+	return createOverlayMountRequests(ctx, st)
+}
 
 // GetOCIOptions gets all OCI options from an Extension.
 func (svc *Extension) GetOCIOptions() ([]oci.SpecOpts, error) {
@@ -26,13 +47,21 @@ func PromotionEndpoints(selfEndpoints, votingMemberEndpoints, discoveredEndpoint
 	return promotionEndpoints(xslices.ToSetFunc(selfEndpoints, normalizeEtcdEndpoint), votingMemberEndpoints, discoveredEndpoints)
 }
 
-// EnsureExtensionRootfsMountpoints exposes the extension rootfs preparation
-// contract to external tests.
-func EnsureExtensionRootfsMountpoints(rootfsPath string, mounts []specs.Mount) error {
-	return ensureExtensionRootfsMountpoints(rootfsPath, mounts)
+// HostProcessArgs exposes hostProcessArgs for tests.
+func (svc *Extension) HostProcessArgs() (runner.Args, error) {
+	return svc.hostProcessArgs(nil)
 }
 
-// ExtensionSELinuxLabel exposes the extension security-to-domain mapping to external tests.
-func ExtensionSELinuxLabel(security extservices.Security) string {
-	return extensionSELinuxLabel(security)
+// SetPreShutdownRunnerFactory replaces the pre-shutdown process runner factory for tests.
+func (svc *Extension) SetPreShutdownRunnerFactory(factory func(bool, *runner.Args, ...runner.Option) runner.Runner) {
+	svc.preShutdownRunnerFn = factory
+}
+
+// ApplyExtensionServiceConfig exposes applyExtensionServiceConfig for tests.
+func (svc *Extension) ApplyExtensionServiceConfig(
+	spec *runtimeres.ExtensionServiceConfigSpec,
+	mounts []specs.Mount,
+	envVars []string,
+) ([]specs.Mount, []string, error) {
+	return svc.applyExtensionServiceConfig(spec, mounts, envVars)
 }

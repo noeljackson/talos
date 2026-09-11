@@ -1,0 +1,17 @@
+---
+machine:
+  kernel:
+    modules:
+      - name: dm_multipath
+      - name: dm_round-robin
+---
+apiVersion: v1alpha1
+kind: EtcFileConfig
+name: multipath.conf
+mode: 0o644
+contents: |
+    defaults {
+        user_friendly_names yes
+        find_multipaths no
+        path_selector "round-robin 0"
+    }

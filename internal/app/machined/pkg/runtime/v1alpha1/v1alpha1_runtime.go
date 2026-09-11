@@ -6,25 +6,22 @@ package v1alpha1
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"reflect"
 	"sync"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/cosi-project/runtime/pkg/state"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
-	"github.com/siderolabs/talos/internal/app/machined/pkg/system"
-	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services"
 	"github.com/siderolabs/talos/pkg/machinery/config"
-	"github.com/siderolabs/talos/pkg/machinery/config/configdiff"
-	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	machineconfig "github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/hardware"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
+	"github.com/siderolabs/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // Runtime implements the Runtime interface.
@@ -32,6 +29,9 @@ type Runtime struct {
 	s runtime.State
 	e runtime.EventStream
 	l runtime.LoggingManager
+
+	sandboxMu sync.RWMutex
+	sandbox   runtime.SandboxLauncher
 
 	rollbackTimerMu sync.Mutex
 	rollbackTimer   *time.Timer
@@ -126,96 +126,6 @@ func (r *Runtime) SetPersistedConfig(cfg config.Provider) error {
 	return r.s.V1Alpha2().SetConfig(context.TODO(), machineconfig.PersistentID, cfg)
 }
 
-// CanApplyImmediate implements the Runtime interface.
-func (r *Runtime) CanApplyImmediate(cfg config.Provider) error {
-	cfgProv := r.configProvider()
-	if cfgProv == nil {
-		return errors.New("no current config")
-	}
-
-	currentConfig := cfgProv.RawV1Alpha1()
-	if currentConfig == nil {
-		return errors.New("current config is not v1alpha1")
-	}
-
-	newConfig := cfg.RawV1Alpha1()
-	if newConfig == nil {
-		return errors.New("new config is not v1alpha1")
-	}
-
-	// copy the config as we're going to modify it
-	newConfig = newConfig.DeepCopy()
-
-	// the config changes allowed to be applied immediately are:
-	// * .debug
-	// * .cluster
-	// * .machine.ca
-	// * .machine.acceptedCAs
-	// * .machine.time
-	// * .machine.certCANs
-	// * .machine.install
-	// * .machine.network
-	// * .machine.sysfs
-	// * .machine.sysctls
-	// * .machine.logging
-	// * .machine.controlplane
-	// * .machine.kubelet
-	// * .machine.kernel
-	// * .machine.registries (note that auth is not applied immediately, containerd limitation)
-	// * .machine.pods
-	// * .machine.seccompProfiles
-	// * .machine.nodeAnnotations
-	// * .machine.nodeLabels
-	// * .machine.nodeTaints
-	// * .machine.features.kubernetesTalosAPIAccess
-	// * .machine.features.kubePrism
-	// * .machine.features.hostDNS
-	// * .machine.features.imageCache
-	// * .machine.features.nodeAddressSortAlgorithm
-	newConfig.ConfigDebug = currentConfig.ConfigDebug
-	newConfig.ClusterConfig = currentConfig.ClusterConfig
-
-	if newConfig.MachineConfig != nil && currentConfig.MachineConfig != nil {
-		newConfig.MachineConfig.MachineCA = currentConfig.MachineConfig.MachineCA
-		newConfig.MachineConfig.MachineAcceptedCAs = currentConfig.MachineConfig.MachineAcceptedCAs
-		newConfig.MachineConfig.MachineTime = currentConfig.MachineConfig.MachineTime //nolint:staticcheck
-		newConfig.MachineConfig.MachineCertSANs = currentConfig.MachineConfig.MachineCertSANs
-		newConfig.MachineConfig.MachineInstall = currentConfig.MachineConfig.MachineInstall
-		newConfig.MachineConfig.MachineNetwork = currentConfig.MachineConfig.MachineNetwork //nolint:staticcheck
-		newConfig.MachineConfig.MachineSysfs = currentConfig.MachineConfig.MachineSysfs
-		newConfig.MachineConfig.MachineSysctls = currentConfig.MachineConfig.MachineSysctls
-		newConfig.MachineConfig.MachineLogging = currentConfig.MachineConfig.MachineLogging
-		newConfig.MachineConfig.MachineControlPlane = currentConfig.MachineConfig.MachineControlPlane
-		newConfig.MachineConfig.MachineKubelet = currentConfig.MachineConfig.MachineKubelet
-		newConfig.MachineConfig.MachineKernel = currentConfig.MachineConfig.MachineKernel
-		newConfig.MachineConfig.MachineRegistries = currentConfig.MachineConfig.MachineRegistries //nolint:staticcheck // backwards compatibility
-		newConfig.MachineConfig.MachinePods = currentConfig.MachineConfig.MachinePods
-		newConfig.MachineConfig.MachineSeccompProfiles = currentConfig.MachineConfig.MachineSeccompProfiles
-		newConfig.MachineConfig.MachineNodeAnnotations = currentConfig.MachineConfig.MachineNodeAnnotations
-		newConfig.MachineConfig.MachineNodeLabels = currentConfig.MachineConfig.MachineNodeLabels
-		newConfig.MachineConfig.MachineNodeTaints = currentConfig.MachineConfig.MachineNodeTaints
-
-		if newConfig.MachineConfig.MachineFeatures != nil && currentConfig.MachineConfig.MachineFeatures != nil {
-			newConfig.MachineConfig.MachineFeatures.KubernetesTalosAPIAccessConfig = currentConfig.MachineConfig.MachineFeatures.KubernetesTalosAPIAccessConfig
-			newConfig.MachineConfig.MachineFeatures.KubePrismSupport = currentConfig.MachineConfig.MachineFeatures.KubePrismSupport
-			newConfig.MachineConfig.MachineFeatures.HostDNSSupport = currentConfig.MachineConfig.MachineFeatures.HostDNSSupport
-			newConfig.MachineConfig.MachineFeatures.ImageCacheSupport = currentConfig.MachineConfig.MachineFeatures.ImageCacheSupport
-			newConfig.MachineConfig.MachineFeatures.FeatureNodeAddressSortAlgorithm = currentConfig.MachineConfig.MachineFeatures.FeatureNodeAddressSortAlgorithm
-		}
-	}
-
-	if !reflect.DeepEqual(currentConfig, newConfig) {
-		diff, err := configdiff.DiffConfigs(container.NewV1Alpha1(currentConfig), container.NewV1Alpha1(newConfig))
-		if err != nil {
-			return fmt.Errorf("error calculating diff: %w", err)
-		}
-
-		return fmt.Errorf("this config change can't be applied in immediate mode\ndiff:\n%s", diff)
-	}
-
-	return nil
-}
-
 // State implements the Runtime interface.
 func (r *Runtime) State() runtime.State {
 	return r.s
@@ -245,13 +155,49 @@ func (r *Runtime) NodeName() (string, error) {
 	return nodenameResource.TypedSpec().Nodename, nil
 }
 
-// IsBootstrapAllowed checks for CRI to be up, checked in the bootstrap method.
+// IsBootstrapAllowed checks whether bootstrap is allowed.
+//
+// CRI must be running and healthy, an in-progress unattended install must not be in a pre-reboot phase,
+// and no reboot should be pending: the bootstrap state is in-memory, so a bootstrap performed right
+// before a reboot would be silently lost.
 func (r *Runtime) IsBootstrapAllowed() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	svc := &services.CRI{}
-	if err := system.WaitForService(system.StateEventUp, svc.ID(r)).Wait(ctx); err != nil {
+	svc, err := safe.StateWatchFor[*v1alpha1.Service](
+		ctx,
+		r.s.V1Alpha2().Resources(),
+		v1alpha1.NewService("cri").Metadata(),
+		state.WithEventTypes(state.Created, state.Updated),
+	)
+	if err != nil {
+		return false
+	}
+
+	if !svc.TypedSpec().Running || !svc.TypedSpec().Healthy {
+		return false
+	}
+
+	status, err := safe.ReaderGetByID[*runtimeres.UnattendedInstallStatus](
+		ctx,
+		r.s.V1Alpha2().Resources(),
+		runtimeres.UnattendedInstallStatusID,
+	)
+	if err != nil && !state.IsNotFoundError(err) {
+		return false
+	}
+
+	if status != nil && status.TypedSpec().Phase != runtimeres.UnattendedInstallPhaseInstalled {
+		return false
+	}
+
+	// the RebootRequest resource is only created once a reboot was requested, and it is never destroyed,
+	// so anything but "not found" (including a failed lookup) means bootstrap should not proceed.
+	if _, err = safe.ReaderGetByID[*runtimeres.RebootRequest](
+		ctx,
+		r.s.V1Alpha2().Resources(),
+		runtimeres.RebootRequestID,
+	); !state.IsNotFoundError(err) {
 		return false
 	}
 
@@ -261,4 +207,23 @@ func (r *Runtime) IsBootstrapAllowed() bool {
 // GetSystemInformation returns system information resource if it exists.
 func (r *Runtime) GetSystemInformation(ctx context.Context) (*hardware.SystemInformation, error) {
 	return safe.StateGet[*hardware.SystemInformation](ctx, r.State().V1Alpha2().Resources(), hardware.NewSystemInformation(hardware.SystemInformationID).Metadata())
+}
+
+// Sandbox implements the Runtime interface.
+func (r *Runtime) Sandbox() runtime.SandboxLauncher {
+	r.sandboxMu.RLock()
+	defer r.sandboxMu.RUnlock()
+
+	return r.sandbox
+}
+
+// SetSandbox publishes (or clears, with a nil launcher) the sandbox namespace
+// client. The sandboxd runner calls it every time the namespace is created and
+// again when it is torn down, so it may be invoked repeatedly as the namespace
+// is recreated on restart.
+func (r *Runtime) SetSandbox(launcher runtime.SandboxLauncher) {
+	r.sandboxMu.Lock()
+	defer r.sandboxMu.Unlock()
+
+	r.sandbox = launcher
 }

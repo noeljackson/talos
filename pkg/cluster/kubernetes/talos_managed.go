@@ -23,19 +23,22 @@ import (
 	ssacli "github.com/siderolabs/go-kubernetes/kubernetes/ssa/cli"
 	"github.com/siderolabs/go-kubernetes/kubernetes/upgrade"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/siderolabs/talos/pkg/cluster"
+	"github.com/siderolabs/talos/pkg/kubernetes"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/stdpatches"
 	machinetype "github.com/siderolabs/talos/pkg/machinery/config/machine"
-	v1alpha1config "github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 )
@@ -162,7 +165,7 @@ func Upgrade(ctx context.Context, cluster UpgradeProvider, options UpgradeOption
 
 	useSSA := minTalosVersion.SupportsSSAManifestSync()
 
-	return PerformManifestsSync(ctx, cluster, useSSA, options)
+	return PerformManifestsSync(client.WithNode(ctx, options.controlPlaneNodes[0]), cluster, useSSA, options)
 }
 
 func prePullImages(ctx context.Context, talosClient *client.Client, options UpgradeOptions) error {
@@ -241,25 +244,17 @@ func upgradeKubeProxy(ctx context.Context, cluster UpgradeProvider, options Upgr
 	return nil
 }
 
-func patchKubeProxy(options UpgradeOptions) func(config *v1alpha1config.Config) error {
-	return func(config *v1alpha1config.Config) error {
+func patchKubeProxy(
+	options UpgradeOptions,
+) func(config.Container) (configpatcher.Patch, error) {
+	return func(cfg config.Container) (configpatcher.Patch, error) {
 		if options.DryRun {
 			options.Log(" > skipped in dry-run")
 
-			return nil
+			return nil, nil
 		}
 
-		if config.ClusterConfig == nil {
-			config.ClusterConfig = &v1alpha1config.ClusterConfig{}
-		}
-
-		if config.ClusterConfig.ProxyConfig == nil {
-			config.ClusterConfig.ProxyConfig = &v1alpha1config.ProxyConfig{}
-		}
-
-		config.ClusterConfig.ProxyConfig.ContainerImage = fmt.Sprintf("%s:v%s", options.ProxyImage, options.Path.ToVersion())
-
-		return nil
+		return stdpatches.PreparePatch(stdpatches.WithKubeProxyImage(stdpatches.GuessVersionContractKubeProxy(cfg), fmt.Sprintf("%s:v%s", options.ProxyImage, options.Path.ToVersion())))
 	}
 }
 
@@ -355,10 +350,10 @@ func upgradeStaticPodOnNode(ctx context.Context, cluster UpgradeProvider, option
 
 var errUpdateSkipped = errors.New("update skipped")
 
-func staticPodImage(logUpdate func(oldImage string), imageName, containerImage, configImage string, options UpgradeOptions) (string, error) {
+func staticPodImage(logUpdate func(oldImage string), imageName, containerImage string, options UpgradeOptions) (string, error) {
 	image := fmt.Sprintf("%s:v%s", imageName, options.Path.ToVersion())
 
-	if containerImage == image || configImage == image {
+	if containerImage == image {
 		return "", errUpdateSkipped
 	}
 
@@ -372,12 +367,10 @@ func staticPodImage(logUpdate func(oldImage string), imageName, containerImage, 
 }
 
 //nolint:gocyclo
-func upgradeStaticPodPatcher(options UpgradeOptions, service string, configResource resource.Resource) func(config *v1alpha1config.Config) error {
-	return func(config *v1alpha1config.Config) error {
-		if config.ClusterConfig == nil {
-			config.ClusterConfig = &v1alpha1config.ClusterConfig{}
-		}
-
+func upgradeStaticPodPatcher(
+	options UpgradeOptions, service string, configResource resource.Resource,
+) func(config.Container) (configpatcher.Patch, error) {
+	return func(cfg config.Container) (configpatcher.Patch, error) {
 		var configImage string
 
 		switch r := configResource.(type) {
@@ -388,18 +381,19 @@ func upgradeStaticPodPatcher(options UpgradeOptions, service string, configResou
 		case *k8s.SchedulerConfig:
 			configImage = r.TypedSpec().Image
 		default:
-			return fmt.Errorf("unsupported service config %T", configResource)
+			return nil, fmt.Errorf("unsupported service config %T", configResource)
 		}
 
 		logUpdate := func(oldImage string) {
-			oldImage, _, _ = strings.Cut(oldImage, "@") // ignore digest if present
-			_, version, _ := strings.Cut(oldImage, ":")
+			oldVersion, _ := kubernetes.VersionFromImageRef(oldImage)
 
-			if version == "" {
-				version = options.Path.FromVersion()
+			if oldVersion == "" {
+				oldVersion = options.Path.FromVersion()
 			}
 
-			options.Log(" > update %s: %s -> %s", service, version, options.Path.ToVersion())
+			oldVersion = strings.TrimLeft(oldVersion, "v")
+
+			options.Log(" > update %s: %s -> %s", service, oldVersion, options.Path.ToVersion())
 
 			if options.DryRun {
 				options.Log(" > skipped in dry-run")
@@ -408,59 +402,44 @@ func upgradeStaticPodPatcher(options UpgradeOptions, service string, configResou
 
 		switch service {
 		case kubeAPIServer:
-			if config.ClusterConfig.APIServerConfig == nil {
-				config.ClusterConfig.APIServerConfig = &v1alpha1config.APIServerConfig{}
-			}
-
 			image, err := staticPodImage(logUpdate,
 				options.APIServerImage,
-				config.ClusterConfig.APIServerConfig.ContainerImage,
 				configImage,
 				options)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			config.ClusterConfig.APIServerConfig.ContainerImage = image
+			return stdpatches.PreparePatch(stdpatches.WithKubeAPIServerImage(stdpatches.GuessVersionContractKubeAPIServer(cfg), image))
 		case kubeControllerManager:
-			if config.ClusterConfig.ControllerManagerConfig == nil {
-				config.ClusterConfig.ControllerManagerConfig = &v1alpha1config.ControllerManagerConfig{}
-			}
-
 			image, err := staticPodImage(logUpdate,
 				options.ControllerManagerImage,
-				config.ClusterConfig.ControllerManagerConfig.ContainerImage,
 				configImage,
 				options)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			config.ClusterConfig.ControllerManagerConfig.ContainerImage = image
+			return stdpatches.PreparePatch(stdpatches.WithKubeControllerManagerImage(stdpatches.GuessVersionContractKubeControllerManager(cfg), image))
 		case kubeScheduler:
-			if config.ClusterConfig.SchedulerConfig == nil {
-				config.ClusterConfig.SchedulerConfig = &v1alpha1config.SchedulerConfig{}
-			}
-
 			image, err := staticPodImage(logUpdate,
 				options.SchedulerImage,
-				config.ClusterConfig.SchedulerConfig.ContainerImage,
 				configImage,
 				options)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			config.ClusterConfig.SchedulerConfig.ContainerImage = image
+			return stdpatches.PreparePatch(stdpatches.WithKubeSchedulerImage(stdpatches.GuessVersionContractKubeScheduler(cfg), image))
 		default:
-			return fmt.Errorf("unsupported service %q", service)
+			return nil, fmt.Errorf("unsupported service %q", service)
 		}
-
-		return nil
 	}
 }
 
 // PerformManifestsSync performs manifests sync from Talos manifest list to Kubernetes.
+//
+// The context passed should be tied to a single Talos controlplane node.
 func PerformManifestsSync(
 	ctx context.Context,
 	cluster UpgradeProvider,
@@ -487,11 +466,6 @@ func getManifests(ctx context.Context, cluster UpgradeProvider) ([]*unstructured
 	}
 
 	defer cluster.Close() //nolint:errcheck
-
-	md, _ := metadata.FromOutgoingContext(ctx)
-	if nodes := md["nodes"]; len(nodes) > 0 {
-		ctx = client.WithNode(ctx, nodes[0])
-	}
 
 	return manifests.GetBootstrapManifests(ctx, talosclient.COSI, nil)
 }
@@ -521,7 +495,8 @@ func syncManifestsSSA(ctx context.Context, objects []*unstructured.Unstructured,
 
 	options.Log("%s", updatingManifestsLogline)
 
-	manager, err := ssa.NewManager(ctx, config,
+	manager, err := ssa.NewManager(
+		ctx, config,
 		constants.KubernetesFieldManagerName,
 		constants.KubernetesInventoryNamespace,
 		constants.KubernetesBootstrapManifestsInventoryName,
@@ -558,6 +533,13 @@ func syncManifestsSSA(ctx context.Context, objects []*unstructured.Unstructured,
 		WaitTimeout:     options.ReconcileTimeout,
 		NoPrune:         options.NoPrune,
 		Force:           options.ForceManifests,
+		CustomStageKinds: map[schema.GroupKind]struct{}{
+			// perform sync for configmaps/secrets before e.g. deployments/daemonsets,
+			// as there is a common pattern of linking them via a label/annotation checksum,
+			// to ensure that the dependent resources are reconciled after the configmap/secret is updated.
+			schema.ParseGroupKind("ConfigMap"): {},
+			schema.ParseGroupKind("Secret"):    {},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("error applying manifests: %w", err)
@@ -600,7 +582,7 @@ func checkPodStatus(ctx context.Context, cluster UpgradeProvider, options Upgrad
 		}),
 	)
 
-	notifyCh := make(chan *v1.Pod)
+	notifyCh := make(chan *corev1.Pod)
 
 	informer := informerFactory.Core().V1().Pods().Informer()
 
@@ -611,9 +593,9 @@ func checkPodStatus(ctx context.Context, cluster UpgradeProvider, options Upgrad
 	}
 
 	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { channel.SendWithContext(ctx, notifyCh, obj.(*v1.Pod)) },
+		AddFunc:    func(obj any) { channel.SendWithContext(ctx, notifyCh, obj.(*corev1.Pod)) },
 		DeleteFunc: func(_ any) {},
-		UpdateFunc: func(_, obj any) { channel.SendWithContext(ctx, notifyCh, obj.(*v1.Pod)) },
+		UpdateFunc: func(_, obj any) { channel.SendWithContext(ctx, notifyCh, obj.(*corev1.Pod)) },
 	}); err != nil {
 		return fmt.Errorf("error adding watch event handler: %w", err)
 	}
@@ -643,11 +625,11 @@ func checkPodStatus(ctx context.Context, cluster UpgradeProvider, options Upgrad
 			ready := false
 
 			for _, condition := range pod.Status.Conditions {
-				if condition.Type != v1.PodReady {
+				if condition.Type != corev1.PodReady {
 					continue
 				}
 
-				if condition.Status == v1.ConditionTrue {
+				if condition.Status == corev1.ConditionTrue {
 					ready = true
 
 					break

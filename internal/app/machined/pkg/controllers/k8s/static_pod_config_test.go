@@ -15,6 +15,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/ctest"
 	k8sctrl "github.com/siderolabs/talos/internal/app/machined/pkg/controllers/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
@@ -30,7 +31,7 @@ func (suite *StaticPodConfigSuite) TestReconcile() {
 			&v1alpha1.Config{
 				ConfigVersion: "v1alpha1",
 				MachineConfig: &v1alpha1.MachineConfig{
-					MachinePods: []v1alpha1.Unstructured{
+					MachinePods: []meta.Unstructured{
 						{
 							Object: map[string]any{
 								"apiVersion": "v1",
@@ -52,7 +53,8 @@ func (suite *StaticPodConfigSuite) TestReconcile() {
 				},
 				ClusterConfig: &v1alpha1.ClusterConfig{},
 			},
-		))
+		),
+	)
 
 	suite.Create(cfg)
 
@@ -65,7 +67,7 @@ func (suite *StaticPodConfigSuite) TestReconcile() {
 
 	// update the pod changing the namespace
 	ctest.UpdateWithConflicts(suite, cfg, func(r *config.MachineConfig) error {
-		r.Container().RawV1Alpha1().MachineConfig.MachinePods[0].Object["metadata"].(map[string]any)["namespace"] = "custom"
+		r.Container().RawV1Alpha1().MachineConfig.MachinePods[0].Object["metadata"].(map[string]any)["namespace"] = "custom" //nolint:staticcheck // legacy config
 
 		return nil
 	})
@@ -80,7 +82,7 @@ func (suite *StaticPodConfigSuite) TestReconcile() {
 
 	// remove all pods
 	ctest.UpdateWithConflicts(suite, cfg, func(r *config.MachineConfig) error {
-		r.Container().RawV1Alpha1().MachineConfig.MachinePods = nil
+		r.Container().RawV1Alpha1().MachineConfig.MachinePods = nil //nolint:staticcheck // legacy config
 
 		return nil
 	})

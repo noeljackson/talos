@@ -44,8 +44,6 @@ func main() {
 	}
 }
 
-// TODO(DmitriyMV): get comments for fields
-
 //nolint:gocyclo
 func run(pkgPath, dst string) error {
 	loadedPkgs, err := loader.LoadPackages(pkgPath)
@@ -72,7 +70,7 @@ func run(pkgPath, dst string) error {
 	}
 
 	externalTypes := types.FindExternalTypes(pkgsTypes, taggedStructs)
-	for i := 0; i < externalTypes.Len(); i++ {
+	for i := range externalTypes.Len() {
 		externalType := externalTypes.Get(i)
 
 		if constants.HaveType(externalType.Pkg, externalType.Name) {
@@ -86,7 +84,7 @@ func run(pkgPath, dst string) error {
 
 	data := proto.PrepareProtoData(pkgsTypes, constants)
 
-	for i := 0; i < data.Len(); i++ {
+	for i := range data.Len() {
 		protoData := data.Get(i)
 
 		fmt.Println("--------")
@@ -107,7 +105,7 @@ func run(pkgPath, dst string) error {
 		}
 	}
 
-	for i := 0; i < data.Len(); i++ {
+	for i := range data.Len() {
 		protoData := data.Get(i)
 
 		dstDir, err := filepath.Abs(filepath.Join(dst, protoData.Name))

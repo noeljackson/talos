@@ -89,7 +89,8 @@ func (v *Vultr) ParseMetadata(metadata *metadata.MetaData) (*runtime.PlatformNet
 			ones, _ := net.IPMask(mask).Size()
 			ipAddr := netip.PrefixFrom(ip, ones)
 
-			networkConfig.Addresses = append(networkConfig.Addresses,
+			networkConfig.Addresses = append(
+				networkConfig.Addresses,
 				network.AddressSpecSpec{
 					ConfigLayer: network.ConfigPlatform,
 					LinkName:    iface,
@@ -157,8 +158,6 @@ func (v *Vultr) ParseMetadata(metadata *metadata.MetaData) (*runtime.PlatformNet
 }
 
 // Configuration implements the runtime.Platform interface.
-//
-//nolint:stylecheck
 func (v *Vultr) Configuration(ctx context.Context, r state.State) ([]byte, error) {
 	if err := netutils.Wait(ctx, r); err != nil {
 		return nil, err

@@ -1,0 +1,1 @@
+(allow sandboxd_t efivarfs_t (file (write)))

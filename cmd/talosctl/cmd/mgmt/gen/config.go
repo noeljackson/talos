@@ -73,6 +73,7 @@ var genConfigCmdFlags struct {
 	withDocs                bool
 	withClusterDiscovery    bool
 	withKubeSpan            bool
+	skipK8sEtcd             bool
 	withSecrets             string
 }
 
@@ -192,20 +193,25 @@ func writeConfig(args []string) error {
 		genOptions = append(genOptions, generate.WithRegistryMirror(left, right))
 	}
 
-	if genConfigCmdFlags.talosVersion != "" {
-		var versionContract *config.VersionContract
+	var versionContract *config.VersionContract
 
+	if genConfigCmdFlags.talosVersion != "" {
 		versionContract, err = config.ParseContractFromVersion(genConfigCmdFlags.talosVersion)
 		if err != nil {
 			return fmt.Errorf("invalid talos-version: %w", err)
 		}
-
-		genOptions = append(genOptions, generate.WithVersionContract(versionContract))
 	}
+
+	if genConfigCmdFlags.skipK8sEtcd {
+		versionContract = versionContract.DisableEtcd().DisableKubernetes()
+	}
+
+	genOptions = append(genOptions, generate.WithVersionContract(versionContract))
 
 	// Add KubeSpan configuration based on version
 	if genConfigCmdFlags.withKubeSpan {
-		genOptions = append(genOptions,
+		genOptions = append(
+			genOptions,
 			generate.WithKubeSpanEnabled(genConfigCmdFlags.withKubeSpan),
 		)
 	}
@@ -218,14 +224,15 @@ func writeConfig(args []string) error {
 			return fmt.Errorf("failed to load secrets bundle: %w", err)
 		}
 
-		if err = secretsBundle.Validate(); err != nil {
+		if err = secretsBundle.Validate(versionContract); err != nil {
 			return fmt.Errorf("failed to validate secrets bundle: %w", err)
 		}
 
 		genOptions = append(genOptions, generate.WithSecretsBundle(secretsBundle))
 	}
 
-	genOptions = append(genOptions,
+	genOptions = append(
+		genOptions,
 		generate.WithInstallDisk(genConfigCmdFlags.installDisk),
 		generate.WithInstallImage(genConfigCmdFlags.installImage),
 		generate.WithAdditionalSubjectAltNames(genConfigCmdFlags.additionalSANs),
@@ -249,7 +256,8 @@ func writeConfig(args []string) error {
 		genConfigCmdFlags.kubernetesVersion,
 		genConfigCmdFlags.configPatch,
 		genConfigCmdFlags.configPatchControlPlane,
-		genConfigCmdFlags.configPatchWorker)
+		genConfigCmdFlags.configPatchWorker,
+	)
 	if err != nil {
 		return err
 	}
@@ -428,7 +436,7 @@ func init() {
 	genConfigCmd := NewConfigCmd("config")
 
 	genConfigCmd.Flags().StringVar(&genConfigCmdFlags.installDisk, "install-disk", "/dev/sda", "the disk to install to")
-	genConfigCmd.Flags().StringVar(&genConfigCmdFlags.installImage, "install-image", helpers.DefaultImage(images.DefaultInstallerImageRepository), "the image used to perform an installation")
+	genConfigCmd.Flags().StringVar(&genConfigCmdFlags.installImage, "install-image", helpers.DefaultImage(images.InstallerImageRepository("metal")), "the image used to perform an installation")
 	genConfigCmd.Flags().StringSliceVar(&genConfigCmdFlags.additionalSANs, "additional-sans", []string{}, "additional Subject-Alt-Names for the APIServer certificate")
 	genConfigCmd.Flags().StringVar(&genConfigCmdFlags.dnsDomain, "dns-domain", "cluster.local", "the dns domain to use for cluster")
 	genConfigCmd.Flags().StringVar(&genConfigCmdFlags.configVersion, "version", "v1alpha1", "the desired machine config version to generate")
@@ -449,6 +457,9 @@ func init() {
 		`destination to output generated files. when multiple output types are specified, it must be a directory. for a single output type, it must either be a file path, or "-" for stdout`)
 	genConfigCmd.Flags().StringVar(&genConfigCmdFlags.outputDir, "output-dir", "", "destination to output generated files") // kept for backwards compatibility
 	genConfigCmd.Flags().MarkHidden("output-dir")                                                                           //nolint:errcheck
+
+	genConfigCmd.Flags().BoolVar(&genConfigCmdFlags.skipK8sEtcd, "skip-k8s-etcd", false, "skip generating etcd & Kubernetes configuration (experimental)")
+	genConfigCmd.Flags().MarkHidden("skip-k8s-etcd") //nolint:errcheck
 
 	Cmd.AddCommand(genConfigCmd)
 }

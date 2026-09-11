@@ -66,18 +66,18 @@ func (suite *ExtensionsSuiteNVIDIA) TearDownTest() {
 //
 //nolint:gocyclo,cyclop,dupl
 func (suite *ExtensionsSuiteNVIDIA) TestExtensionsNVIDIA() {
-	expectedModulesModDep := map[string]string{
-		"nvidia":         "nvidia.ko",
-		"nvidia_uvm":     "nvidia-uvm.ko",
-		"nvidia_drm":     "nvidia-drm.ko",
-		"nvidia_modeset": "nvidia-modeset.ko",
+	expectedModules := []string{
+		"nvidia",
+		"nvidia_uvm",
+		"nvidia_drm",
+		"nvidia_modeset",
 	}
 
 	// if we're testing NVIDIA stuff we need to get the nodes having NVIDIA GPUs
 	// we query k8s to get the nodes having the label node.kubernetes.io/instance-type.
 	// this label is set by the cloud provider and it's value is the instance type.
 	for _, nvidiaNode := range suite.getNVIDIANodes("node.kubernetes.io/instance-type in (g4dn.xlarge, p4d.24xlarge, g5g.xlarge)") {
-		suite.AssertExpectedModules(suite.ctx, nvidiaNode, expectedModulesModDep)
+		suite.AssertExpectedModules(suite.ctx, nvidiaNode, expectedModules)
 	}
 
 	nodes := suite.getNVIDIANodes("node.kubernetes.io/instance-type in (g4dn.xlarge, p4d.24xlarge, g5g.xlarge)")
@@ -343,14 +343,25 @@ func (suite *ExtensionsSuiteNVIDIA) getPodLogs(namespace, name string) string { 
 }
 
 func (suite *ExtensionsSuiteNVIDIA) getNVIDIANodes(labelQuery string) []string {
-	nodes, err := suite.Clientset.CoreV1().Nodes().List(suite.ctx, metav1.ListOptions{
-		LabelSelector: labelQuery,
+	var nodes *corev1.NodeList
+
+	err := retry.Constant(2*time.Minute, retry.WithUnits(5*time.Second)).RetryWithContext(suite.ctx, func(ctx context.Context) error {
+		var err error
+
+		nodes, err = suite.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+			LabelSelector: labelQuery,
+		})
+		if err != nil {
+			return retry.ExpectedError(err)
+		}
+
+		if len(nodes.Items) == 0 {
+			return retry.ExpectedErrorf("no nodes with NVIDIA GPUs matching label selector %q found", labelQuery)
+		}
+
+		return nil
 	})
 	suite.Require().NoError(err)
-
-	// if we don't have any node with NVIDIA GPUs we fail the test
-	// since we explicitly asked for them
-	suite.Require().NotEmpty(nodes.Items, "no nodes with NVIDIA GPUs matching label selector '%s' found", labelQuery)
 
 	nodeList := make([]string, len(nodes.Items))
 

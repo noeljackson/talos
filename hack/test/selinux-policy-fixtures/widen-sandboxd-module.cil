@@ -1,0 +1,1 @@
+(allow sandboxd_t module_t (system (module_load)))

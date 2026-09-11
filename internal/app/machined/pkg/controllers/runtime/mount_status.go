@@ -77,12 +77,18 @@ func (ctrl *MountStatusController) Run(ctx context.Context, r controller.Runtime
 				return fmt.Errorf("failed to get volume status %q: %w", mountStatus.TypedSpec().Spec.VolumeID, err)
 			}
 
+			if volumeStatus == nil {
+				// volume status doesn't exist, so we can't create a mount status for it
+				continue
+			}
+
 			if volumeStatus.TypedSpec().Type != block.VolumeTypePartition && volumeStatus.TypedSpec().Type != block.VolumeTypeDisk {
 				// legacy volume statuses shouldn't show up for non-partition/disk volumes
 				continue
 			}
 
-			if err = safe.WriterModify(ctx, r, runtime.NewMountStatus(runtime.NamespaceName, volumeStatus.Metadata().ID()),
+			if err = safe.WriterModify(
+				ctx, r, runtime.NewMountStatus(runtime.NamespaceName, volumeStatus.Metadata().ID()),
 				func(res *runtime.MountStatus) error {
 					res.TypedSpec().Source = mountStatus.TypedSpec().Source
 					res.TypedSpec().Target = mountStatus.TypedSpec().Target

@@ -300,49 +300,103 @@ func (c *Config) KexecLoad(r runtime.Runtime, disk string) error {
 	return err
 }
 
-// GenerateAssets generates the sd-boot bootloader assets and returns the partition options with source directory set.
-func (c *Config) GenerateAssets(opts options.InstallOptions) ([]partition.Options, error) {
-	ukiFileName, err := generateNextUKIName(opts.Version, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.generateAssets(opts, ukiFileName); err != nil {
-		return nil, err
-	}
-
+// PrepareBootPartitions prepares the set of partitions to create for the bootloader.
+//
+// In image mode, this also pre-populates the assets to be written to the bootloader partitions
+// when formatting the filesystem.
+// In install mode, this only returns a list of partitions to create, and the assets are written to the partitions during Install.
+func (c *Config) PrepareBootPartitions(opts options.InstallOptions) ([]partition.Options, error) {
 	quirk := quirks.New(opts.Version)
+
+	formatOptions := []partition.FormatOption{
+		partition.WithLabel(constants.EFIPartitionLabel),
+	}
+
+	if opts.ImageMode {
+		formatOptions = append(formatOptions, partition.WithSourceDirectory(filepath.Join(opts.MountPrefix, "EFI")))
+	}
 
 	partitionOptions := []partition.Options{
 		partition.NewPartitionOptions(
 			true,
 			quirk,
-			partition.WithLabel(constants.EFIPartitionLabel),
-			partition.WithSourceDirectory(filepath.Join(opts.MountPrefix, "EFI")),
+			formatOptions...,
 		),
 	}
 
-	if opts.ImageMode {
-		partitionOptions = xslices.Map(partitionOptions, func(o partition.Options) partition.Options {
-			o.Reproducible = true
-
-			return o
-		})
+	if !opts.ImageMode {
+		// in non-image mode, the actual asset copying will happen in the Install step
+		return partitionOptions, nil
 	}
+
+	// in image mode, we populate the directory with the bootloader assets
+	ukiFileName, err := generateNextUKIName(opts.Version, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.copyAssets(opts, ukiFileName); err != nil {
+		return nil, err
+	}
+
+	// move the files out of constants.EFIMountPoint into the "EFI" directory to prevent it being pulled into the GRUB /boot partition in dual-boot mode
+	if err := os.Rename(filepath.Join(opts.MountPrefix, constants.EFIMountPoint), filepath.Join(opts.MountPrefix, "EFI")); err != nil {
+		return nil, fmt.Errorf("failed to move EFI directory: %w", err)
+	}
+
+	partitionOptions = xslices.Map(partitionOptions, func(o partition.Options) partition.Options {
+		o.Reproducible = true
+
+		return o
+	})
 
 	return partitionOptions, nil
 }
 
 // Install the bootloader.
-// here we don't need to mount anything since we just need to write the EFI variables
-// since the partitions are already pre-populated.
+//
+// This method only runs in non-image mode, so mount the EFI partition, copy the UKI and sd-boot.efi, and update the EFI variables.
 func (c *Config) Install(opts options.InstallOptions) (*options.InstallResult, error) {
 	ukiFileName, err := generateNextUKIName(opts.Version, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.setup(opts, ukiFileName)
+	var installResult *options.InstallResult
+
+	err = mount.PartitionOp(
+		opts.BootDisk,
+		[]mount.Spec{
+			{
+				PartitionLabel: constants.EFIPartitionLabel,
+				FilesystemType: partition.FilesystemTypeVFAT,
+				MountTarget:    filepath.Join(opts.MountPrefix, constants.EFIMountPoint),
+			},
+		},
+		func() error {
+			if err := c.copyAssets(opts, ukiFileName); err != nil {
+				return err
+			}
+
+			var err error
+
+			installResult, err = c.setup(opts, ukiFileName)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		},
+		[]blkid.ProbeOption{
+			// installation happens with locked blockdevice
+			blkid.WithSkipLocking(true),
+		},
+		nil,
+		nil,
+		opts.BlkidInfo,
+	)
+
+	return installResult, err
 }
 
 // Upgrade the bootloader.
@@ -375,7 +429,7 @@ func (c *Config) Upgrade(opts options.InstallOptions) (*options.InstallResult, e
 				return fmt.Errorf("failed to generate next UKI name: %w", err)
 			}
 
-			// The cleanup below might remove the UKI LoaderEntryDefault points to (when the entry which
+			// the cleanup below might remove the UKI LoaderEntryDefault points to (when the entry which
 			// boots next is not the one we are running from), so repoint the default to the booted entry
 			// first: if the upgrade is interrupted before setup() rewrites it, the next boot still lands
 			// on a UKI which exists.
@@ -404,7 +458,7 @@ func (c *Config) Upgrade(opts options.InstallOptions) (*options.InstallResult, e
 				}
 			}
 
-			if err := c.generateAssets(opts, ukiPath); err != nil {
+			if err := c.copyAssets(opts, ukiPath); err != nil {
 				return err
 			}
 
@@ -478,12 +532,34 @@ func (c *Config) setup(opts options.InstallOptions, ukiFileName string) (*option
 	}, nil
 }
 
-func (c *Config) generateAssets(opts options.InstallOptions, ukiFileName string) error {
-	if err := os.MkdirAll(filepath.Join(opts.MountPrefix, constants.EFIMountPoint, "loader"), 0o755); err != nil {
+func (c *Config) copyAssets(opts options.InstallOptions, ukiFileName string) error {
+	loaderDir := filepath.Join(opts.MountPrefix, constants.EFIMountPoint, "loader")
+
+	if err := os.MkdirAll(loaderDir, 0o755); err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(filepath.Join(opts.MountPrefix, constants.EFIMountPoint, "loader", "loader.conf"), LoaderConfBytes, 0o644); err != nil {
+	loaderConf := LoaderConfBytes
+
+	if opts.SecureBootEnrollKeys != "" {
+		loaderConf = slices.Concat(loaderConf, []byte("\nsecure-boot-enroll "+opts.SecureBootEnrollKeys+"\n"))
+
+		keysDir := filepath.Join(loaderDir, "keys", "auto")
+		if err := os.MkdirAll(keysDir, 0o755); err != nil {
+			return err
+		}
+
+		if err := utils.CopyFiles(
+			opts.Printf,
+			utils.SourceDestination(opts.PlatformKeyPath, filepath.Join(keysDir, constants.PlatformKeyAsset)),
+			utils.SourceDestination(opts.KeyExchangeKeyPath, filepath.Join(keysDir, constants.KeyExchangeKeyAsset)),
+			utils.SourceDestination(opts.SignatureKeyPath, filepath.Join(keysDir, constants.SignatureKeyAsset)),
+		); err != nil {
+			return err
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(loaderDir, "loader.conf"), loaderConf, 0o644); err != nil {
 		return err
 	}
 
@@ -580,7 +656,7 @@ func (c *Config) revert() error {
 	}
 
 	for _, file := range files {
-		// Skip the entry which boots next, as the whole point of the revert is to boot something else.
+		// skip the entry which boots next, as the whole point of the revert is to boot something else
 		if strings.EqualFold(filepath.Base(file), c.NextBootEntry) {
 			continue
 		}

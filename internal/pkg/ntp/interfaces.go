@@ -25,3 +25,16 @@ type SetTimeFunc func(tv *syscall.Timeval) error
 
 // AdjustTimeFunc provides a function to adjust time.
 type AdjustTimeFunc func(buf *unix.Timex) (state timex.State, err error)
+
+// NTSSession abstracts the beevik/nts Session for testability.
+type NTSSession interface {
+	Query() (*ntp.Response, error)
+}
+
+// NTSNewSessionFunc creates an NTS session for a given server address.
+// Defaults to nts.NewSession wrapper; injectable for testing.
+//
+// When skipCertTimeCheck is true, the implementation should validate the TLS
+// certificate chain and hostname but ignore the certificate validity period.
+// This is used to bootstrap NTS before the system clock has been set.
+type NTSNewSessionFunc func(address string, skipCertTimeCheck bool) (NTSSession, error)

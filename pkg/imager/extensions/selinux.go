@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	pathrs "github.com/cyphar/filepath-securejoin/pathrs-lite"
+	"github.com/cyphar/filepath-securejoin/pathrs-lite/procfs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.yaml.in/yaml/v4"
 
@@ -104,8 +105,13 @@ func prepareExtensionServiceRootfsMountpoints(ext *extensions.Extension, extensi
 			return fmt.Errorf("invalid extension-service config %q: %w", configFilePath, err)
 		}
 
+		if spec.RunnerMode == extservices.RunnerModeHost {
+			// Host runners have no private rootfs or container mounts. Their
+			// executables retain the canonical host file-context policy.
+			continue
+		}
+
 		serviceRootfsPath := filepath.Join(
-			ext.RootfsPath(),
 			strings.TrimPrefix(constants.ExtensionServiceRootfsPath, "/"),
 			spec.Name,
 		)
@@ -117,7 +123,7 @@ func prepareExtensionServiceRootfsMountpoints(ext *extensions.Extension, extensi
 				continue
 			}
 
-			directory, err := extensionServiceMountSourceIsDirectory(mount.Source, extensionList)
+			directory, found, err := extensionServiceMountSourceIsDirectory(mount.Source, extensionList)
 			if err != nil {
 				return fmt.Errorf("error inspecting source for mount destination %q in extension-service config %q: %w", mount.Destination, configFilePath, err)
 			}
@@ -125,10 +131,11 @@ func prepareExtensionServiceRootfsMountpoints(ext *extensions.Extension, extensi
 			mountpoints = append(mountpoints, extensions.ServiceRootfsMountpoint{
 				Destination: mount.Destination,
 				Directory:   directory,
+				TypeUnknown: !found,
 			})
 		}
 
-		if err = extensions.EnsureServiceRootfsMountpoints(serviceRootfsPath, mountpoints); err != nil {
+		if err = extensions.EnsureServiceRootfsMountpointsInRoot(ext.RootfsPath(), serviceRootfsPath, mountpoints); err != nil {
 			return fmt.Errorf("invalid mountpoint in extension-service config %q: %w", configFilePath, err)
 		}
 	}
@@ -136,19 +143,16 @@ func prepareExtensionServiceRootfsMountpoints(ext *extensions.Extension, extensi
 	return nil
 }
 
-func extensionServiceMountSourceIsDirectory(source string, extensionList []*extensions.Extension) (bool, error) {
+func extensionServiceMountSourceIsDirectory(source string, extensionList []*extensions.Extension) (directory, found bool, err error) {
 	cleaned := filepath.Clean(source)
 	if !filepath.IsAbs(cleaned) {
-		return false, fmt.Errorf("mount source %q is not absolute", source)
+		return false, false, fmt.Errorf("mount source %q is not absolute", source)
 	}
-
-	found := false
-	directory := true
 
 	for _, candidateExtension := range extensionList {
 		rootfs, err := os.Open(candidateExtension.RootfsPath())
 		if err != nil {
-			return false, fmt.Errorf("error opening extension rootfs: %w", err)
+			return false, false, fmt.Errorf("error opening extension rootfs: %w", err)
 		}
 
 		handle, err := pathrs.OpenatInRoot(rootfs, strings.TrimPrefix(cleaned, "/"))
@@ -159,7 +163,7 @@ func extensionServiceMountSourceIsDirectory(source string, extensionList []*exte
 			info, statErr := handle.Stat()
 			_ = handle.Close()
 			if statErr != nil {
-				return false, fmt.Errorf("error inspecting extension mount source %q: %w", source, statErr)
+				return false, false, fmt.Errorf("error inspecting extension mount source %q: %w", source, statErr)
 			}
 
 			found = true
@@ -167,18 +171,13 @@ func extensionServiceMountSourceIsDirectory(source string, extensionList []*exte
 		case errors.Is(err, fs.ErrNotExist):
 			continue
 		default:
-			return false, fmt.Errorf("error inspecting extension mount source %q: %w", source, err)
+			return false, false, fmt.Errorf("error inspecting extension mount source %q: %w", source, err)
 		}
 	}
 
-	if !found {
-		// Extension-service runtime creates absent bind-mount sources as
-		// directories, so final image composition gives the destination the
-		// same shape before assigning its canonical SELinux label.
-		return true, nil
-	}
-
-	return directory, nil
+	// Base-image and runtime-created sources are unavailable at this stage.
+	// Their actual shape is resolved by machined before starting the service.
+	return directory, found, nil
 }
 
 func (builder *Builder) applyExtensionServiceEntrypointSELinuxLabels(ext *extensions.Extension, extensionList []*extensions.Extension) error {
@@ -207,61 +206,31 @@ func (builder *Builder) applyExtensionServiceEntrypointSELinuxLabels(ext *extens
 			return fmt.Errorf("invalid extension-service config %q: %w", configFilePath, err)
 		}
 
+		if spec.RunnerMode == extservices.RunnerModeHost {
+			// Do not override specialized host entrypoint labels (including
+			// pre-shutdown hooks) with the container entrypoint label.
+			continue
+		}
+
 		serviceRootfsPath := filepath.Join(
 			ext.RootfsPath(),
 			strings.TrimPrefix(constants.ExtensionServiceRootfsPath, "/"),
 			spec.Name,
 		)
 
-		entrypointPath, err := extensionServiceEntrypointPath(serviceRootfsPath, spec.Container.Entrypoint)
+		entrypoints, err := extensionServiceFiles(spec, spec.Container.Entrypoint, serviceRootfsPath, extensionList)
 		if err != nil {
 			return fmt.Errorf("invalid entrypoint in extension-service config %q: %w", configFilePath, err)
 		}
 
-		info, err := os.Lstat(entrypointPath)
-		switch {
-		case err == nil:
-			if err = labelExtensionServiceEntrypoint(builder.XAttrsMap, entrypointPath, info); err != nil {
+		if len(entrypoints) == 0 {
+			return fmt.Errorf("entrypoint from extension-service config %q is absent from the service rootfs and mounted extension sources", configFilePath)
+		}
+
+		for _, entrypoint := range entrypoints {
+			if err = labelExtensionServiceEntrypoint(builder.XAttrsMap, entrypoint.path, entrypoint.info); err != nil {
 				return fmt.Errorf("invalid entrypoint in extension-service config %q: %w", configFilePath, err)
 			}
-
-			if err = labelExtensionServiceExecutableArguments(builder.XAttrsMap, spec, serviceRootfsPath, extensionList); err != nil {
-				return fmt.Errorf("invalid executable argument in extension-service config %q: %w", configFilePath, err)
-			}
-
-			continue
-		case !errors.Is(err, fs.ErrNotExist):
-			return fmt.Errorf("error inspecting entrypoint from extension-service config %q: %w", configFilePath, err)
-		}
-
-		mountedSource, ok, err := extensionServiceMountedEntrypointSource(spec)
-		if err != nil {
-			return fmt.Errorf("invalid mounted entrypoint in extension-service config %q: %w", configFilePath, err)
-		}
-		if !ok {
-			return fmt.Errorf("entrypoint from extension-service config %q is absent from the service rootfs and is not supplied by a bind mount", configFilePath)
-		}
-
-		labeled := false
-
-		for _, candidateExtension := range extensionList {
-			candidatePath := filepath.Join(candidateExtension.RootfsPath(), strings.TrimPrefix(mountedSource, "/"))
-
-			candidateInfo, candidateErr := os.Lstat(candidatePath)
-			switch {
-			case candidateErr == nil:
-				if candidateErr = labelExtensionServiceEntrypoint(builder.XAttrsMap, candidatePath, candidateInfo); candidateErr != nil {
-					return fmt.Errorf("invalid mounted entrypoint in extension-service config %q: %w", configFilePath, candidateErr)
-				}
-
-				labeled = true
-			case !errors.Is(candidateErr, fs.ErrNotExist):
-				return fmt.Errorf("error inspecting mounted entrypoint from extension-service config %q: %w", configFilePath, candidateErr)
-			}
-		}
-
-		if !labeled {
-			return fmt.Errorf("entrypoint from extension-service config %q is absent from the service rootfs and mounted extension sources", configFilePath)
 		}
 
 		if err = labelExtensionServiceExecutableArguments(builder.XAttrsMap, spec, serviceRootfsPath, extensionList); err != nil {
@@ -283,43 +252,14 @@ func labelExtensionServiceExecutableArguments(
 			continue
 		}
 
-		containerPath, err := extensionServiceContainerPath(argument)
+		files, err := extensionServiceFiles(spec, argument, serviceRootfsPath, extensionList)
 		if err != nil {
 			return err
 		}
 
-		argumentPath := filepath.Join(serviceRootfsPath, strings.TrimPrefix(containerPath, "/"))
-		info, err := os.Lstat(argumentPath)
-		switch {
-		case err == nil:
-			if extensionServiceArgumentIsExecutable(info) {
-				xattrs[argumentPath] = constants.SystemExtensionBinSELinuxLabel
-			}
-
-			continue
-		case !errors.Is(err, fs.ErrNotExist):
-			return fmt.Errorf("error inspecting argument %q: %w", argument, err)
-		}
-
-		mountedSource, ok, err := extensionServiceMountedPathSource(spec, containerPath)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-
-		for _, candidateExtension := range extensionList {
-			candidatePath := filepath.Join(candidateExtension.RootfsPath(), strings.TrimPrefix(mountedSource, "/"))
-
-			candidateInfo, candidateErr := os.Lstat(candidatePath)
-			switch {
-			case candidateErr == nil:
-				if extensionServiceArgumentIsExecutable(candidateInfo) {
-					xattrs[candidatePath] = constants.SystemExtensionBinSELinuxLabel
-				}
-			case !errors.Is(candidateErr, fs.ErrNotExist):
-				return fmt.Errorf("error inspecting mounted argument %q: %w", argument, candidateErr)
+		for _, file := range files {
+			if extensionServiceArgumentIsExecutable(file.info) {
+				xattrs[file.path] = constants.SystemExtensionBinSELinuxLabel
 			}
 		}
 	}
@@ -328,7 +268,7 @@ func labelExtensionServiceExecutableArguments(
 }
 
 func extensionServiceArgumentIsExecutable(info fs.FileInfo) bool {
-	return info.Mode()&fs.ModeSymlink != 0 || info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	return info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 func labelExtensionServiceEntrypoint(xattrs map[string]string, path string, info fs.FileInfo) error {
@@ -341,13 +281,88 @@ func labelExtensionServiceEntrypoint(xattrs map[string]string, path string, info
 	return nil
 }
 
-func extensionServiceMountedEntrypointSource(spec extservices.Spec) (string, bool, error) {
-	entrypoint, err := extensionServiceContainerPath(spec.Container.Entrypoint)
+type extensionServiceFile struct {
+	path string
+	info fs.FileInfo
+}
+
+// extensionServiceFiles resolves the files visible at a container path. Bind
+// sources take precedence over rootfs placeholders or shadowed files. Resolve
+// symlinks within each source root, labeling the executable target itself.
+func extensionServiceFiles(spec extservices.Spec, containerPath, serviceRootfsPath string, extensionList []*extensions.Extension) ([]extensionServiceFile, error) {
+	path, err := extensionServiceContainerPath(containerPath)
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 
-	return extensionServiceMountedPathSource(spec, entrypoint)
+	source, mounted, err := extensionServiceMountedPathSource(spec, path)
+	if err != nil {
+		return nil, err
+	}
+
+	roots := []string{serviceRootfsPath}
+	if mounted {
+		path = source
+		roots = make([]string, 0, len(extensionList))
+
+		for _, ext := range extensionList {
+			roots = append(roots, ext.RootfsPath())
+		}
+	}
+
+	var files []extensionServiceFile
+
+	for _, root := range roots {
+		file, err := extensionServiceFileInRoot(root, path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error resolving extension-service path %q: %w", containerPath, err)
+		}
+
+		files = append(files, file)
+	}
+
+	return files, nil
+}
+
+func extensionServiceFileInRoot(root, path string) (extensionServiceFile, error) {
+	rootHandle, err := os.Open(root)
+	if err != nil {
+		return extensionServiceFile{}, err
+	}
+	defer rootHandle.Close() //nolint:errcheck
+
+	handle, err := pathrs.OpenatInRoot(rootHandle, path)
+	if err != nil {
+		return extensionServiceFile{}, err
+	}
+	defer handle.Close() //nolint:errcheck
+
+	info, err := handle.Stat()
+	if err != nil {
+		return extensionServiceFile{}, err
+	}
+
+	resolvedPath, err := procfs.ProcSelfFdReadlink(handle)
+	if err != nil {
+		return extensionServiceFile{}, err
+	}
+
+	resolvedRoot, err := procfs.ProcSelfFdReadlink(rootHandle)
+	if err != nil {
+		return extensionServiceFile{}, err
+	}
+
+	relativePath, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil || !filepath.IsLocal(relativePath) {
+		return extensionServiceFile{}, fmt.Errorf("resolved extension-service path %q is outside root %q", resolvedPath, resolvedRoot)
+	}
+
+	// Keep the extraction root's spelling so the key matches the other xattr
+	// entries even when a parent of the extraction directory is a symlink.
+	return extensionServiceFile{path: filepath.Join(root, relativePath), info: info}, nil
 }
 
 func extensionServiceMountedPathSource(spec extservices.Spec, containerPath string) (string, bool, error) {
@@ -408,17 +423,6 @@ func loadExtensionServiceSpec(path string) (extservices.Spec, error) {
 	}
 
 	return spec, nil
-}
-
-func extensionServiceEntrypointPath(rootfsPath, entrypoint string) (string, error) {
-	cleaned, err := extensionServiceContainerPath(entrypoint)
-	if err != nil {
-		return "", err
-	}
-
-	cleaned = strings.TrimPrefix(cleaned, string(os.PathSeparator))
-
-	return filepath.Join(rootfsPath, cleaned), nil
 }
 
 func extensionServiceContainerPath(entrypoint string) (string, error) {

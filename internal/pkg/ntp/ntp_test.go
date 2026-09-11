@@ -6,14 +6,17 @@ package ntp_test
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	beevikntp "github.com/beevik/ntp"
 	"github.com/siderolabs/go-retry/retry"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
@@ -185,7 +188,7 @@ func (suite *NTPSuite) fakeQuery(host string) (resp *beevikntp.Response, err err
 }
 
 func (suite *NTPSuite) TestSync() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{constants.DefaultNTPServer})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{constants.DefaultNTPServer}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -212,7 +215,7 @@ func (suite *NTPSuite) TestSync() {
 }
 
 func (suite *NTPSuite) TestSyncContinuous() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.3"})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.3"}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -257,7 +260,7 @@ func (suite *NTPSuite) TestSyncContinuous() {
 
 //nolint:dupl
 func (suite *NTPSuite) TestSyncKissOfDeath() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.8"})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.8"}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -308,7 +311,7 @@ func (suite *NTPSuite) TestSyncKissOfDeath() {
 
 //nolint:dupl
 func (suite *NTPSuite) TestSyncWithSpikes() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.7"})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.7"}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -325,6 +328,25 @@ func (suite *NTPSuite) TestSyncWithSpikes() {
 
 	wg.Go(func() {
 		syncer.Run(ctx)
+	})
+
+	// a discarded measurement is not applied to the clock at all, so the filter has to report
+	// what it is doing for the rejections to be visible at all
+	var spikeReported atomic.Bool
+
+	wg.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-syncer.SpikeStatusChange():
+				if status := syncer.SpikeStatus(); status.Detected {
+					suite.Assert().Positive(status.Consecutive)
+
+					spikeReported.Store(true)
+				}
+			}
+		}
 	})
 
 	select {
@@ -347,6 +369,10 @@ func (suite *NTPSuite) TestSyncWithSpikes() {
 				suite.Assert().Equal(time.Millisecond, adj)
 			}
 
+			if !spikeReported.Load() {
+				return retry.ExpectedErrorf("spike filter did not report a discarded measurement")
+			}
+
 			return nil
 		}),
 	)
@@ -357,7 +383,7 @@ func (suite *NTPSuite) TestSyncWithSpikes() {
 }
 
 func (suite *NTPSuite) TestSyncChangeTimeservers() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.1"})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.1"}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -392,7 +418,7 @@ func (suite *NTPSuite) TestSyncChangeTimeservers() {
 }
 
 func (suite *NTPSuite) TestSyncIterateTimeservers() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.1", "127.0.0.2", "127.0.0.3", "127.0.0.4"})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.1", "127.0.0.2", "127.0.0.3", "127.0.0.4"}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -441,7 +467,7 @@ func (suite *NTPSuite) TestSyncIterateTimeservers() {
 }
 
 func (suite *NTPSuite) TestSyncEpochChange() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.5"})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.5"}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -477,7 +503,7 @@ func (suite *NTPSuite) TestSyncEpochChange() {
 }
 
 func (suite *NTPSuite) TestSyncSwitchTimeservers() {
-	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.6", "127.0.0.4"})
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"127.0.0.6", "127.0.0.4"}, false)
 
 	syncer.AdjustTime = suite.adjustSystemClock
 	syncer.CurrentTime = suite.getSystemClock
@@ -525,4 +551,384 @@ func (suite *NTPSuite) TestSyncSwitchTimeservers() {
 	for i := 1; i < 3; i++ {
 		suite.Assert().Equal(2*time.Millisecond, suite.clockAdjustments[i])
 	}
+}
+
+// mockNTSSession implements ntp.NTSSession for testing.
+type mockNTSSession struct {
+	queryCount int
+	failFirst  bool
+	resp       *beevikntp.Response
+	err        error
+}
+
+func (m *mockNTSSession) Query() (*beevikntp.Response, error) {
+	m.queryCount++
+
+	if m.failFirst && m.queryCount == 1 {
+		return nil, errors.New("NTS session expired")
+	}
+
+	return m.resp, m.err
+}
+
+func (suite *NTPSuite) TestNTSQueryBasic() {
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"time.cloudflare.com"}, true)
+
+	syncer.AdjustTime = suite.adjustSystemClock
+	syncer.CurrentTime = suite.getSystemClock
+	syncer.DisableRTC = true
+
+	mockSession := &mockNTSSession{
+		resp: &beevikntp.Response{
+			Stratum:       1,
+			Time:          suite.systemClock,
+			ReferenceTime: suite.systemClock,
+			ClockOffset:   time.Millisecond,
+			RTT:           time.Millisecond / 2,
+		},
+	}
+
+	syncer.NTSNewSession = func(address string, skipCertTimeCheck bool) (ntp.NTSSession, error) {
+		suite.Assert().Equal("time.cloudflare.com", address)
+
+		return mockSession, nil
+	}
+
+	syncer.MinPoll = time.Second
+	syncer.MaxPoll = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		syncer.Run(ctx)
+	})
+
+	select {
+	case <-syncer.Synced():
+	case <-time.After(10 * time.Second):
+		suite.Assert().Fail("NTS time sync timeout")
+	}
+
+	cancel()
+
+	wg.Wait()
+
+	// Session should have been queried at least once
+	suite.Assert().Greater(mockSession.queryCount, 0)
+}
+
+func (suite *NTPSuite) TestNTSQuerySessionRefresh() {
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"time.cloudflare.com"}, true)
+
+	syncer.AdjustTime = suite.adjustSystemClock
+	syncer.CurrentTime = suite.getSystemClock
+	syncer.DisableRTC = true
+
+	sessionCreateCount := 0
+	goodResp := &beevikntp.Response{
+		Stratum:       1,
+		Time:          suite.systemClock,
+		ReferenceTime: suite.systemClock,
+		ClockOffset:   time.Millisecond,
+		RTT:           time.Millisecond / 2,
+	}
+
+	syncer.NTSNewSession = func(address string, skipCertTimeCheck bool) (ntp.NTSSession, error) {
+		sessionCreateCount++
+
+		if sessionCreateCount == 1 {
+			// First session fails on Query
+			return &mockNTSSession{failFirst: true, resp: goodResp}, nil
+		}
+
+		// Second session works
+		return &mockNTSSession{resp: goodResp}, nil
+	}
+
+	syncer.MinPoll = time.Second
+	syncer.MaxPoll = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		syncer.Run(ctx)
+	})
+
+	select {
+	case <-syncer.Synced():
+	case <-time.After(10 * time.Second):
+		suite.Assert().Fail("NTS time sync timeout after session refresh")
+	}
+
+	cancel()
+
+	wg.Wait()
+
+	// Should have created at least 2 sessions (first failed, second succeeded)
+	suite.Assert().GreaterOrEqual(sessionCreateCount, 2)
+}
+
+func (suite *NTPSuite) TestNTSSkipsIPAddresses() {
+	// NTS with IP addresses should skip them (hostnames required for TLS)
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"192.168.1.1", "time.cloudflare.com"}, true)
+
+	syncer.AdjustTime = suite.adjustSystemClock
+	syncer.CurrentTime = suite.getSystemClock
+	syncer.DisableRTC = true
+
+	queriedServer := ""
+
+	syncer.NTSNewSession = func(address string, skipCertTimeCheck bool) (ntp.NTSSession, error) {
+		queriedServer = address
+
+		return &mockNTSSession{
+			resp: &beevikntp.Response{
+				Stratum:       1,
+				Time:          suite.systemClock,
+				ReferenceTime: suite.systemClock,
+				ClockOffset:   time.Millisecond,
+				RTT:           time.Millisecond / 2,
+			},
+		}, nil
+	}
+
+	syncer.MinPoll = time.Second
+	syncer.MaxPoll = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		syncer.Run(ctx)
+	})
+
+	select {
+	case <-syncer.Synced():
+	case <-time.After(10 * time.Second):
+		suite.Assert().Fail("NTS time sync timeout")
+	}
+
+	cancel()
+
+	wg.Wait()
+
+	// Should have used the hostname, not the IP
+	suite.Assert().Equal("time.cloudflare.com", queriedServer)
+}
+
+func (suite *NTPSuite) TestNTSSessionCacheCleanup() {
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"time.cloudflare.com"}, true)
+
+	syncer.AdjustTime = suite.adjustSystemClock
+	syncer.CurrentTime = suite.getSystemClock
+	syncer.DisableRTC = true
+
+	var sessionCreateCount atomic.Int32
+
+	goodResp := &beevikntp.Response{
+		Stratum:       1,
+		Time:          suite.systemClock,
+		ReferenceTime: suite.systemClock,
+		ClockOffset:   time.Millisecond,
+		RTT:           time.Millisecond / 2,
+	}
+
+	syncer.NTSNewSession = func(address string, skipCertTimeCheck bool) (ntp.NTSSession, error) {
+		sessionCreateCount.Add(1)
+
+		return &mockNTSSession{resp: goodResp}, nil
+	}
+
+	syncer.MinPoll = time.Second
+	syncer.MaxPoll = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		syncer.Run(ctx)
+	})
+
+	select {
+	case <-syncer.Synced():
+	case <-time.After(10 * time.Second):
+		suite.Assert().Fail("NTS time sync timeout")
+	}
+
+	// Change time servers — old session for "time.cloudflare.com" should be evicted
+	syncer.SetTimeServers([]string{"time.google.com"})
+
+	// Wait for the new server's session to be created
+	suite.Assert().EventuallyWithT(func(collect *assert.CollectT) {
+		asrt := assert.New(collect)
+
+		asrt.Equal(sessionCreateCount.Load(), int32(2), "expected a new NTS session to be created after switching servers")
+	}, 10*time.Second, 100*time.Millisecond)
+
+	cancel()
+
+	wg.Wait()
+}
+
+func (suite *NTPSuite) TestNTSBootstrapCertTimeFallback() {
+	// Simulate a boot-time clock that makes the server certificate look expired:
+	// strict validation fails, but the bootstrap fallback (ignoring the cert time
+	// constraint) succeeds.
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"time.cloudflare.com"}, true)
+
+	syncer.AdjustTime = suite.adjustSystemClock
+	syncer.CurrentTime = suite.getSystemClock
+	syncer.DisableRTC = true
+
+	var (
+		strictAttempts  atomic.Int32
+		relaxedAttempts atomic.Int32
+	)
+
+	goodResp := &beevikntp.Response{
+		Stratum:       1,
+		Time:          suite.systemClock,
+		ReferenceTime: suite.systemClock,
+		ClockOffset:   time.Millisecond,
+		RTT:           time.Millisecond / 2,
+	}
+
+	syncer.NTSNewSession = func(address string, skipCertTimeCheck bool) (ntp.NTSSession, error) {
+		if !skipCertTimeCheck {
+			strictAttempts.Add(1)
+
+			return nil, x509.CertificateInvalidError{Reason: x509.Expired}
+		}
+
+		relaxedAttempts.Add(1)
+
+		return &mockNTSSession{resp: goodResp}, nil
+	}
+
+	syncer.MinPoll = time.Second
+	syncer.MaxPoll = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		syncer.Run(ctx)
+	})
+
+	select {
+	case <-syncer.Synced():
+	case <-time.After(10 * time.Second):
+		suite.Assert().Fail("NTS time sync timeout during bootstrap fallback")
+	}
+
+	cancel()
+
+	wg.Wait()
+
+	suite.Assert().Positive(strictAttempts.Load(), "expected a strict validation attempt first")
+	suite.Assert().Positive(relaxedAttempts.Load(), "expected a relaxed bootstrap attempt")
+}
+
+func (suite *NTPSuite) TestNTSBootstrapBudgetExhausted() {
+	// A persistent certificate time error should be tolerated only for the
+	// configured number of bootstrap attempts, after which validation is strict
+	// and the relaxed path is no longer used.
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"time.cloudflare.com"}, true)
+
+	syncer.AdjustTime = suite.adjustSystemClock
+	syncer.CurrentTime = suite.getSystemClock
+	syncer.DisableRTC = true
+	syncer.NTSBootstrapAttempts = 2
+
+	var relaxedAttempts atomic.Int32
+
+	syncer.NTSNewSession = func(address string, skipCertTimeCheck bool) (ntp.NTSSession, error) {
+		if skipCertTimeCheck {
+			relaxedAttempts.Add(1)
+		}
+
+		// Always fail with a cert time error, regardless of mode.
+		return nil, x509.CertificateInvalidError{Reason: x509.Expired}
+	}
+
+	syncer.MinPoll = time.Second
+	syncer.MaxPoll = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		syncer.Run(ctx)
+	})
+
+	// Never syncs; let it spin through more than the budget of attempts.
+	select {
+	case <-syncer.Synced():
+		suite.Assert().Fail("unexpected sync with persistently invalid certificate")
+	case <-time.After(3 * time.Second):
+	}
+
+	cancel()
+
+	wg.Wait()
+
+	suite.Assert().LessOrEqual(relaxedAttempts.Load(), int32(2), "relaxed attempts must not exceed the bootstrap budget")
+}
+
+func (suite *NTPSuite) TestNTSBootstrapDoesNotBypassUntrustedCert() {
+	// A non-time certificate failure (e.g. unknown authority) must never trigger
+	// the relaxed bootstrap path.
+	syncer := ntp.NewSyncer(zaptest.NewLogger(suite.T()).With(zap.String("controller", "ntp")), []string{"time.cloudflare.com"}, true)
+
+	syncer.AdjustTime = suite.adjustSystemClock
+	syncer.CurrentTime = suite.getSystemClock
+	syncer.DisableRTC = true
+
+	var relaxedAttempts atomic.Int32
+
+	syncer.NTSNewSession = func(address string, skipCertTimeCheck bool) (ntp.NTSSession, error) {
+		if skipCertTimeCheck {
+			relaxedAttempts.Add(1)
+		}
+
+		return nil, x509.UnknownAuthorityError{}
+	}
+
+	syncer.MinPoll = time.Second
+	syncer.MaxPoll = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		syncer.Run(ctx)
+	})
+
+	select {
+	case <-syncer.Synced():
+		suite.Assert().Fail("unexpected sync with untrusted certificate")
+	case <-time.After(2 * time.Second):
+	}
+
+	cancel()
+
+	wg.Wait()
+
+	suite.Assert().Zero(relaxedAttempts.Load(), "untrusted certificate must not trigger relaxed validation")
 }

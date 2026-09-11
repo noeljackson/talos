@@ -21,6 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/siderolabs/gen/xerrors"
 	"github.com/siderolabs/go-pointer"
 	"github.com/siderolabs/go-procfs/procfs"
 	"go.yaml.in/yaml/v4"
@@ -45,7 +46,7 @@ func (i *Imager) outInitramfs(path string, report *reporter.Reporter) error {
 	printf := progressPrintf(report, reporter.Update{Message: "copying initramfs...", Status: reporter.StatusRunning})
 
 	if err := utils.CopyFiles(printf, utils.SourceDestination(i.initramfsPath, path)); err != nil {
-		return err
+		return xerrors.NewTaggedf[IOTag]("%w", err)
 	}
 
 	report.Report(reporter.Update{Message: "initramfs output ready", Status: reporter.StatusSucceeded})
@@ -57,7 +58,7 @@ func (i *Imager) outKernel(path string, report *reporter.Reporter) error {
 	printf := progressPrintf(report, reporter.Update{Message: "copying kernel...", Status: reporter.StatusRunning})
 
 	if err := utils.CopyFiles(printf, utils.SourceDestination(i.prof.Input.Kernel.Path, path)); err != nil {
-		return err
+		return xerrors.NewTaggedf[IOTag]("%w", err)
 	}
 
 	report.Report(reporter.Update{Message: "kernel output ready", Status: reporter.StatusSucceeded})
@@ -69,7 +70,7 @@ func (i *Imager) outUKI(path string, report *reporter.Reporter) error {
 	printf := progressPrintf(report, reporter.Update{Message: "copying kernel...", Status: reporter.StatusRunning})
 
 	if err := utils.CopyFiles(printf, utils.SourceDestination(i.ukiPath, path)); err != nil {
-		return err
+		return xerrors.NewTaggedf[IOTag]("%w", err)
 	}
 
 	report.Report(reporter.Update{Message: "UKI output ready", Status: reporter.StatusSucceeded})
@@ -78,7 +79,11 @@ func (i *Imager) outUKI(path string, report *reporter.Reporter) error {
 }
 
 func (i *Imager) outCmdline(path string) error {
-	return os.WriteFile(path, []byte(i.cmdline), 0o644)
+	if err := os.WriteFile(path, []byte(i.cmdline), 0o644); err != nil {
+		return xerrors.NewTaggedf[IOTag]("%w", err)
+	}
+
+	return nil
 }
 
 //nolint:gocyclo,cyclop
@@ -94,11 +99,11 @@ func (i *Imager) outISO(ctx context.Context, path string, report *reporter.Repor
 
 	if i.prof.Input.ImageCache != zeroContainerAsset {
 		if err := os.MkdirAll(filepath.Join(scratchSpace, "imagecache"), 0o755); err != nil {
-			return err
+			return xerrors.NewTaggedf[IOTag]("%w", err)
 		}
 
 		if err := i.prof.Input.ImageCache.Extract(ctx, filepath.Join(scratchSpace, "imagecache"), i.prof.Arch, printf, nil); err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 	}
 
@@ -108,17 +113,17 @@ func (i *Imager) outISO(ctx context.Context, path string, report *reporter.Repor
 	case i.prof.SecureBootEnabled():
 		isoOptions := pointer.SafeDeref(i.prof.Output.ISOOptions)
 
-		var signer pesign.CertificateSigner
-
-		signer, err = i.prof.Input.SecureBoot.SecureBootSigner.GetSigner(ctx)
+		signer, err := i.prof.Input.SecureBoot.SecureBootSigner.GetSigner(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get SecureBoot signer: %w", err)
+			return xerrors.NewTaggedf[DependencyTag]("failed to get SecureBoot signer: %w", err)
 		}
+
+		defer signer.Close() //nolint:errcheck
 
 		derCrtPath := filepath.Join(i.tempDir, "uki.der")
 
 		if err = os.WriteFile(derCrtPath, signer.Certificate().Raw, 0o600); err != nil {
-			return fmt.Errorf("failed to write uki.der: %w", err)
+			return xerrors.NewTaggedf[IOTag]("failed to write uki.der: %w", err)
 		}
 
 		options := iso.Options{
@@ -142,47 +147,16 @@ func (i *Imager) outISO(ctx context.Context, path string, report *reporter.Repor
 
 		if i.prof.Input.SecureBoot.PlatformKeyPath == "" {
 			report.Report(reporter.Update{Message: "generating SecureBoot database...", Status: reporter.StatusRunning})
+		}
 
-			// generate the database automatically from provided values
-			enrolledPEM := pem.EncodeToMemory(&pem.Block{
-				Type:  "CERTIFICATE",
-				Bytes: signer.Certificate().Raw,
-			})
-
-			var entries []database.Entry
-
-			entries, err = database.Generate(enrolledPEM, signer, database.IncludeWellKnownCertificates(i.prof.Input.SecureBoot.IncludeWellKnownCerts))
-			if err != nil {
-				return fmt.Errorf("failed to generate database: %w", err)
-			}
-
-			for _, entry := range entries {
-				entryPath := filepath.Join(i.tempDir, entry.Name)
-
-				if err = os.WriteFile(entryPath, entry.Contents, 0o600); err != nil {
-					return err
-				}
-
-				switch entry.Name {
-				case constants.PlatformKeyAsset:
-					options.PlatformKeyPath = entryPath
-				case constants.KeyExchangeKeyAsset:
-					options.KeyExchangeKeyPath = entryPath
-				case constants.SignatureKeyAsset:
-					options.SignatureKeyPath = entryPath
-				default:
-					return fmt.Errorf("unknown database entry: %s", entry.Name)
-				}
-			}
-		} else {
-			options.PlatformKeyPath = i.prof.Input.SecureBoot.PlatformKeyPath
-			options.KeyExchangeKeyPath = i.prof.Input.SecureBoot.KeyExchangeKeyPath
-			options.SignatureKeyPath = i.prof.Input.SecureBoot.SignatureKeyPath
+		options.PlatformKeyPath, options.KeyExchangeKeyPath, options.SignatureKeyPath, err = i.prepareEnrollmentDBs(signer)
+		if err != nil {
+			return err
 		}
 
 		generator, err = options.CreateUEFI(ctx, printf)
 		if err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 	case quirks.New(i.prof.Version).ISOSupportsSettingBootloader():
 		options := iso.Options{
@@ -206,20 +180,20 @@ func (i *Imager) outISO(ctx context.Context, path string, report *reporter.Repor
 		case profile.BootLoaderKindDualBoot:
 			generator, err = options.CreateHybrid(ctx, printf)
 			if err != nil {
-				return err
+				return xerrors.NewTaggedf[DependencyTag]("%w", err)
 			}
 		case profile.BootLoaderKindSDBoot:
 			generator, err = options.CreateUEFI(ctx, printf)
 			if err != nil {
-				return err
+				return xerrors.NewTaggedf[DependencyTag]("%w", err)
 			}
 		case profile.BootLoaderKindGrub:
 			generator, err = options.CreateGRUB(printf)
 			if err != nil {
-				return err
+				return xerrors.NewTaggedf[DependencyTag]("%w", err)
 			}
 		case profile.BootLoaderKindNone:
-			return fmt.Errorf("cannot create ISO with no bootloader")
+			return xerrors.NewTaggedf[InvalidInputTag]("cannot create ISO with no bootloader")
 		}
 	case quirks.New(i.prof.Version).UseSDBootForUEFI():
 		options := iso.Options{
@@ -241,7 +215,7 @@ func (i *Imager) outISO(ctx context.Context, path string, report *reporter.Repor
 
 		generator, err = options.CreateHybrid(ctx, printf)
 		if err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 	default:
 		options := iso.Options{
@@ -258,12 +232,12 @@ func (i *Imager) outISO(ctx context.Context, path string, report *reporter.Repor
 
 		generator, err = options.CreateGRUB(printf)
 		if err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 	}
 
 	if err := generator.Generate(ctx); err != nil {
-		return err
+		return xerrors.NewTaggedf[DependencyTag]("%w", err)
 	}
 
 	report.Report(reporter.Update{Message: "ISO ready", Status: reporter.StatusSucceeded})
@@ -283,27 +257,92 @@ func (i *Imager) outImage(ctx context.Context, path string, report *reporter.Rep
 		// nothing to do
 	case profile.DiskFormatQCOW2:
 		if err := qemuimg.Convert(ctx, "raw", "qcow2", i.prof.Output.ImageOptions.DiskFormatOptions, path, printf); err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 	case profile.DiskFormatVPC:
 		if err := qemuimg.Convert(ctx, "raw", "vpc", i.prof.Output.ImageOptions.DiskFormatOptions, path, printf); err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 	case profile.DiskFormatOVA:
 		scratchPath := filepath.Join(i.tempDir, "ova")
 
 		if err := ova.CreateOVAFromRAW(ctx, path, i.prof.Arch, scratchPath, i.prof.Output.ImageOptions.DiskSize, printf); err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 	case profile.DiskFormatUnknown:
 		fallthrough
 	default:
-		return fmt.Errorf("unsupported disk format: %s", i.prof.Output.ImageOptions.DiskFormat)
+		return xerrors.NewTaggedf[UnsupportedTag]("unsupported disk format: %s", i.prof.Output.ImageOptions.DiskFormat)
 	}
 
 	report.Report(reporter.Update{Message: "disk image ready", Status: reporter.StatusSucceeded})
 
 	return nil
+}
+
+// prepareEnrollmentDBs returns paths to PK, KEK and db .auth files for SecureBoot
+// key auto-enrollment. If the profile supplies pre-built DBs via
+// Input.SecureBoot.PlatformKeyPath (etc.), those paths are returned as-is.
+// Otherwise, the databases are generated from the signer and written to i.tempDir.
+//
+//nolint:gocyclo
+func (i *Imager) prepareEnrollmentDBs(signer pesign.CertificateSigner) (pkPath, kekPath, dbPath string, err error) {
+	pkPath = i.prof.Input.SecureBoot.PlatformKeyPath
+	kekPath = i.prof.Input.SecureBoot.KeyExchangeKeyPath
+	dbPath = i.prof.Input.SecureBoot.SignatureKeyPath
+
+	if pkPath != "" || kekPath != "" || dbPath != "" {
+		var missing []string
+
+		if pkPath == "" {
+			missing = append(missing, "Input.SecureBoot.PlatformKeyPath")
+		}
+
+		if kekPath == "" {
+			missing = append(missing, "Input.SecureBoot.KeyExchangeKeyPath")
+		}
+
+		if dbPath == "" {
+			missing = append(missing, "Input.SecureBoot.SignatureKeyPath")
+		}
+
+		if len(missing) > 0 {
+			return "", "", "", xerrors.NewTaggedf[InvalidInputTag]("partial SecureBoot pre-built database configuration: missing %s", strings.Join(missing, ", "))
+		}
+
+		return pkPath, kekPath, dbPath, nil
+	}
+
+	enrolledPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: signer.Certificate().Raw,
+	})
+
+	entries, err := database.Generate(enrolledPEM, signer, database.IncludeWellKnownCertificates(i.prof.Input.SecureBoot.IncludeWellKnownCerts))
+	if err != nil {
+		return "", "", "", xerrors.NewTaggedf[DependencyTag]("failed to generate database: %w", err)
+	}
+
+	for _, entry := range entries {
+		entryPath := filepath.Join(i.tempDir, entry.Name)
+
+		if err := os.WriteFile(entryPath, entry.Contents, 0o600); err != nil {
+			return "", "", "", xerrors.NewTaggedf[IOTag]("%w", err)
+		}
+
+		switch entry.Name {
+		case constants.PlatformKeyAsset:
+			pkPath = entryPath
+		case constants.KeyExchangeKeyAsset:
+			kekPath = entryPath
+		case constants.SignatureKeyAsset:
+			dbPath = entryPath
+		default:
+			return "", "", "", xerrors.NewTaggedf[DependencyTag]("unknown database entry: %s", entry.Name)
+		}
+	}
+
+	return pkPath, kekPath, dbPath, nil
 }
 
 //nolint:gocyclo
@@ -334,6 +373,7 @@ func (i *Imager) buildImage(ctx context.Context, path string, printf func(string
 
 		ImageSecureboot:     i.prof.SecureBootEnabled(),
 		DiskImageBootloader: i.prof.Output.ImageOptions.Bootloader.String(),
+		ImageSectorSize:     i.prof.Output.ImageOptions.DiskSectorSize,
 		Version:             i.prof.Version,
 		BootAssets: options.BootAssets{
 			KernelPath:    i.prof.Input.Kernel.Path,
@@ -351,22 +391,41 @@ func (i *Imager) buildImage(ctx context.Context, path string, printf func(string
 		opts.OverlayExtractedDir = i.tempDir
 	}
 
+	if i.prof.SecureBootEnabled() && i.prof.Output.ImageOptions.SDBootEnrollKeys != profile.SDBootEnrollKeysOff {
+		signer, err := i.prof.Input.SecureBoot.SecureBootSigner.GetSigner(ctx)
+		if err != nil {
+			return xerrors.NewTaggedf[DependencyTag]("failed to get SecureBoot signer: %w", err)
+		}
+
+		defer signer.Close() //nolint:errcheck
+
+		pk, kek, db, err := i.prepareEnrollmentDBs(signer)
+		if err != nil {
+			return err
+		}
+
+		opts.SecureBootEnrollKeys = i.prof.Output.ImageOptions.SDBootEnrollKeys.String()
+		opts.PlatformKeyPath = pk
+		opts.KeyExchangeKeyPath = kek
+		opts.SignatureKeyPath = db
+	}
+
 	if i.prof.Input.ImageCache != zeroContainerAsset {
 		imageCacheDir := filepath.Join(i.tempDir, "imagecache")
 
 		if err := os.MkdirAll(imageCacheDir, 0o755); err != nil {
-			return err
+			return xerrors.NewTaggedf[IOTag]("%w", err)
 		}
 
 		if err := i.prof.Input.ImageCache.Extract(ctx, imageCacheDir, i.prof.Arch, printf, nil); err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 
 		opts.ImageCachePath = imageCacheDir
 
 		imageCacheSize, err := calculateDirectorySizeWithOverhead(imageCacheDir, 20)
 		if err != nil {
-			return fmt.Errorf("failed to calculate image cache size: %w", err)
+			return xerrors.NewTaggedf[IOTag]("failed to calculate image cache size: %w", err)
 		}
 
 		// Align to a 1MiB boundary so both 512 and 4K sector sizes are covered.
@@ -385,16 +444,16 @@ func (i *Imager) buildImage(ctx context.Context, path string, printf func(string
 	}
 
 	if err := utils.CreateRawDisk(printf, path, i.prof.Output.ImageOptions.DiskSize, false); err != nil {
-		return err
+		return xerrors.NewTaggedf[IOTag]("%w", err)
 	}
 
 	installer, err := install.NewInstaller(ctx, cmdline, install.ModeImage, opts)
 	if err != nil {
-		return fmt.Errorf("failed to create installer: %w", err)
+		return xerrors.NewTaggedf[InstallTag]("failed to create installer: %w", err)
 	}
 
 	if err := installer.Install(ctx, install.ModeImage); err != nil {
-		return fmt.Errorf("failed to install: %w", err)
+		return xerrors.NewTaggedf[InstallTag]("failed to install: %w", err)
 	}
 
 	return nil
@@ -405,7 +464,7 @@ func calculateDirectorySizeWithOverhead(dir string, overheadPercentage int) (int
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return xerrors.NewTaggedf[IOTag]("%w", err)
 		}
 
 		if !info.IsDir() {
@@ -415,7 +474,7 @@ func calculateDirectorySizeWithOverhead(dir string, overheadPercentage int) (int
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return 0, xerrors.NewTaggedf[IOTag]("%w", err)
 	}
 
 	overhead := (totalSize * int64(overheadPercentage)) / 100
@@ -430,17 +489,17 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 
 	baseInstallerImg, err := i.prof.Input.BaseInstaller.Pull(ctx, i.prof.Arch, printf)
 	if err != nil {
-		return err
+		return xerrors.NewTaggedf[DependencyTag]("%w", err)
 	}
 
 	baseLayers, err := baseInstallerImg.Layers()
 	if err != nil {
-		return fmt.Errorf("failed to get layers: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to get layers: %w", err)
 	}
 
 	configFile, err := baseInstallerImg.ConfigFile()
 	if err != nil {
-		return fmt.Errorf("failed to get config file: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to get config file: %w", err)
 	}
 
 	config := *configFile.Config.DeepCopy()
@@ -457,17 +516,17 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 
 	newInstallerImg, err = mutate.ConfigFile(newInstallerImg, newCfgFile)
 	if err != nil {
-		return fmt.Errorf("failed to set image architecture: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to set image architecture: %w", err)
 	}
 
 	newInstallerImg, err = mutate.Config(newInstallerImg, config)
 	if err != nil {
-		return fmt.Errorf("failed to set config: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to set config: %w", err)
 	}
 
 	newInstallerImg, err = mutate.CreatedAt(newInstallerImg, v1.Time{Time: time.Now()})
 	if err != nil {
-		return fmt.Errorf("failed to set created at: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to set created at: %w", err)
 	}
 
 	// Talos v1.5+ optimizes the install layers to be easily replaceable with new artifacts
@@ -479,7 +538,7 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 
 	newInstallerImg, err = mutate.AppendLayers(newInstallerImg, baseLayers...)
 	if err != nil {
-		return fmt.Errorf("failed to append layers: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to append layers: %w", err)
 	}
 
 	var artifacts []filemap.File
@@ -495,7 +554,8 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 	}
 
 	if quirks.UseSDBootForUEFI() || i.prof.SecureBootEnabled() {
-		artifacts = append(artifacts,
+		artifacts = append(
+			artifacts,
 			filemap.File{
 				ImagePath:  strings.TrimLeft(fmt.Sprintf(constants.SDBootAssetPath, i.prof.Arch), "/"),
 				SourcePath: i.sdBootPath,
@@ -506,7 +566,8 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 			},
 		)
 	} else {
-		artifacts = append(artifacts,
+		artifacts = append(
+			artifacts,
 			filemap.File{
 				ImagePath:  strings.TrimLeft(fmt.Sprintf(constants.KernelAssetPath, i.prof.Arch), "/"),
 				SourcePath: i.prof.Input.Kernel.Path,
@@ -518,21 +579,21 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 		)
 	}
 
-	artifactsLayer, err := filemap.Layer(artifacts)
+	artifactsLayer, err := filemap.Layer(i.tempDir, artifacts)
 	if err != nil {
-		return fmt.Errorf("failed to create artifacts layer: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to create artifacts layer: %w", err)
 	}
 
 	newInstallerImg, err = mutate.AppendLayers(newInstallerImg, artifactsLayer)
 	if err != nil {
-		return fmt.Errorf("failed to append artifacts layer: %w", err)
+		return xerrors.NewTaggedf[DependencyTag]("failed to append artifacts layer: %w", err)
 	}
 
 	if i.overlayInstaller != nil {
 		tempOverlayPath := filepath.Join(i.tempDir, "overlay-installer", constants.ImagerOverlayBasePath)
 
 		if err := os.MkdirAll(tempOverlayPath, 0o755); err != nil {
-			return fmt.Errorf("failed to create overlay directory: %w", err)
+			return xerrors.NewTaggedf[IOTag]("failed to create overlay directory: %w", err)
 		}
 
 		if err := i.prof.Input.OverlayInstaller.Extract(
@@ -542,16 +603,16 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 			progressPrintf(report, reporter.Update{Message: "pulling overlay for installer...", Status: reporter.StatusRunning}),
 			nil,
 		); err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 
 		extraOpts, internalErr := yaml.Marshal(i.prof.Overlay.ExtraOptions)
 		if internalErr != nil {
-			return fmt.Errorf("failed to marshal extra options: %w", internalErr)
+			return xerrors.NewTaggedf[InvalidInputTag]("failed to marshal extra options: %w", internalErr)
 		}
 
 		if internalErr = os.WriteFile(filepath.Join(i.tempDir, constants.ImagerOverlayExtraOptionsPath), extraOpts, 0o644); internalErr != nil {
-			return fmt.Errorf("failed to write extra options yaml: %w", internalErr)
+			return xerrors.NewTaggedf[IOTag]("failed to write extra options yaml: %w", internalErr)
 		}
 
 		printf("generating overlay installer layer")
@@ -579,32 +640,32 @@ func (i *Imager) outInstaller(ctx context.Context, path string, report *reporter
 
 			extraFiles, err = filemap.Walk(extraArtifact.sourcePath, extraArtifact.imagePath)
 			if err != nil {
-				return fmt.Errorf("failed to walk extra artifact %s: %w", extraArtifact.sourcePath, err)
+				return xerrors.NewTaggedf[IOTag]("failed to walk extra artifact %s: %w", extraArtifact.sourcePath, err)
 			}
 
 			overlayArtifacts = append(overlayArtifacts, extraFiles...)
 		}
 
-		overlayArtifactsLayer, internalErr := filemap.Layer(overlayArtifacts)
+		overlayArtifactsLayer, internalErr := filemap.Layer(i.tempDir, overlayArtifacts)
 		if internalErr != nil {
-			return fmt.Errorf("failed to create overlay artifacts layer: %w", internalErr)
+			return xerrors.NewTaggedf[DependencyTag]("failed to create overlay artifacts layer: %w", internalErr)
 		}
 
 		newInstallerImg, internalErr = mutate.AppendLayers(newInstallerImg, overlayArtifactsLayer)
 		if internalErr != nil {
-			return fmt.Errorf("failed to append overlay artifacts layer: %w", internalErr)
+			return xerrors.NewTaggedf[DependencyTag]("failed to append overlay artifacts layer: %w", internalErr)
 		}
 	}
 
 	ref, err := name.ParseReference(i.prof.Input.BaseInstaller.ImageRef)
 	if err != nil {
-		return fmt.Errorf("failed to parse image reference: %w", err)
+		return xerrors.NewTaggedf[InvalidInputTag]("failed to parse image reference: %w", err)
 	}
 
 	printf("writing image tarball")
 
 	if err := tarball.WriteToFile(path, ref, newInstallerImg); err != nil {
-		return fmt.Errorf("failed to write image tarball: %w", err)
+		return xerrors.NewTaggedf[IOTag]("failed to write image tarball: %w", err)
 	}
 
 	report.Report(reporter.Update{Message: "installer container image ready", Status: reporter.StatusSucceeded})

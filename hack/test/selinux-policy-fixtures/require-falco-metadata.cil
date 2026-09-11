@@ -1,0 +1,1 @@
+(neverallow falco_t init_t (file (read)))

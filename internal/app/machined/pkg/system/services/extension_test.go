@@ -5,169 +5,75 @@
 package services_test
 
 import (
+	"context"
+	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/golang/mock/gomock"
-	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
+	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime/logging"
+	runtimev1alpha1 "github.com/siderolabs/talos/internal/app/machined/pkg/runtime/v1alpha1"
+	"github.com/siderolabs/talos/internal/app/machined/pkg/system/events"
+	"github.com/siderolabs/talos/internal/app/machined/pkg/system/runner"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services/mocks"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	extservices "github.com/siderolabs/talos/pkg/machinery/extensions/services"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
-
-func TestExtensionSELinuxLabel(t *testing.T) {
-	t.Parallel()
-
-	assert.Empty(t, services.ExtensionSELinuxLabel(extservices.Security{}))
-	assert.Equal(
-		t,
-		constants.SelinuxLabelWriteableSysfsSysContainer,
-		services.ExtensionSELinuxLabel(extservices.Security{WriteableSysfs: true}),
-	)
-}
-
-func TestEnsureExtensionRootfsMountpoints(t *testing.T) {
-	t.Run("creates implicit and declared mountpoints", func(t *testing.T) {
-		rootfsPath := t.TempDir()
-		directorySource := t.TempDir()
-		fileSource := filepath.Join(t.TempDir(), "tun")
-
-		require.NoError(t, os.WriteFile(fileSource, nil, 0o600))
-
-		require.NoError(t, services.EnsureExtensionRootfsMountpoints(rootfsPath, []specs.Mount{
-			{Source: directorySource, Destination: "/etc/ssl/certs", Type: "bind"},
-			{Source: fileSource, Destination: "/dev/net/tun", Type: "bind"},
-			{Source: filepath.Join(t.TempDir(), "absent"), Destination: "/var/lib/tailscale", Type: "bind"},
-		}))
-
-		for _, relativePath := range []string{"etc/hosts", "etc/resolv.conf"} {
-			info, err := os.Lstat(filepath.Join(rootfsPath, relativePath))
-			require.NoError(t, err)
-			assert.True(t, info.Mode().IsRegular())
-			assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
-			assert.Zero(t, info.Size())
-		}
-
-		for _, relativePath := range []string{"etc/ssl/certs", "var/lib/tailscale"} {
-			info, err := os.Lstat(filepath.Join(rootfsPath, relativePath))
-			require.NoError(t, err)
-			assert.True(t, info.IsDir())
-			assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
-		}
-
-		assert.NoDirExists(t, filepath.Join(rootfsPath, "dev"))
-	})
-
-	t.Run("leaves OCI runtime managed mountpoints to runc", func(t *testing.T) {
-		rootfsPath := t.TempDir()
-
-		require.NoError(t, services.EnsureExtensionRootfsMountpoints(rootfsPath, []specs.Mount{
-			{Source: filepath.Join(t.TempDir(), "tun"), Destination: "/dev/net/tun", Type: "bind"},
-			{Source: filepath.Join(t.TempDir(), "proc"), Destination: "/proc/custom", Type: "bind"},
-			{Source: filepath.Join(t.TempDir(), "sys"), Destination: "/sys/custom", Type: "bind"},
-		}))
-
-		for _, path := range []string{"dev", "proc", "sys"} {
-			assert.NoDirExists(t, filepath.Join(rootfsPath, path))
-		}
-	})
-
-	t.Run("preserves artifact-provided regular files", func(t *testing.T) {
-		rootfsPath := t.TempDir()
-		hostsPath := filepath.Join(rootfsPath, "etc/hosts")
-
-		require.NoError(t, os.MkdirAll(filepath.Dir(hostsPath), 0o755))
-		require.NoError(t, os.WriteFile(hostsPath, []byte("artifact-hosts"), 0o600))
-
-		require.NoError(t, services.EnsureExtensionRootfsMountpoints(rootfsPath, nil))
-
-		contents, err := os.ReadFile(hostsPath)
-		require.NoError(t, err)
-		assert.Equal(t, []byte("artifact-hosts"), contents)
-
-		info, err := os.Lstat(hostsPath)
-		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	})
-
-	t.Run("rejects non-regular mountpoints", func(t *testing.T) {
-		rootfsPath := t.TempDir()
-		hostsPath := filepath.Join(rootfsPath, "etc/hosts")
-
-		require.NoError(t, os.MkdirAll(hostsPath, 0o755))
-
-		err := services.EnsureExtensionRootfsMountpoints(rootfsPath, nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not a regular file")
-	})
-
-	t.Run("rejects a declared mountpoint with the wrong shape", func(t *testing.T) {
-		rootfsPath := t.TempDir()
-		directorySource := t.TempDir()
-		destinationPath := filepath.Join(rootfsPath, "etc/ssl/certs")
-
-		require.NoError(t, os.MkdirAll(filepath.Dir(destinationPath), 0o755))
-		require.NoError(t, os.WriteFile(destinationPath, nil, 0o600))
-
-		err := services.EnsureExtensionRootfsMountpoints(rootfsPath, []specs.Mount{
-			{Source: directorySource, Destination: "/etc/ssl/certs", Type: "bind"},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not a directory")
-	})
-
-	t.Run("rejects relative declared destinations", func(t *testing.T) {
-		err := services.EnsureExtensionRootfsMountpoints(t.TempDir(), []specs.Mount{
-			{Source: t.TempDir(), Destination: "var/lib/extension", Type: "bind"},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "is not absolute")
-	})
-
-	t.Run("follows absolute symlinks with container root semantics", func(t *testing.T) {
-		rootfsPath := t.TempDir()
-		directorySource := t.TempDir()
-
-		require.NoError(t, os.MkdirAll(filepath.Join(rootfsPath, "var"), 0o755))
-		require.NoError(t, os.MkdirAll(filepath.Join(rootfsPath, "run"), 0o755))
-		require.NoError(t, os.Symlink("/run", filepath.Join(rootfsPath, "var/run")))
-
-		require.NoError(t, services.EnsureExtensionRootfsMountpoints(rootfsPath, []specs.Mount{
-			{Source: directorySource, Destination: "/var/run/tailscale", Type: "bind"},
-		}))
-
-		assert.DirExists(t, filepath.Join(rootfsPath, "run/tailscale"))
-		info, err := os.Lstat(filepath.Join(rootfsPath, "var/run"))
-		require.NoError(t, err)
-		assert.NotZero(t, info.Mode()&os.ModeSymlink)
-	})
-
-	t.Run("does not follow absolute symlinks outside the container root", func(t *testing.T) {
-		rootfsPath := t.TempDir()
-		outsidePath := t.TempDir()
-		directorySource := t.TempDir()
-
-		require.NoError(t, os.Symlink(outsidePath, filepath.Join(rootfsPath, "var")))
-		err := services.EnsureExtensionRootfsMountpoints(rootfsPath, []specs.Mount{
-			{Source: directorySource, Destination: "/var/lib/extension", Type: "bind"},
-		})
-		require.Error(t, err)
-
-		assert.NoDirExists(t, filepath.Join(outsidePath, "lib"))
-	})
-}
 
 type MockClient struct {
 	controller *gomock.Controller
+}
+
+type preShutdownRunner struct {
+	run    func(context.Context) error
+	opened bool
+	closed bool
+}
+
+func (mock *preShutdownRunner) String() string {
+	return "pre-shutdown-test-runner"
+}
+
+func (mock *preShutdownRunner) Open() error {
+	mock.opened = true
+
+	return nil
+}
+
+func (mock *preShutdownRunner) Run(ctx context.Context, _ events.Recorder, _ runner.OnStart) (runner.Status, error) {
+	return runner.Status{Started: true}, mock.run(ctx)
+}
+
+func (mock *preShutdownRunner) Close() error {
+	mock.closed = true
+
+	return nil
+}
+
+func newExtensionRuntime(t *testing.T) runtime.Runtime {
+	t.Helper()
+	t.Setenv("PLATFORM", "container")
+
+	state, err := runtimev1alpha1.NewState()
+	require.NoError(t, err)
+
+	eventSink := runtimev1alpha1.NewEvents(1000, 10)
+	loggingManager := logging.NewCircularBufferLoggingManager(log.New(t.Output(), "fallback logger: ", log.Flags()))
+
+	return runtimev1alpha1.NewRuntime(state, eventSink, loggingManager)
 }
 
 func (c *MockClient) SnapshotService(snapshotterName string) snapshots.Snapshotter {
@@ -331,4 +237,163 @@ func TestGetOCIOptions(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, []string{"FOO=BARFROMENVFILE"}, spec.Process.Env)
 	})
+}
+
+func TestExtensionHostRunnerMode(t *testing.T) {
+	svc := &services.Extension{
+		Spec: extservices.Spec{
+			Name:       "hello",
+			RunnerMode: extservices.RunnerModeHost,
+			Container: extservices.Container{
+				Entrypoint: "/usr/local/bin/hello",
+				Args:       []string{"--log=debug"},
+			},
+			Depends: []extservices.Dependency{{Service: "networkd"}},
+		},
+	}
+
+	args, err := svc.HostProcessArgs()
+	require.NoError(t, err)
+
+	assert.Equal(t, "ext-hello", args.ID)
+	assert.Equal(t, []string{"/usr/local/bin/hello", "--log=debug"}, args.ProcessArgs)
+	assert.Equal(t, []string{"networkd"}, svc.DependsOn(nil))
+	assert.NoError(t, svc.PostFunc(nil, 0))
+}
+
+func TestExtensionPreShutdown(t *testing.T) {
+	rt := newExtensionRuntime(t)
+	mockRunner := &preShutdownRunner{run: func(context.Context) error { return nil }}
+
+	var (
+		gotArgs runner.Args
+		gotOpts runner.Options
+	)
+
+	svc := &services.Extension{
+		Spec: extservices.Spec{
+			Name:       "hello",
+			RunnerMode: extservices.RunnerModeHost,
+			Container: extservices.Container{
+				Environment: []string{"MODE=host"},
+			},
+			PreShutdown: &extservices.Command{
+				Entrypoint: "/usr/local/bin/hello-shutdown",
+				Args:       []string{"--graceful"},
+				Timeout:    time.Minute,
+			},
+		},
+	}
+
+	svc.SetPreShutdownRunnerFactory(func(_ bool, args *runner.Args, setters ...runner.Option) runner.Runner {
+		gotArgs = *args
+
+		opts := runner.DefaultOptions()
+		for _, setter := range setters {
+			setter(opts)
+		}
+
+		gotOpts = *opts
+
+		return mockRunner
+	})
+
+	require.NoError(t, svc.PreShutdownFunc(t.Context(), rt))
+	assert.True(t, mockRunner.opened)
+	assert.True(t, mockRunner.closed)
+	assert.Equal(t, "ext-hello-pre-shutdown", gotArgs.ID)
+	assert.Equal(t, []string{"/usr/local/bin/hello-shutdown", "--graceful"}, gotArgs.ProcessArgs)
+	assert.Contains(t, gotOpts.Env, "MODE=host")
+	assert.Equal(t, filepath.Join(constants.CgroupExtensions, "hello"), gotOpts.CgroupPath)
+	assert.Zero(t, gotOpts.GracefulShutdownTimeout)
+}
+
+func TestExtensionPreShutdownFailure(t *testing.T) {
+	rt := newExtensionRuntime(t)
+	svc := &services.Extension{
+		Spec: extservices.Spec{
+			Name:       "hello",
+			RunnerMode: extservices.RunnerModeHost,
+			PreShutdown: &extservices.Command{
+				Entrypoint: "/usr/local/bin/hello-shutdown",
+				Timeout:    time.Minute,
+			},
+		},
+	}
+
+	mockRunner := &preShutdownRunner{run: func(context.Context) error { return errors.New("exit 1") }}
+
+	svc.SetPreShutdownRunnerFactory(func(bool, *runner.Args, ...runner.Option) runner.Runner { return mockRunner })
+
+	err := svc.PreShutdownFunc(t.Context(), rt)
+	require.ErrorContains(t, err, "pre-shutdown hook failed: exit 1")
+	assert.True(t, mockRunner.closed)
+}
+
+func TestExtensionPreShutdownTimeout(t *testing.T) {
+	rt := newExtensionRuntime(t)
+	svc := &services.Extension{
+		Spec: extservices.Spec{
+			Name:       "hello",
+			RunnerMode: extservices.RunnerModeHost,
+			PreShutdown: &extservices.Command{
+				Entrypoint: "/usr/local/bin/hello-shutdown",
+				Timeout:    time.Nanosecond,
+			},
+		},
+	}
+
+	mockRunner := &preShutdownRunner{run: func(ctx context.Context) error {
+		<-ctx.Done()
+
+		return nil
+	}}
+
+	svc.SetPreShutdownRunnerFactory(func(bool, *runner.Args, ...runner.Option) runner.Runner { return mockRunner })
+
+	err := svc.PreShutdownFunc(t.Context(), rt)
+	require.ErrorContains(t, err, "pre-shutdown hook timed out after 1ns: context deadline exceeded")
+	assert.True(t, mockRunner.closed)
+}
+
+func TestExtensionHostRunnerConfig(t *testing.T) {
+	svc := &services.Extension{
+		Spec: extservices.Spec{
+			Name:       "hello",
+			RunnerMode: extservices.RunnerModeHost,
+		},
+	}
+
+	mounts, env, err := svc.ApplyExtensionServiceConfig(&runtimeres.ExtensionServiceConfigSpec{
+		Environment: []string{"FROM_CONFIG=true"},
+	}, nil, []string{"FROM_MANIFEST=true"})
+	require.NoError(t, err)
+	assert.Empty(t, mounts)
+	assert.Equal(t, []string{"FROM_MANIFEST=true", "FROM_CONFIG=true"}, env)
+
+	_, _, err = svc.ApplyExtensionServiceConfig(&runtimeres.ExtensionServiceConfigSpec{
+		Files: []runtimeres.ExtensionServiceConfigFile{{MountPath: "/etc/hello.conf"}},
+	}, nil, nil)
+	assert.EqualError(t, err, "extension service config files are not supported in host runner mode")
+}
+
+func TestExtensionContainerRunnerModeDefault(t *testing.T) {
+	svc := &services.Extension{}
+
+	assert.Equal(t, []string{"containerd"}, svc.DependsOn(nil))
+}
+
+func TestExtensionHostRunnerRejectsRelativeEntrypoint(t *testing.T) {
+	svc := &services.Extension{
+		Spec: extservices.Spec{
+			Name:       "hello",
+			RunnerMode: extservices.RunnerModeHost,
+			Container: extservices.Container{
+				Entrypoint: "usr/local/bin/hello",
+			},
+		},
+	}
+
+	_, err := svc.HostProcessArgs()
+	assert.EqualError(t, err, "host runner entrypoint must be an absolute path: \"usr/local/bin/hello\"")
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/siderolabs/gen/xslices"
 	"go.uber.org/zap"
 
+	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/internal/trigger"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/network/watch"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
@@ -48,7 +49,8 @@ func (ctrl *EthernetStatusController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 func (ctrl *EthernetStatusController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	// wait for udevd to be healthy, which implies that all link renames are done
-	if err := runtime.WaitForDevicesReady(ctx, r,
+	if err := runtime.WaitForDevicesReady(
+		ctx, r,
 		[]controller.Input{
 			{
 				Namespace: network.NamespaceName,
@@ -63,7 +65,7 @@ func (ctrl *EthernetStatusController) Run(ctx context.Context, r controller.Runt
 	// create watch connections to ethtool via genetlink
 	// these connections are used only to join multicast groups and receive notifications on changes
 	// other connections are used to send requests and receive responses, as we can't mix the notifications and request/responses
-	ethtoolWatcher, err := watch.NewEthtool(watch.NewDefaultRateLimitedTrigger(ctx, r))
+	ethtoolWatcher, err := watch.NewEthtool(trigger.NewDefaultRateLimitedTrigger(ctx, r))
 	if err != nil {
 		logger.Warn("ethtool watcher failed to start", zap.Error(err))
 

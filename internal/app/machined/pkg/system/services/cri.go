@@ -11,10 +11,12 @@ import (
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/defaults"
+	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/xslices"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
+	"github.com/siderolabs/talos/internal/app/machined/pkg/sandboxd"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/events"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/health"
@@ -24,7 +26,10 @@ import (
 	"github.com/siderolabs/talos/internal/pkg/environment"
 	"github.com/siderolabs/talos/pkg/conditions"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/resources/block"
+	"github.com/siderolabs/talos/pkg/machinery/resources/files"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
 
 var _ system.HealthcheckedService = (*CRI)(nil)
@@ -35,6 +40,8 @@ type CRI struct {
 	// client is a lazy-initialized containerd client. It should be accessed using the Client() method.
 	client *containerd.Client
 }
+
+const criServiceID = "cri"
 
 // Client lazy-initializes the containerd client if needed and returns it.
 func (c *CRI) Client() (*containerd.Client, error) {
@@ -54,18 +61,43 @@ func (c *CRI) Client() (*containerd.Client, error) {
 
 // ID implements the Service interface.
 func (c *CRI) ID(runtime.Runtime) string {
-	return "cri"
+	return criServiceID
 }
 
 // PreFunc implements the Service interface.
-func (c *CRI) PreFunc(context.Context, runtime.Runtime) error {
-	return os.MkdirAll(defaults.DefaultRootDir, os.ModeDir)
+func (c *CRI) PreFunc(ctx context.Context, r runtime.Runtime) error {
+	if err := os.MkdirAll(defaults.DefaultRootDir, 0o750); err != nil {
+		return err
+	}
+
+	if r.State().Platform().Mode().InContainer() {
+		return nil
+	}
+
+	return createOverlayMountRequests(ctx, r.State().V1Alpha2().Resources())
+}
+
+func createOverlayMountRequests(ctx context.Context, st state.State) error {
+	for _, overlay := range constants.Overlays {
+		mountRequest := block.NewVolumeMountRequest(block.NamespaceName, overlay.Path)
+		mountRequest.TypedSpec().Requester = criServiceID
+		mountRequest.TypedSpec().VolumeID = overlay.Path
+
+		if err := st.Create(ctx, mountRequest); err != nil && !state.IsConflictError(err) {
+			return fmt.Errorf("error creating persistent volume mount request for overlay %q: %w", overlay.Path, err)
+		}
+	}
+
+	return nil
 }
 
 // PostFunc implements the Service interface.
 func (c *CRI) PostFunc(runtime.Runtime, events.ServiceState) (err error) {
 	if c.client != nil {
-		return c.client.Close()
+		client := c.client
+		c.client = nil
+
+		return client.Close()
 	}
 
 	return nil
@@ -73,12 +105,31 @@ func (c *CRI) PostFunc(runtime.Runtime, events.ServiceState) (err error) {
 
 // Condition implements the Service interface.
 func (c *CRI) Condition(r runtime.Runtime) conditions.Condition {
-	return network.NewReadyCondition(r.State().V1Alpha2().Resources(), network.AddressReady, network.HostnameReady, network.EtcFilesReady)
+	cond := []conditions.Condition{
+		network.NewReadyCondition(r.State().V1Alpha2().Resources(), network.AddressReady, network.HostnameReady, network.EtcFilesReady),
+		files.NewEtcFileCondition(r.State().V1Alpha2().Resources(), "machine-id", constants.CRIConfig, constants.CRIBaseRuntimeSpec),
+	}
+
+	cfg := r.Config()
+
+	if !r.State().Platform().Mode().InContainer() && cfg != nil && cfg.UnattendedInstallConfig() != nil {
+		cond = append(
+			cond,
+			runtimeres.NewUnattendedInstallCondition(r.State().V1Alpha2().Resources()),
+		)
+	}
+
+	return conditions.WaitForAll(cond...)
 }
 
 // DependsOn implements the Service interface.
-func (c *CRI) DependsOn(runtime.Runtime) []string {
-	return nil
+func (c *CRI) DependsOn(r runtime.Runtime) []string {
+	if !sandboxd.Enabled(r) {
+		return nil
+	}
+
+	// CRI runs inside the sandbox namespace, which the sandboxd service owns.
+	return []string{sandboxd.ServiceID}
 }
 
 // Volumes implements the Service interface.
@@ -86,14 +137,15 @@ func (c *CRI) Volumes(r runtime.Runtime) []string {
 	volumes := []string{
 		"/var/lib",
 		"/var/lib/cni",
-		"/var/lib/containerd",
+		constants.CRIContainerdVolumeID,
 		"/var/run",
 		"/var/run/lock",
 		"/var/run/lock/iscsi",
 	}
 
 	if !r.State().Platform().Mode().InContainer() {
-		volumes = append(volumes,
+		volumes = append(
+			volumes,
 			xslices.Map(constants.Overlays, func(target constants.SELinuxLabeledPath) string {
 				return target.Path
 			})...,
@@ -117,9 +169,7 @@ func (c *CRI) Runner(r runtime.Runtime) (runner.Runner, error) {
 		},
 	}
 
-	return restart.New(process.NewRunner(
-		r.Config().Debug(),
-		args,
+	opts := []runner.Option{
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithEnv(append(
 			environment.Get(r.Config()),
@@ -129,7 +179,18 @@ func (c *CRI) Runner(r runtime.Runtime) (runner.Runner, error) {
 		runner.WithCgroupPath(constants.CgroupPodRuntime),
 		runner.WithSelinuxLabel(constants.SelinuxLabelPodRuntime),
 		runner.WithDroppedCapabilities(constants.DefaultDroppedCapabilities),
-	),
+	}
+
+	// When workload isolation is enabled, run CRI inside the shared sandbox
+	// PID+mount namespace. The launcher is resolved per launch (getter), so if
+	// sandboxd is recreated, CRI's restart re-enters the new namespace. When
+	// isolation is disabled/absent (or in container mode) CRI runs on the host.
+	if sandboxd.Enabled(r) {
+		opts = append(opts, runner.WithSandbox(r.Sandbox))
+	}
+
+	return restart.New(
+		process.NewRunner(r.Config().Debug(), args, opts...),
 		restart.WithType(restart.Forever),
 	), nil
 }

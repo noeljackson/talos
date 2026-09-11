@@ -12,6 +12,7 @@ import (
 	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-procfs/procfs"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
@@ -116,7 +117,8 @@ func (u *UpCloud) ParseMetadata(metadata *MetadataConfig) (*runtime.PlatformNetw
 					family = nethelpers.FamilyInet6
 				}
 
-				networkConfig.Addresses = append(networkConfig.Addresses,
+				networkConfig.Addresses = append(
+					networkConfig.Addresses,
 					network.AddressSpecSpec{
 						ConfigLayer: network.ConfigPlatform,
 						LinkName:    iface,
@@ -154,10 +156,18 @@ func (u *UpCloud) ParseMetadata(metadata *MetadataConfig) (*runtime.PlatformNetw
 	}
 
 	if len(dnsIPs) > 0 {
-		networkConfig.Resolvers = append(networkConfig.Resolvers, network.ResolverSpecSpec{
-			DNSServers:  dnsIPs,
+		resolverSpec := network.ResolverSpecSpec{
+			NameServers: xslices.Map(dnsIPs, func(addr netip.Addr) network.NameServerSpec {
+				return network.NameServerSpec{
+					Addr:     addr,
+					Protocol: nethelpers.DNSProtocolDefault,
+				}
+			}),
 			ConfigLayer: network.ConfigPlatform,
-		})
+		}
+		resolverSpec.Convert()
+
+		networkConfig.Resolvers = append(networkConfig.Resolvers, resolverSpec)
 	}
 
 	for _, ipStr := range publicIPs {

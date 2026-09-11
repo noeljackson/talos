@@ -10,6 +10,7 @@ import (
 	"github.com/siderolabs/crypto/x509"
 	"github.com/stretchr/testify/require"
 
+	"github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
@@ -18,39 +19,68 @@ import (
 
 //nolint:gocyclo
 func TestRedactSecrets(t *testing.T) {
-	input, err := generate.NewInput("test", "https://doesntmatter:6443", constants.DefaultKubernetesVersion)
-	require.NoError(t, err)
+	t.Parallel()
 
-	container, err := input.Config(machine.TypeControlPlane)
-	if err != nil {
-		return
+	for _, versionContract := range []*config.VersionContract{
+		config.TalosVersion1_13,
+		config.TalosVersion1_14,
+	} {
+		t.Run(versionContract.String(), func(t *testing.T) {
+			t.Parallel()
+
+			input, err := generate.NewInput("test", "https://doesntmatter:6443", constants.DefaultKubernetesVersion, generate.WithVersionContract(versionContract))
+			require.NoError(t, err)
+
+			container, err := input.Config(machine.TypeControlPlane)
+			if err != nil {
+				return
+			}
+
+			config := container
+
+			require.NotEmpty(t, config.Machine().Security().Token())
+			require.NotEmpty(t, config.Machine().Security().IssuingCA().Key)
+
+			// for 1.14+ the cluster secret lives in a separate DiscoveryIdentityConfig document,
+			// so it is no longer part of the v1alpha1 config (redaction of that document is covered elsewhere).
+			if !versionContract.DiscoveryIdentityMultidocConfig() {
+				require.NotEmpty(t, config.DiscoveryIdentityConfig().ClusterSecret())
+			}
+
+			require.NotEmpty(t, config.Cluster().Token().Secret())
+			require.Empty(t, config.Cluster().AESCBCEncryptionSecret())
+
+			require.NotEmpty(t, config.Cluster().Etcd().CA().Key)
+			require.NotEmpty(t, config.K8sServiceAccountConfig().IssuingKey().Key)
+
+			if !versionContract.MultidocKubernetesConfigSupported() {
+				require.NotEmpty(t, config.Cluster().SecretboxEncryptionSecret())
+			}
+
+			replacement := "**.***"
+
+			redacted := config.RedactSecrets(replacement)
+
+			require.Equal(t, replacement, redacted.Machine().Security().Token())
+			require.Equal(t, replacement, string(redacted.Machine().Security().IssuingCA().Key))
+
+			if !versionContract.DiscoveryIdentityMultidocConfig() {
+				require.Equal(t, replacement, redacted.DiscoveryIdentityConfig().ClusterSecret())
+			}
+
+			require.Equal(t, "***", redacted.Cluster().Token().Secret())
+			require.Equal(t, "", redacted.Cluster().AESCBCEncryptionSecret())
+			require.Equal(t, replacement, string(redacted.K8sAPIServerCAConfig().IssuingCA().Key))
+			require.Equal(t, replacement, string(redacted.Cluster().Etcd().CA().Key))
+			require.Equal(t, replacement, string(redacted.K8sServiceAccountConfig().IssuingKey().Key))
+
+			if versionContract.MultidocKubernetesConfigSupported() {
+				require.Empty(t, redacted.Cluster().SecretboxEncryptionSecret())
+			} else {
+				require.Equal(t, replacement, redacted.Cluster().SecretboxEncryptionSecret())
+			}
+		})
 	}
-
-	config := container.RawV1Alpha1()
-
-	require.NotEmpty(t, config.MachineConfig.MachineToken)
-	require.NotEmpty(t, config.MachineConfig.MachineCA.Key)
-	require.NotEmpty(t, config.ClusterConfig.ClusterSecret)
-	require.NotEmpty(t, config.ClusterConfig.BootstrapToken)
-	require.Empty(t, config.ClusterConfig.ClusterAESCBCEncryptionSecret)
-	require.NotEmpty(t, config.ClusterConfig.ClusterSecretboxEncryptionSecret)
-	require.NotEmpty(t, config.ClusterConfig.ClusterCA.Key)
-	require.NotEmpty(t, config.ClusterConfig.EtcdConfig.RootCA.Key)
-	require.NotEmpty(t, config.ClusterConfig.ClusterServiceAccount.Key)
-
-	replacement := "**.***"
-
-	config.Redact(replacement)
-
-	require.Equal(t, replacement, config.Machine().Security().Token())
-	require.Equal(t, replacement, string(config.Machine().Security().IssuingCA().Key))
-	require.Equal(t, replacement, config.Cluster().Secret())
-	require.Equal(t, "***", config.Cluster().Token().Secret())
-	require.Equal(t, "", config.Cluster().AESCBCEncryptionSecret())
-	require.Equal(t, replacement, config.Cluster().SecretboxEncryptionSecret())
-	require.Equal(t, replacement, string(config.Cluster().IssuingCA().Key))
-	require.Equal(t, replacement, string(config.Cluster().Etcd().CA().Key))
-	require.Equal(t, replacement, string(config.Cluster().ServiceAccount().Key))
 }
 
 //nolint:gocyclo

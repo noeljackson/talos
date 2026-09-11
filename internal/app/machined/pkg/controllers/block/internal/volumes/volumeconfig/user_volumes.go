@@ -45,12 +45,11 @@ func UserVolumeTransformer(c configconfig.Config) ([]VolumeResource, error) {
 		userVolumeResource := VolumeResource{
 			VolumeID:           volumeID,
 			Label:              block.UserVolumeLabel,
-			MountTransformFunc: HandleUserVolumeMountRequest(userVolumeConfig), // This is overridden for Directory type below.
+			MountTransformFunc: HandleUserVolumeMountRequest(userVolumeConfig),
 		}
 
 		switch userVolumeConfig.Type().ValueOr(block.VolumeTypePartition) {
 		case block.VolumeTypeDirectory:
-			userVolumeResource.MountTransformFunc = DefaultMountTransform
 			userVolumeResource.TransformFunc = NewBuilder().
 				WithType(block.VolumeTypeDirectory).
 				WithMount(block.MountSpec{
@@ -78,7 +77,8 @@ func UserVolumeTransformer(c configconfig.Config) ([]VolumeResource, error) {
 						Grow:     true,
 					},
 					FilesystemSpec: block.FilesystemSpec{
-						Type: userVolumeConfig.Filesystem().Type(),
+						Type:                   userVolumeConfig.Filesystem().Type(),
+						MinAllocationGroupSize: minAllocationGroupSize(userVolumeConfig.Filesystem()),
 					},
 				}).
 				WithMount(block.MountSpec{
@@ -90,6 +90,8 @@ func UserVolumeTransformer(c configconfig.Config) ([]VolumeResource, error) {
 					GID:                 0,
 					ProjectQuotaSupport: userVolumeConfig.Filesystem().ProjectQuotaSupport(),
 				}).
+				WithTrim(c, userVolumeConfig).
+				WithScrub(c, userVolumeConfig).
 				WithConvertEncryptionConfiguration(userVolumeConfig.Encryption()).
 				WriterFunc()
 
@@ -112,7 +114,8 @@ func UserVolumeTransformer(c configconfig.Config) ([]VolumeResource, error) {
 						TypeUUID:        partition.LinuxFilesystemData,
 					},
 					FilesystemSpec: block.FilesystemSpec{
-						Type: userVolumeConfig.Filesystem().Type(),
+						Type:                   userVolumeConfig.Filesystem().Type(),
+						MinAllocationGroupSize: minAllocationGroupSize(userVolumeConfig.Filesystem()),
 					},
 				}).
 				WithMount(block.MountSpec{
@@ -124,6 +127,8 @@ func UserVolumeTransformer(c configconfig.Config) ([]VolumeResource, error) {
 					GID:                 0,
 					ProjectQuotaSupport: userVolumeConfig.Filesystem().ProjectQuotaSupport(),
 				}).
+				WithTrim(c, userVolumeConfig).
+				WithScrub(c, userVolumeConfig).
 				WithConvertEncryptionConfiguration(userVolumeConfig.Encryption()).
 				WriterFunc()
 
@@ -207,6 +212,8 @@ func ExistingVolumeTransformer(c configconfig.Config) ([]VolumeResource, error) 
 					UID:          0,
 					GID:          0,
 				}).
+				WithTrim(c, existingVolumeConfig).
+				WithScrub(c, existingVolumeConfig).
 				WriterFunc(),
 			MountTransformFunc: HandleExistingVolumeMountRequest(existingVolumeConfig),
 		})
@@ -269,7 +276,7 @@ func externalVolumeSource(ext configconfig.ExternalVolumeConfig) string {
 			return ext.Mount().Virtiofs().ValueOrZero().Source()
 		}
 
-	case block.FilesystemTypeNone, block.FilesystemTypeXFS, block.FilesystemTypeVFAT, block.FilesystemTypeEXT4, block.FilesystemTypeISO9660, block.FilesystemTypeSwap:
+	case block.FilesystemTypeNone, block.FilesystemTypeXFS, block.FilesystemTypeVFAT, block.FilesystemTypeEXT4, block.FilesystemTypeISO9660, block.FilesystemTypeSwap, block.FilesystemTypeBtrfs:
 		fallthrough
 
 	default:
@@ -288,7 +295,7 @@ func externalVolumeParameters(ext configconfig.ExternalVolumeConfig) ([]block.Pa
 
 		return nil, errors.New("virtiofs mount specification is required for Virtiofs external volume")
 
-	case block.FilesystemTypeNone, block.FilesystemTypeXFS, block.FilesystemTypeVFAT, block.FilesystemTypeEXT4, block.FilesystemTypeISO9660, block.FilesystemTypeSwap:
+	case block.FilesystemTypeNone, block.FilesystemTypeXFS, block.FilesystemTypeVFAT, block.FilesystemTypeEXT4, block.FilesystemTypeISO9660, block.FilesystemTypeSwap, block.FilesystemTypeBtrfs:
 		fallthrough
 
 	default:
@@ -344,6 +351,7 @@ func HandleUserVolumeMountRequest(userVolumeConfig configconfig.UserVolumeConfig
 	return func(m *block.VolumeMountRequest) error {
 		m.TypedSpec().DisableAccessTime = userVolumeConfig.Mount().DisableAccessTime()
 		m.TypedSpec().Secure = userVolumeConfig.Mount().Secure()
+		m.TypedSpec().NoExec = userVolumeConfig.Mount().Secure()
 
 		return nil
 	}
@@ -356,6 +364,7 @@ func HandleExistingVolumeMountRequest(existingVolumeConfig configconfig.Existing
 		m.TypedSpec().ReadOnly = existingVolumeConfig.Mount().ReadOnly()
 		m.TypedSpec().DisableAccessTime = existingVolumeConfig.Mount().DisableAccessTime()
 		m.TypedSpec().Secure = existingVolumeConfig.Mount().Secure()
+		m.TypedSpec().NoExec = existingVolumeConfig.Mount().Secure()
 
 		return nil
 	}
@@ -367,6 +376,7 @@ func HandleExternalVolumeMountRequest(externalVolumeConfig configconfig.External
 		m.TypedSpec().ReadOnly = externalVolumeConfig.Mount().ReadOnly()
 		m.TypedSpec().DisableAccessTime = externalVolumeConfig.Mount().DisableAccessTime()
 		m.TypedSpec().Secure = externalVolumeConfig.Mount().Secure()
+		m.TypedSpec().NoExec = externalVolumeConfig.Mount().Secure()
 
 		return nil
 	}

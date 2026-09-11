@@ -17,12 +17,14 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/xiter"
 	"github.com/siderolabs/go-retry/retry"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/siderolabs/talos/pkg/kubernetes"
 	"github.com/siderolabs/talos/pkg/machinery/client"
-	v1alpha1config "github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
+	"github.com/siderolabs/talos/pkg/machinery/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/stdpatches"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/resources/v1alpha1"
 )
@@ -180,31 +182,22 @@ func extractKubeletVersionSuffix(imageRef string) string {
 func upgradeKubeletPatcher(
 	options UpgradeOptions,
 	kubeletSpec *k8s.KubeletSpec,
-) func(config *v1alpha1config.Config) error {
-	return func(config *v1alpha1config.Config) error {
-		if config.MachineConfig == nil {
-			config.MachineConfig = &v1alpha1config.MachineConfig{}
-		}
-
-		if config.MachineConfig.MachineKubelet == nil {
-			config.MachineConfig.MachineKubelet = &v1alpha1config.KubeletConfig{}
-		}
-
+) func(config.Container) (configpatcher.Patch, error) {
+	return func(cfg config.Container) (configpatcher.Patch, error) {
 		oldImage := kubeletSpec.TypedSpec().Image
-		oldImage, _, _ = strings.Cut(oldImage, "@") // ignore digest if present
+		oldVersion, _ := kubernetes.VersionFromImageRef(oldImage)
 
-		oldSuffix := extractKubeletVersionSuffix(oldImage)
+		oldSuffix := extractKubeletVersionSuffix(oldVersion)
 		newVersion := options.Path.ToVersion() + oldSuffix
 
-		logUpdate := func(oldImage string) {
-			_, version, _ := strings.Cut(oldImage, ":")
-			if version == "" {
-				version = options.Path.FromVersion()
+		logUpdate := func(oldVersion string) {
+			if oldVersion == "" {
+				oldVersion = options.Path.FromVersion()
 			}
 
-			version = strings.TrimLeft(version, "v")
+			oldVersion = strings.TrimLeft(oldVersion, "v")
 
-			options.Log(" > update %s: %s -> %s", kubelet, version, newVersion)
+			options.Log(" > update %s: %s -> %s", kubelet, oldVersion, newVersion)
 
 			if options.DryRun {
 				options.Log(" > skipped in dry-run")
@@ -214,18 +207,16 @@ func upgradeKubeletPatcher(
 		image := fmt.Sprintf("%s:v%s", options.KubeletImage, newVersion)
 
 		if oldImage == image {
-			return errUpdateSkipped
+			return nil, errUpdateSkipped
 		}
 
-		logUpdate(oldImage)
+		logUpdate(oldVersion)
 
 		if options.DryRun {
-			return errUpdateSkipped
+			return nil, errUpdateSkipped
 		}
 
-		config.MachineConfig.MachineKubelet.KubeletImage = image
-
-		return nil
+		return stdpatches.PreparePatch(stdpatches.WithKubeletImage(stdpatches.GuessVersionContractKubelet(cfg), image))
 	}
 }
 
@@ -275,11 +266,11 @@ func checkNodeKubeletVersion(ctx context.Context, cluster UpgradeProvider, nodeT
 		ready := false
 
 		for _, condition := range node.Status.Conditions {
-			if condition.Type != v1.NodeReady {
+			if condition.Type != corev1.NodeReady {
 				continue
 			}
 
-			if condition.Status == v1.ConditionTrue {
+			if condition.Status == corev1.ConditionTrue {
 				ready = true
 
 				break

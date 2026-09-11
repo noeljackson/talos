@@ -20,6 +20,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	blockcfg "github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	cricfg "github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
@@ -55,15 +56,10 @@ func (suite *ImageCacheConfigSuite) TestReconcileFeatureNotEnabled() {
 func (suite *ImageCacheConfigSuite) TestReconcileFeatureEnabled() {
 	ctrlName := (&crictrl.ImageCacheConfigController{}).Name()
 
-	cfg := config.NewMachineConfig(container.NewV1Alpha1(&v1alpha1.Config{
-		MachineConfig: &v1alpha1.MachineConfig{
-			MachineFeatures: &v1alpha1.FeaturesConfig{
-				ImageCacheSupport: &v1alpha1.ImageCacheConfig{
-					CacheLocalEnabled: new(true),
-				},
-			},
-		},
-	}))
+	imageCacheCfg := cricfg.NewImageCacheConfigV1Alpha1()
+	imageCacheCfg.LocalConfig.ConfigEnabled = new(true)
+
+	cfg := config.NewMachineConfig(must(container.New(imageCacheCfg)))
 
 	suite.Require().NoError(suite.State().Create(suite.Ctx(), cfg))
 
@@ -89,7 +85,8 @@ func (suite *ImageCacheConfigSuite) TestReconcileFeatureEnabled() {
 	suite.Require().NoError(suite.State().Create(suite.Ctx(), vs2))
 
 	// controller should create mount requests
-	ctest.AssertResources(suite,
+	ctest.AssertResources(
+		suite,
 		[]string{
 			ctrlName + "-" + crictrl.VolumeImageCacheISO,
 			ctrlName + "-" + crictrl.VolumeImageCacheDISK,
@@ -154,15 +151,9 @@ func (suite *ImageCacheConfigSuite) TestReconcileFeatureEnabled() {
 	})
 
 	// now, try to disable the image cache
-	newCfg := config.NewMachineConfig(container.NewV1Alpha1(&v1alpha1.Config{
-		MachineConfig: &v1alpha1.MachineConfig{
-			MachineFeatures: &v1alpha1.FeaturesConfig{
-				ImageCacheSupport: &v1alpha1.ImageCacheConfig{
-					CacheLocalEnabled: new(false),
-				},
-			},
-		},
-	}))
+	imageCacheCfg.LocalConfig.ConfigEnabled = new(false)
+
+	newCfg := config.NewMachineConfig(must(container.New(imageCacheCfg)))
 	newCfg.Metadata().SetVersion(cfg.Metadata().Version())
 
 	suite.Require().NoError(suite.State().Update(suite.Ctx(), newCfg))
@@ -201,15 +192,10 @@ func (suite *ImageCacheConfigSuite) TestReconcileFeatureEnabled() {
 func (suite *ImageCacheConfigSuite) TestReconcileFeatureEnabledWithoutCacheVolumeKeepsMountRequests() {
 	ctrlName := (&crictrl.ImageCacheConfigController{}).Name()
 
-	cfg := config.NewMachineConfig(container.NewV1Alpha1(&v1alpha1.Config{
-		MachineConfig: &v1alpha1.MachineConfig{
-			MachineFeatures: &v1alpha1.FeaturesConfig{
-				ImageCacheSupport: &v1alpha1.ImageCacheConfig{
-					CacheLocalEnabled: new(true),
-				},
-			},
-		},
-	}))
+	imageCacheCfg := cricfg.NewImageCacheConfigV1Alpha1()
+	imageCacheCfg.LocalConfig.ConfigEnabled = new(true)
+
+	cfg := config.NewMachineConfig(must(container.New(imageCacheCfg)))
 
 	suite.Require().NoError(suite.State().Create(suite.Ctx(), cfg))
 
@@ -321,7 +307,8 @@ func (suite *ImageCacheConfigSuite) TestReconcileJustDiskVolume() {
 	})
 
 	// volume mount status should have a finalizer
-	ctest.AssertResource(suite,
+	ctest.AssertResource(
+		suite,
 		ctrlName+"-"+crictrl.VolumeImageCacheDISK,
 		func(vms *block.VolumeMountStatus, asrt *assert.Assertions) {
 			asrt.True(vms.Metadata().Finalizers().Has(ctrlName))
@@ -337,7 +324,8 @@ func (suite *ImageCacheConfigSuite) TestReconcileJustDiskVolume() {
 	suite.Require().NoError(err)
 
 	// controller should remove its finalizer
-	ctest.AssertResource(suite,
+	ctest.AssertResource(
+		suite,
 		ctrlName+"-"+crictrl.VolumeImageCacheDISK,
 		func(vms *block.VolumeMountStatus, asrt *assert.Assertions) {
 			asrt.True(vms.Metadata().Finalizers().Empty())

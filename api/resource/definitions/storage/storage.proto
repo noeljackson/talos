@@ -1,0 +1,280 @@
+syntax = "proto3";
+
+package talos.resource.definitions.storage;
+
+option go_package = "github.com/siderolabs/talos/pkg/machinery/api/resource/definitions/storage";
+option java_package = "dev.talos.api.resource.definitions.storage";
+
+import "google/api/expr/v1alpha1/checked.proto";
+import "resource/definitions/enums/enums.proto";
+
+// LVMLogicalVolumeSpecSpec is the spec for LVMLogicalVolumeSpec resource.
+message LVMLogicalVolumeSpecSpec {
+  // VGName is the parent volume group name.
+  string vg_name = 1;
+  // Name is the logical volume name.
+  string name = 2;
+  // Type is the LV layout.
+  talos.resource.definitions.enums.StorageLVMLogicalVolumeType type = 3;
+  // SizeBytes is the absolute LV size in bytes; used when SizePercentVG is zero.
+  uint64 size_bytes = 4;
+  // SizePercentVG, when non-zero, sizes the LV as a percentage of the VG.
+  uint32 size_percent_vg = 5;
+  // Mirrors is the mirror count for raid1/raid10 layouts.
+  uint32 mirrors = 6;
+  // Stripes is the stripe count for raid0/raid10 layouts; 0 means "all PVs",
+  // resolved by the reconcile controller.
+  uint32 stripes = 7;
+}
+
+// LVMLogicalVolumeStatusSpec mirrors selected `lvs` columns.
+message LVMLogicalVolumeStatusSpec {
+  // Path is the LV path (lv_path), e.g. /dev/vg0/data. Empty for hidden LVs.
+  string path = 1;
+  // DMPath is the device-mapper path (lv_dm_path), always populated when active.
+  string dm_path = 2;
+  // Name is the LV short name (lv_name).
+  string name = 3;
+  // FullName is the qualified LV name (lv_full_name), e.g. "vg0/data".
+  string full_name = 4;
+  // VGName is the parent volume group name (vg_name).
+  string vg_name = 5;
+  // UUID is the stable LV identifier (lv_uuid).
+  string uuid = 6;
+  // Layout is the LV layout (lv_layout), e.g. "linear", "raid1", "thin,pool".
+  string layout = 7;
+  // Role is the LV role (lv_role), e.g. "public", "private,thin,pool,data".
+  string role = 8;
+  // Permissions reflects lv_permissions.
+  string permissions = 9;
+  // AllocationPolicy reflects lv_allocation_policy.
+  string allocation_policy = 10;
+  // AllocationLocked is the raw lv_allocation_locked column ("locked" / "").
+  string allocation_locked = 11;
+  // FixedMinor is the raw lv_fixed_minor column ("fixed" / "").
+  string fixed_minor = 12;
+  // Active is the raw lv_active column ("active" / "" / "unknown").
+  string active = 13;
+  // ActiveLocally is the raw lv_active_locally column ("active locally" / "" / "unknown").
+  string active_locally = 14;
+  // ActiveRemotely is the raw lv_active_remotely column ("active remotely" / "" / "unknown").
+  string active_remotely = 15;
+  // ActiveExclusively is the raw lv_active_exclusively column ("active exclusively" / "" / "unknown").
+  string active_exclusively = 16;
+  // Suspended is the raw lv_suspended column ("suspended" / "" / "unknown").
+  string suspended = 17;
+  // DeviceOpen is the raw lv_device_open column ("open" / "" / "unknown").
+  string device_open = 18;
+  // SkipActivation is the raw lv_skip_activation column ("skip activation" / "").
+  string skip_activation = 19;
+  // Merging is the raw lv_merging column ("merging" / "").
+  string merging = 20;
+  // Converting is the raw lv_converting column ("converting" / "").
+  string converting = 21;
+  // Size is the raw lv_size column in bytes.
+  string size = 22;
+  // MetadataSize is the raw lv_metadata_size column in bytes ("" when not applicable).
+  string metadata_size = 23;
+  // ReadAhead is the raw lv_read_ahead column ("auto" or a byte count).
+  string read_ahead = 24;
+  // KernelMajor is the raw lv_kernel_major column ("-1" when inactive, otherwise a number).
+  string kernel_major = 25;
+  // KernelMinor is the raw lv_kernel_minor column ("-1" when inactive, otherwise a number).
+  string kernel_minor = 26;
+  // Origin is the LV name this LV is a snapshot/thin clone of (origin); empty otherwise.
+  string origin = 27;
+  // OriginSize is the raw origin_size column in bytes ("" when not applicable).
+  string origin_size = 28;
+  // PoolLV is the parent thin/cache pool name (pool_lv); empty when not pool-backed.
+  string pool_lv = 29;
+  // DataLV is the data sub-LV name (data_lv); empty when not applicable.
+  string data_lv = 30;
+  // MetadataLV is the metadata sub-LV name (metadata_lv); empty when not applicable.
+  string metadata_lv = 31;
+  // MovePV is the source PV of an in-progress pvmove (move_pv); empty otherwise.
+  string move_pv = 32;
+  // ConvertLV is the target LV of an in-progress lvconvert (convert_lv); empty otherwise.
+  string convert_lv = 33;
+  // WhenFull reflects lv_when_full ("error" / "queue" / "").
+  string when_full = 34;
+  // Tags is the list of tags attached to the LV (lv_tags).
+  repeated string tags = 35;
+  // PrettySize is the human-readable rendering of Size; empty when Size is
+  // not a byte count.
+  string pretty_size = 36;
+}
+
+// LVMPhysicalVolumeSpecSpec is the spec for LVMPhysicalVolumeSpec resource.
+message LVMPhysicalVolumeSpecSpec {
+  // Device is the block-device path to initialize as a PV.
+  string device = 1;
+  // VGName is the target volume group name.
+  string vg_name = 2;
+}
+
+// LVMPhysicalVolumeStatusSpec mirrors selected `pvs` columns.
+// Raw strings preserve LVM sentinel values.
+message LVMPhysicalVolumeStatusSpec {
+  // Device is the block-device path backing the PV (pv_name).
+  string device = 1;
+  // VGName is the parent volume group name; empty if the PV is not in a VG.
+  string vg_name = 2;
+  // UUID is the stable PV identifier written to the PV label (pv_uuid).
+  string uuid = 3;
+  // Format is the on-disk metadata format (pv_fmt), e.g. "lvm2".
+  string format = 4;
+  // Allocatable is the raw pv_allocatable column ("allocatable" / "").
+  string allocatable = 5;
+  // Exported is the raw pv_exported column ("exported" / "").
+  string exported = 6;
+  // Missing is the raw pv_missing column ("missing" / "").
+  string missing = 7;
+  // InUse is the raw pv_in_use column ("used" / "").
+  string in_use = 8;
+  // Size is the raw pv_size column in bytes.
+  string size = 9;
+  // DeviceSize is the raw dev_size column in bytes.
+  string device_size = 10;
+  // Free is the raw pv_free column in bytes.
+  string free = 11;
+  // Used is the raw pv_used column in bytes.
+  string used = 12;
+  // PECount is the raw pv_pe_count column.
+  string pe_count = 13;
+  // PEAllocCount is the raw pv_pe_alloc_count column.
+  string pe_alloc_count = 14;
+  // Major is the raw pv_major column ("-1" for orphan PVs, otherwise the kernel major).
+  string major = 15;
+  // Minor is the raw pv_minor column ("-1" for orphan PVs, otherwise the kernel minor).
+  string minor = 16;
+  // Tags is the list of tags attached to the PV (pv_tags).
+  repeated string tags = 17;
+  // PrettySize is the human-readable rendering of Size.
+  string pretty_size = 18;
+  // PrettyDeviceSize is the human-readable rendering of DeviceSize.
+  string pretty_device_size = 19;
+  // PrettyFree is the human-readable rendering of Free.
+  string pretty_free = 20;
+}
+
+// LVMRefreshRequestSpec is the spec for LVMRefreshRequest.
+message LVMRefreshRequestSpec {
+  int64 request = 1;
+}
+
+// LVMValidationErrorSpec is the spec for LVMValidationError resource.
+message LVMValidationErrorSpec {
+  // VGName is the volume group the error relates to.
+  string vg_name = 1;
+  // Message describes the validation error.
+  string message = 2;
+}
+
+// LVMVolumeGroupSpecSpec is the spec for LVMVolumeGroupSpec resource.
+message LVMVolumeGroupSpecSpec {
+  // Name is the volume group name.
+  string name = 1;
+  // PhysicalVolumes is the list of PV device paths.
+  repeated string physical_volumes = 2;
+}
+
+// LVMVolumeGroupStatusSpec mirrors selected `vgs` columns.
+// Raw strings preserve LVM sentinel values.
+message LVMVolumeGroupStatusSpec {
+  // Name is the volume group name (vg_name).
+  string name = 1;
+  // UUID is the stable VG identifier (vg_uuid).
+  string uuid = 2;
+  // Format is the on-disk metadata format (vg_fmt), e.g. "lvm2".
+  string format = 3;
+  // Permissions reflects vg_permissions ("writeable" / "read-only" / "unknown" / "").
+  string permissions = 4;
+  // Extendable is the raw vg_extendable column ("extendable" / "").
+  string extendable = 5;
+  // Exported is the raw vg_exported column ("exported" / "").
+  string exported = 6;
+  // Partial is the raw vg_partial column ("partial" / "").
+  string partial = 7;
+  // AllocationPolicy reflects vg_allocation_policy.
+  string allocation_policy = 8;
+  // Clustered is the raw vg_clustered column ("clustered" / "").
+  string clustered = 9;
+  // Shared is the raw vg_shared column ("shared" / "").
+  string shared = 10;
+  // Size is the raw vg_size column in bytes.
+  string size = 11;
+  // Free is the raw vg_free column in bytes.
+  string free = 12;
+  // ExtentSize is the raw vg_extent_size column in bytes.
+  string extent_size = 13;
+  // ExtentCount is the raw vg_extent_count column.
+  string extent_count = 14;
+  // FreeExtentCount is the raw vg_free_count column.
+  string free_extent_count = 15;
+  // MaxLV is the raw max_lv column; "0" means no limit.
+  string max_lv = 16;
+  // MaxPV is the raw max_pv column; "0" means no limit.
+  string max_pv = 17;
+  // LVCount is the raw lv_count column.
+  string lv_count = 18;
+  // PVCount is the raw pv_count column.
+  string pv_count = 19;
+  // SnapCount is the raw snap_count column.
+  string snap_count = 20;
+  // MissingPVCount is the raw vg_missing_pv_count column.
+  string missing_pv_count = 21;
+  // SeqNo is the raw vg_seqno column.
+  string seq_no = 22;
+  // LockType is the raw vg_lock_type column.
+  string lock_type = 23;
+  // SystemID is the system_id stamped into VG metadata (vg_systemid).
+  string system_id = 24;
+  // Tags is the list of tags attached to the VG (vg_tags).
+  repeated string tags = 25;
+  // PrettySize is the human-readable rendering of Size.
+  string pretty_size = 26;
+  // PrettyFree is the human-readable rendering of Free.
+  string pretty_free = 27;
+}
+
+// MDArraySpecSpec is the spec for MDArraySpec resource.
+message MDArraySpecSpec {
+  // Level is the RAID level.
+  talos.resource.definitions.enums.StorageMDLevel level = 1;
+  // VolumeSelector matches the member volumes of the array.
+  google.api.expr.v1alpha1.CheckedExpr volume_selector = 2;
+  // Metadata is the on-disk MD metadata format.
+  talos.resource.definitions.enums.StorageMDMetadata metadata = 3;
+}
+
+// MDArrayStatusSpec is the spec for MDArrayStatus resource.
+message MDArrayStatusSpec {
+  // Level is the RAID level.
+  talos.resource.definitions.enums.StorageMDLevel level = 1;
+  // Device is the stable by-id device path of the array.
+  string device = 2;
+  // Members is the list of member device paths.
+  repeated string members = 3;
+  // Error is the last provisioning error, if any.
+  string error = 4;
+  // Status is the provisioning/sync state of the array.
+  talos.resource.definitions.enums.StorageMDArrayPhase status = 5;
+  // RaidDevices is the observed active RAID device count.
+  int64 raid_devices = 6;
+  // UUID is the stable MD array UUID.
+  string uuid = 7;
+  // Name is the metadata-stamped array name.
+  string name = 8;
+  // Metadata is the MD metadata format/version.
+  string metadata = 9;
+  // ArrayState is the current sysfs array_state value.
+  string array_state = 10;
+  // SyncAction is the current sysfs sync_action value.
+  string sync_action = 11;
+}
+
+// MDRefreshRequestSpec is the spec for MDRefreshRequest.
+message MDRefreshRequestSpec {
+  int64 request = 1;
+}
+

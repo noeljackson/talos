@@ -5,6 +5,7 @@
 package vm
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -13,7 +14,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
@@ -76,12 +76,14 @@ func handlerDHCP4(serverIP net.IP, statePath string) server4.Handler {
 		}
 
 		if match.Hostname != "" && m.IsOptionRequested(dhcpv4.OptionHostName) {
-			modifiers = append(modifiers,
+			modifiers = append(
+				modifiers,
 				dhcpv4.WithOption(dhcpv4.OptHostName(match.Hostname)),
 			)
 		}
 
-		resp, err := dhcpv4.NewReplyFromRequest(m,
+		resp, err := dhcpv4.NewReplyFromRequest(
+			m,
 			modifiers...,
 		)
 		if err != nil {
@@ -122,11 +124,7 @@ func handlerDHCP4(serverIP net.IP, statePath string) server4.Handler {
 		_, err = conn.WriteTo(resp.ToBytes(), peer)
 		if err != nil {
 			log.Printf("failure sending response: %s", err)
-
-			return
 		}
-
-		log.Printf("DHCPv4: sent response")
 	}
 }
 
@@ -189,7 +187,8 @@ func handlerDHCP6(serverHwAddr net.HardwareAddr, statePath string) server6.Handl
 		}
 
 		if match.Hostname != "" {
-			modifiers = append(modifiers,
+			modifiers = append(
+				modifiers,
 				dhcpv6.WithFQDN(0, match.Hostname),
 			)
 		}
@@ -224,8 +223,21 @@ func netipAddrsToIPs(addrs []netip.Addr) []net.IP {
 	})
 }
 
+type dhcpServer interface {
+	Serve() error
+	Close() error
+}
+
+func newDHCPServer(ifName string, hwAddr net.HardwareAddr, ip net.IP, statePath string) (dhcpServer, error) {
+	if ip.To4() == nil {
+		return server6.NewServer(ifName, nil, handlerDHCP6(hwAddr, statePath), server6.WithDebugLogger())
+	}
+
+	return server4.NewServer(ifName, nil, handlerDHCP4(ip, statePath), server4.WithSummaryLogger())
+}
+
 // DHCPd entrypoint.
-func DHCPd(ifName string, ips []net.IP, statePath string) error {
+func DHCPd(ctx context.Context, ifName string, ips []net.IP, statePath string) error {
 	iface, err := net.InterfaceByName(ifName)
 	if err != nil {
 		return fmt.Errorf("error looking up interface: %w", err)
@@ -235,39 +247,30 @@ func DHCPd(ifName string, ips []net.IP, statePath string) error {
 		return fmt.Errorf("error disabling TX checksum offload: %w", err)
 	}
 
-	var eg errgroup.Group
+	eg, egCtx := errgroup.WithContext(ctx)
 
 	for _, ip := range ips {
+		server, err := newDHCPServer(ifName, iface.HardwareAddr, ip, statePath)
+		if err != nil {
+			log.Printf("error on dhcp startup: %s", err)
+
+			return err
+		}
+
 		eg.Go(func() error {
-			if ip.To4() == nil {
-				server, err := server6.NewServer(
-					ifName,
-					nil,
-					handlerDHCP6(iface.HardwareAddr, statePath),
-					server6.WithDebugLogger(),
-				)
-				if err != nil {
-					log.Printf("error on dhcp6 startup: %s", err)
+			<-egCtx.Done()
 
-					return err
-				}
+			return server.Close()
+		})
 
-				return server.Serve()
+		eg.Go(func() error {
+			err := server.Serve()
+
+			if egCtx.Err() != nil {
+				return nil //nolint:nilerr
 			}
 
-			server, err := server4.NewServer(
-				ifName,
-				nil,
-				handlerDHCP4(ip, statePath),
-				server4.WithSummaryLogger(),
-			)
-			if err != nil {
-				log.Printf("error on dhcp4 startup: %s", err)
-
-				return err
-			}
-
-			return server.Serve()
+			return err
 		})
 	}
 
@@ -308,9 +311,7 @@ func (p *Provisioner) startDHCPd(state *provision.State, clusterReq provision.Cl
 	cmd := exec.Command(clusterReq.SelfExecutable, args...) //nolint:noctx // runs in background
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // daemonize
-	}
+	setDetachedProcess(cmd)
 
 	if err = cmd.Start(); err != nil {
 		return err

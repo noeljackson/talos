@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-//nolint:golint
+//nolint:revive
 package services
 
 import (
@@ -179,6 +179,7 @@ func (o *APID) Runner(r runtime.Runtime) (runner.Runner, error) {
 	// Set the mounts.
 	mounts := []specs.Mount{
 		{Type: "bind", Destination: "/etc/ssl", Source: "/etc/ssl", Options: []string{"bind", "ro"}},
+		{Type: "bind", Destination: "/apid", Source: "/sbin/init", Options: []string{"bind", "ro"}},
 		{Type: "bind", Destination: filepath.Dir(constants.MachineSocketPath), Source: filepath.Dir(constants.MachineSocketPath), Options: []string{"rbind", "ro"}},
 		{Type: "bind", Destination: filepath.Dir(constants.APIRuntimeSocketPath), Source: filepath.Dir(constants.APIRuntimeSocketPath), Options: []string{"rbind", "rw"}},
 	}
@@ -221,25 +222,26 @@ func (o *APID) Runner(r runtime.Runtime) (runner.Runner, error) {
 		debug = r.Config().Debug()
 	}
 
-	return restart.New(containerd.NewRunner(
-		debug,
-		&args,
-		runner.WithLoggingManager(r.Logging()),
-		runner.WithContainerdAddress(constants.SystemContainerdAddress),
-		runner.WithEnv(env),
-		runner.WithGracefulShutdownTimeout(15*time.Second),
-		runner.WithCgroupPath(constants.CgroupApid),
-		runner.WithSelinuxLabel(constants.SelinuxLabelApid),
-		runner.WithOCISpecOpts(
-			oci.WithDroppedCapabilities(cap.Known()),
-			oci.WithHostNamespace(specs.NetworkNamespace),
-			oci.WithMounts(mounts),
-			oci.WithRootFSPath(filepath.Join(constants.SystemLibexecPath, o.ID(r))),
-			oci.WithRootFSReadonly(),
-			oci.WithUser(fmt.Sprintf("%d:%d", constants.ApidUserID, constants.ApidUserID)),
+	return restart.New(
+		containerd.NewRunner(
+			debug,
+			&args,
+			runner.WithLoggingManager(r.Logging()),
+			runner.WithContainerdAddress(constants.SystemContainerdAddress),
+			runner.WithEnv(env),
+			runner.WithGracefulShutdownTimeout(15*time.Second),
+			runner.WithCgroupPath(constants.CgroupApid),
+			runner.WithSelinuxLabel(constants.SelinuxLabelApid),
+			runner.WithOCISpecOpts(
+				oci.WithDroppedCapabilities(cap.Known()),
+				oci.WithHostNamespace(specs.NetworkNamespace),
+				oci.WithMounts(mounts),
+				oci.WithRootFSPath(filepath.Join(constants.SystemLibexecPath, o.ID(r))),
+				oci.WithRootFSReadonly(),
+				oci.WithUIDGID(constants.ApidUserID, constants.ApidUserID),
+			),
+			runner.WithOOMScoreAdj(-998),
 		),
-		runner.WithOOMScoreAdj(-998),
-	),
 		restart.WithType(restart.Forever),
 	), nil
 }

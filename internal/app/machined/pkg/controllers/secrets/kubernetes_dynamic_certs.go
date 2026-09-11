@@ -8,6 +8,7 @@ import (
 	"context"
 	stdlibx509 "crypto/x509"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/controller"
@@ -176,7 +177,8 @@ func (ctrl *KubernetesDynamicCertsController) updateSecrets(k8sRoot *secrets.Kub
 		return fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
 
-	apiServer, err := x509.NewKeyPair(ca,
+	apiServer, err := x509.NewKeyPair(
+		ca,
 		x509.IPAddresses(certSANs.StdIPs()),
 		x509.DNSNames(certSANs.DNSNames),
 		x509.CommonName("kube-apiserver"),
@@ -192,8 +194,11 @@ func (ctrl *KubernetesDynamicCertsController) updateSecrets(k8sRoot *secrets.Kub
 	}
 
 	k8sCerts.APIServer = x509.NewCertificateAndKeyFromKeyPair(apiServer)
+	// append the issuing CA to the API server cert so that clients can verify it if they trust the CA chain
+	k8sCerts.APIServer.Crt = slices.Concat(k8sCerts.APIServer.Crt, []byte{'\n'}, k8sRoot.IssuingCA.Crt)
 
-	apiServerKubeletClient, err := x509.NewKeyPair(ca,
+	apiServerKubeletClient, err := x509.NewKeyPair(
+		ca,
 		x509.CommonName(constants.KubernetesAPIServerKubeletClientCommonName),
 		x509.Organization(constants.KubernetesAdminCertOrganization),
 		x509.NotAfter(time.Now().Add(KubernetesCertificateValidityDuration)),
@@ -213,7 +218,8 @@ func (ctrl *KubernetesDynamicCertsController) updateSecrets(k8sRoot *secrets.Kub
 		return fmt.Errorf("failed to parse aggregator CA: %w", err)
 	}
 
-	frontProxy, err := x509.NewKeyPair(aggregatorCA,
+	frontProxy, err := x509.NewKeyPair(
+		aggregatorCA,
 		x509.CommonName("front-proxy-client"),
 		x509.NotAfter(time.Now().Add(KubernetesCertificateValidityDuration)),
 		x509.KeyUsage(stdlibx509.KeyUsageDigitalSignature|stdlibx509.KeyUsageKeyEncipherment),

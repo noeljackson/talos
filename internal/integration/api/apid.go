@@ -73,7 +73,8 @@ func (suite *ApidSuite) TestControlPlaneRouting() {
 
 	for _, endpoint := range endpoints {
 		suite.Run(endpoint, func() {
-			cli, err := client.New(suite.ctx,
+			cli, err := client.New(
+				suite.ctx,
 				client.WithConfig(suite.Talosconfig),
 				client.WithEndpoints(endpoint),
 			)
@@ -82,13 +83,13 @@ func (suite *ApidSuite) TestControlPlaneRouting() {
 			defer cli.Close() //nolint:errcheck
 
 			// try with multiple nodes
-			resp, err := cli.Version(client.WithNodes(suite.ctx, nodes...))
+			resp, err := cli.Version(client.WithNodes(suite.ctx, nodes...)) //nolint:staticcheck // testing deprecated method for backward compatibility
 			suite.Require().NoError(err)
 			suite.Assert().Len(resp.Messages, len(nodes))
 
 			// try with 'nodes' but a single node at a time
 			for _, node := range nodes {
-				resp, err = cli.Version(client.WithNodes(suite.ctx, node))
+				resp, err = cli.Version(client.WithNodes(suite.ctx, node)) //nolint:staticcheck // testing deprecated method for backward compatibility
 				suite.Require().NoError(err)
 				suite.Assert().Len(resp.Messages, 1)
 			}
@@ -132,7 +133,8 @@ func (suite *ApidSuite) TestWorkerNoRouting() {
 
 	for _, endpoint := range endpoints {
 		suite.Run(endpoint, func() {
-			cli, err := client.New(suite.ctx,
+			cli, err := client.New(
+				suite.ctx,
 				client.WithConfig(suite.Talosconfig),
 				client.WithEndpoints(endpoint),
 			)
@@ -148,7 +150,7 @@ func (suite *ApidSuite) TestWorkerNoRouting() {
 				}
 
 				// 'nodes'
-				_, err = cli.Version(client.WithNodes(suite.ctx, node))
+				_, err = cli.Version(client.WithNodes(suite.ctx, node)) //nolint:staticcheck // testing deprecated method for backward compatibility
 				suite.Require().Error(err)
 				suite.Assert().Equal(codes.PermissionDenied, client.StatusCode(err))
 
@@ -159,7 +161,7 @@ func (suite *ApidSuite) TestWorkerNoRouting() {
 			}
 
 			// try with 'nodes' but a single node (node itself)
-			resp, err := cli.Version(client.WithNodes(suite.ctx, endpoint))
+			resp, err := cli.Version(client.WithNodes(suite.ctx, endpoint)) //nolint:staticcheck // testing deprecated method for backward compatibility
 			suite.Require().NoError(err)
 			suite.Assert().Len(resp.Messages, 1)
 
@@ -197,7 +199,8 @@ func (suite *ApidSuite) TestBigPayload() {
 	// the config is encoded twice in the resource gRPC message, so ensure that we can get to the one third of the size
 	const targetConfigSize = constants.GRPCMaxMessageSize / 3
 
-	suite.T().Logf("original config size: %d (%s), target size is %d (%s)",
+	suite.T().Logf(
+		"original config size: %d (%s), target size is %d (%s)",
 		len(originalCfg), humanize.Bytes(uint64(len(originalCfg))), targetConfigSize, humanize.Bytes(uint64(targetConfigSize)),
 	)
 

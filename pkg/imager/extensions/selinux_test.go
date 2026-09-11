@@ -5,17 +5,22 @@
 package extensions //nolint:testpackage // test the final-composition helper directly
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v4"
 
 	internalextensions "github.com/siderolabs/talos/internal/pkg/extensions"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	extensionsapi "github.com/siderolabs/talos/pkg/machinery/extensions"
+	extservices "github.com/siderolabs/talos/pkg/machinery/extensions/services"
+	"github.com/siderolabs/talos/pkg/machinery/imager/quirks"
 )
 
 func TestApplySystemExtensionSELinuxLabels(t *testing.T) {
@@ -99,6 +104,7 @@ func TestApplySystemExtensionSELinuxLabelsPreparesDeclaredMountpointsInContainer
 	require.NoError(t, os.MkdirAll(filepath.Dir(entrypointPath), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(serviceRootfsPath, "var"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(serviceRootfsPath, "run"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(rootfsPath, "var/run/tailscale"), 0o755))
 	require.NoError(t, os.Symlink("/run", filepath.Join(serviceRootfsPath, "var/run")))
 	require.NoError(t, os.WriteFile(configPath, []byte(`name: tailscale
 restart: always
@@ -133,6 +139,7 @@ func TestApplySystemExtensionSELinuxLabelsRejectsMountpointSymlinkEscape(t *test
 
 	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Dir(entrypointPath), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(rootfsPath, "var/lib/escaped"), 0o755))
 	require.NoError(t, os.Symlink(outsidePath, filepath.Join(serviceRootfsPath, "var")))
 	require.NoError(t, os.WriteFile(configPath, []byte(`name: escaped
 restart: always
@@ -346,16 +353,253 @@ func TestExtensionSystemContainerPolicyAllowsLabeledExecutablesAndLibraries(t *t
 
 	policy := string(contents)
 
-	assert.Contains(t, policy, "(allow system_container_p bin_exec_t (file (entrypoint execute execute_no_trans)))")
-	assert.Contains(t, policy, "(allow system_container_p lib_t (file (execute)))")
+	assert.Contains(t, policy, "(allow extension_service_p bin_exec_t (file (entrypoint execute execute_no_trans)))")
+	assert.Contains(t, policy, "(allow extension_service_p lib_t (file (execute)))")
+	assert.NotContains(t, policy, "(allow system_container_p bin_exec_t (file (entrypoint execute execute_no_trans)))")
+	assert.NotContains(t, policy, "(allow system_container_p lib_t (file (execute)))")
 	assert.Contains(t, policy, "(allow extension_service_p init_t (fd (use)))")
 	assert.Contains(t, policy, "(allow extension_service_p ephemeral_t (fs_classes (rw)))")
 	assert.Contains(t, policy, "(allow extension_service_p run_t (fs_classes (rw)))")
 }
 
 func TestInitramfsOverlayCredentialCanCheckImmutableExecutables(t *testing.T) {
-	contents, err := os.ReadFile(filepath.Join("..", "..", "..", "internal", "pkg", "selinux", "policy", "selinux", "services", "machined.cil"))
+	policyPath := filepath.Join("..", "..", "..", "internal", "pkg", "selinux", "policy", "selinux", "common")
+	contents, err := os.ReadFile(filepath.Join(policyPath, "typeattributes.cil"))
+	require.NoError(t, err)
+	assert.Contains(t, string(contents), "(typeattributeset overlay_mounter_p initramfs_t)")
+
+	contents, err = os.ReadFile(filepath.Join(policyPath, "processes.cil"))
 	require.NoError(t, err)
 
-	assert.Contains(t, string(contents), "(allow initramfs_t system_f (file (execute)))")
+	assert.Contains(t, string(contents), "(allow overlay_mounter_p any_f (file (execute)))")
+}
+
+func TestApplySystemExtensionSELinuxLabelsPreservesHostRunnerContexts(t *testing.T) {
+	rootfsPath := t.TempDir()
+	configPath := filepath.Join(rootfsPath, "usr/local/etc/containers/host.yaml")
+	entrypointPath := filepath.Join(rootfsPath, "usr/local/bin/host-service")
+	hookPath := filepath.Join(rootfsPath, "usr/bin/init")
+	for _, path := range []string{configPath, entrypointPath, hookPath} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte("test"), 0o755))
+	}
+	require.NoError(t, os.WriteFile(configPath, []byte(`name: host
+runnerMode: host
+restart: always
+container:
+  entrypoint: /usr/local/bin/host-service
+preShutdown:
+  entrypoint: /usr/bin/init
+  timeout: 5s
+`), 0o644))
+
+	ext := &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "host", extensionsapi.Manifest{})}
+	builder := &Builder{}
+	require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext}))
+	assert.NoDirExists(t, filepath.Join(rootfsPath, "usr/local/lib/containers/host"))
+	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[entrypointPath])
+	assert.Equal(t, "system_u:object_r:init_exec_t:s0", builder.XAttrsMap[hookPath])
+}
+
+func TestApplySystemExtensionSELinuxLabelsRejectsInvalidHostRunner(t *testing.T) {
+	rootfsPath := t.TempDir()
+	configPath := filepath.Join(rootfsPath, "usr/local/etc/containers/host.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o755))
+	require.NoError(t, os.WriteFile(configPath, []byte(`name: host
+runnerMode: host
+container:
+  entrypoint: /usr/local/bin/host-service
+  security:
+    writeableSysfs: true
+`), 0o644))
+	ext := &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "host", extensionsapi.Manifest{})}
+	builder := &Builder{}
+	err := builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext})
+	require.ErrorContains(t, err, "container security options are not supported in host runner mode")
+	assert.NoDirExists(t, filepath.Join(rootfsPath, "usr/local/lib/containers/host"))
+}
+
+func TestApplySystemExtensionSELinuxLabelsDefersBaseFileMountpoints(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "absent destination"
+		if existing {
+			name = "existing file destination"
+		}
+
+		t.Run(name, func(t *testing.T) {
+			ext, serviceRoot := newServiceExtension(t, extservices.Container{
+				Entrypoint: "/usr/local/bin/service",
+				Mounts:     []specs.Mount{{Source: "/etc/os-release", Destination: "/etc/os-release", Type: "bind"}},
+			})
+			writeServiceTestFile(t, filepath.Join(serviceRoot, "usr/local/bin/service"), "executable", 0o755)
+			destination := filepath.Join(serviceRoot, "etc/os-release")
+			if existing {
+				writeServiceTestFile(t, destination, "retained placeholder", 0o600)
+			}
+
+			builder := &Builder{}
+			require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext}))
+			if !existing {
+				_, err := os.Lstat(destination)
+				require.ErrorIs(t, err, fs.ErrNotExist)
+				assert.NotContains(t, builder.XAttrsMap, destination)
+
+				return
+			}
+
+			contents, err := os.ReadFile(destination)
+			require.NoError(t, err)
+			assert.Equal(t, "retained placeholder", string(contents))
+			info, err := os.Stat(destination)
+			require.NoError(t, err)
+			assert.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
+			assert.Equal(t, constants.EtcSelinuxLabel, builder.XAttrsMap[destination])
+		})
+	}
+}
+
+func TestApplySystemExtensionSELinuxLabelsRejectsSymlinkedServiceRoots(t *testing.T) {
+	for _, linkedPath := range []string{"usr/local/lib/containers", "usr/local/lib/containers/service"} {
+		t.Run(linkedPath, func(t *testing.T) {
+			rootfsPath := t.TempDir()
+			outsidePath := t.TempDir()
+			writeServiceTestFile(t, filepath.Join(rootfsPath, "usr/local/etc/containers/service.yaml"), "name: service\nrestart: always\ncontainer:\n  entrypoint: /service\n", 0o644)
+			symlinkPath := filepath.Join(rootfsPath, linkedPath)
+			require.NoError(t, os.MkdirAll(filepath.Dir(symlinkPath), 0o755))
+			require.NoError(t, os.Symlink(outsidePath, symlinkPath))
+			ext := &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "service", extensionsapi.Manifest{})}
+
+			builder := &Builder{}
+			err := builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext})
+			require.ErrorContains(t, err, "error opening extension service rootfs")
+			entries, err := os.ReadDir(outsidePath)
+			require.NoError(t, err)
+			assert.Empty(t, entries)
+		})
+	}
+}
+
+func TestApplySystemExtensionSELinuxLabelsPrefersExactFileBindSources(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "created placeholder"
+		if existing {
+			name = "shadowed rootfs executable"
+		}
+
+		t.Run(name, func(t *testing.T) {
+			ext, serviceRoot := newServiceExtension(t, extservices.Container{
+				Entrypoint: "/service",
+				Args:       []string{"/helper"},
+				Mounts: []specs.Mount{
+					{Source: "/usr/local/lib/service", Destination: "/service", Type: "bind"},
+					{Source: "/usr/local/lib/helper", Destination: "/helper", Type: "bind"},
+				},
+			})
+			providerRoot := t.TempDir()
+			provider := &internalextensions.Extension{Extension: extensionsapi.New(providerRoot, "provider", extensionsapi.Manifest{})}
+			for _, binary := range []string{"service", "helper"} {
+				writeServiceTestFile(t, filepath.Join(providerRoot, "usr/local/lib", binary), "mounted executable", 0o755)
+				if existing {
+					writeServiceTestFile(t, filepath.Join(serviceRoot, binary), "shadowed executable", 0o755)
+				}
+			}
+
+			builder := &Builder{}
+			require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext, provider}))
+			for _, binary := range []string{"service", "helper"} {
+				assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[filepath.Join(providerRoot, "usr/local/lib", binary)])
+				assert.NotEqual(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[filepath.Join(serviceRoot, binary)])
+			}
+		})
+	}
+}
+
+func TestApplySystemExtensionSELinuxLabelsResolvesExecutableSymlinksInRoot(t *testing.T) {
+	ext, serviceRoot := newServiceExtension(t, extservices.Container{Entrypoint: "/usr/local/lib/loader", Args: []string{"/helper"}})
+	loaderTarget := filepath.Join(serviceRoot, "usr/local/lib/loader-real")
+	helperTarget := filepath.Join(serviceRoot, "usr/local/lib/helper-real")
+	writeServiceTestFile(t, loaderTarget, "loader", 0o755)
+	writeServiceTestFile(t, helperTarget, "helper", 0o755)
+	require.NoError(t, os.Symlink("/usr/local/lib/loader-real", filepath.Join(serviceRoot, "usr/local/lib/loader")))
+	require.NoError(t, os.Symlink("/usr/local/lib/helper-real", filepath.Join(serviceRoot, "helper")))
+
+	builder := &Builder{}
+	require.NoError(t, builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext}))
+	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[loaderTarget])
+	assert.Equal(t, constants.SystemExtensionBinSELinuxLabel, builder.XAttrsMap[helperTarget])
+}
+
+func TestApplySystemExtensionSELinuxLabelsRejectsShadowedEntrypointWithoutBindSource(t *testing.T) {
+	ext, serviceRoot := newServiceExtension(t, extservices.Container{
+		Entrypoint: "/service",
+		Mounts:     []specs.Mount{{Source: "/usr/local/lib/missing", Destination: "/service", Type: "bind"}},
+	})
+	writeServiceTestFile(t, filepath.Join(serviceRoot, "service"), "shadowed executable", 0o755)
+
+	builder := &Builder{}
+	err := builder.applySystemExtensionSELinuxLabels([]*internalextensions.Extension{ext})
+	require.ErrorContains(t, err, "absent from the service rootfs and mounted extension sources")
+}
+
+func TestExtensionServiceFileInRootPreservesExtractionPath(t *testing.T) {
+	actualRoot := t.TempDir()
+	parentAlias := filepath.Join(t.TempDir(), "alias")
+	require.NoError(t, os.Symlink(actualRoot, parentAlias))
+	root := filepath.Join(parentAlias, "rootfs")
+	target := filepath.Join(root, "usr/local/lib/service")
+	writeServiceTestFile(t, target, "executable", 0o755)
+	require.NoError(t, os.Symlink("/usr/local/lib/service", filepath.Join(root, "service")))
+
+	file, err := extensionServiceFileInRoot(root, "/service")
+	require.NoError(t, err)
+	assert.Equal(t, target, file.path)
+	assert.True(t, file.info.Mode().IsRegular())
+}
+
+func TestCompressExtensionsLabelsFinalGeneratedLayers(t *testing.T) {
+	suppliedRoot := t.TempDir()
+	generatedRoot := t.TempDir()
+	writeServiceTestFile(t, filepath.Join(suppliedRoot, "usr/local/lib/library.so"), "library", 0o644)
+	generatedFile := filepath.Join(generatedRoot, "usr/lib/modules/6.18.0/modules.dep")
+	writeServiceTestFile(t, generatedFile, "module dependencies", 0o644)
+	extensions := []*internalextensions.Extension{
+		{Extension: extensionsapi.New(suppliedRoot, "supplied", extensionsapi.Manifest{})},
+		{Extension: extensionsapi.New(generatedRoot, "modules.dep", extensionsapi.Manifest{})},
+	}
+	builder := &Builder{Quirks: quirks.New("1.14.0"), Printf: func(string, ...any) {}}
+
+	// Stop before invoking mksquashfs; the final layer list must already have
+	// complete labels even when compression itself is cancelled.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := builder.compressExtensions(ctx, extensions, t.TempDir())
+	require.Error(t, err)
+
+	for path, label := range map[string]string{
+		generatedRoot:                                   "system_u:object_r:rootfs_t:s0",
+		filepath.Join(generatedRoot, "usr"):             "system_u:object_r:usr_t:s0",
+		filepath.Join(generatedRoot, "usr/lib"):         constants.SystemExtensionLibSELinuxLabel,
+		filepath.Join(generatedRoot, "usr/lib/modules"): "system_u:object_r:module_t:s0",
+		generatedFile:                                   "system_u:object_r:module_t:s0",
+	} {
+		assert.Equal(t, label, builder.XAttrsMap[path], path)
+	}
+}
+
+func newServiceExtension(t *testing.T, container extservices.Container) (*internalextensions.Extension, string) {
+	t.Helper()
+	rootfsPath := t.TempDir()
+	serviceRoot := filepath.Join(rootfsPath, "usr/local/lib/containers/service")
+	require.NoError(t, os.MkdirAll(serviceRoot, 0o755))
+	data, err := yaml.Marshal(extservices.Spec{Name: "service", Restart: extservices.RestartAlways, Container: container})
+	require.NoError(t, err)
+	writeServiceTestFile(t, filepath.Join(rootfsPath, "usr/local/etc/containers/service.yaml"), string(data), 0o644)
+
+	return &internalextensions.Extension{Extension: extensionsapi.New(rootfsPath, "service", extensionsapi.Manifest{})}, serviceRoot
+}
+
+func writeServiceTestFile(t *testing.T, path, contents string, mode fs.FileMode) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(contents), mode))
 }

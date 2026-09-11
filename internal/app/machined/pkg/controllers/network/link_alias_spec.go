@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 
+	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/internal/trigger"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/network/watch"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
@@ -45,7 +46,8 @@ func (ctrl *LinkAliasSpecController) Outputs() []controller.Output {
 //nolint:gocyclo,cyclop
 func (ctrl *LinkAliasSpecController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	// wait for udevd to be healthy, which implies that all link renames are done
-	if err := runtime.WaitForDevicesReady(ctx, r,
+	if err := runtime.WaitForDevicesReady(
+		ctx, r,
 		[]controller.Input{
 			{
 				Namespace: network.NamespaceName,
@@ -58,7 +60,7 @@ func (ctrl *LinkAliasSpecController) Run(ctx context.Context, r controller.Runti
 	}
 
 	// watch link changes as some routes might need to be re-applied if the link appears
-	watcher, err := watch.NewRtNetlink(watch.NewDefaultRateLimitedTrigger(ctx, r), unix.RTMGRP_LINK)
+	watcher, err := watch.NewRtNetlink(trigger.NewDefaultRateLimitedTrigger(ctx, r), unix.RTMGRP_LINK)
 	if err != nil {
 		return err
 	}
@@ -122,7 +124,8 @@ func (ctrl *LinkAliasSpecController) Run(ctx context.Context, r controller.Runti
 
 			if !shouldHaveAlias && currentAlias != "" {
 				// should not have alias, but has one - remove it
-				logger.Info("removing link alias",
+				logger.Info(
+					"removing link alias",
 					zap.String("link", link.Attributes.Name),
 					zap.String("alias", currentAlias),
 				)
@@ -137,7 +140,8 @@ func (ctrl *LinkAliasSpecController) Run(ctx context.Context, r controller.Runti
 				}
 			} else if shouldHaveAlias && currentAlias != expectedAlias {
 				// should have alias, but doesn't have it or it's different - set it
-				logger.Info("setting link alias",
+				logger.Info(
+					"setting link alias",
 					zap.String("link", link.Attributes.Name),
 					zap.String("alias", expectedAlias),
 				)

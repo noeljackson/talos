@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"syscall"
 
 	"github.com/siderolabs/talos/pkg/provision"
 )
@@ -47,16 +46,14 @@ func (p *Provisioner) CreateKMS(state *provision.State, clusterReq provision.Clu
 	cmd := exec.Command(clusterReq.SelfExecutable, args...) //nolint:noctx // runs in background
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // daemonize
-	}
+	setDetachedProcess(cmd)
 
 	if err = cmd.Start(); err != nil {
 		return err
 	}
 
 	if err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), os.ModePerm); err != nil {
-		return fmt.Errorf("error writing LB PID file: %w", err)
+		return fmt.Errorf("error writing KMS PID file: %w", err)
 	}
 
 	return nil

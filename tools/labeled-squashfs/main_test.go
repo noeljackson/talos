@@ -5,39 +5,85 @@
 package main
 
 import (
-	"io/fs"
 	"path/filepath"
 	"testing"
-
-	"github.com/siderolabs/talos/internal/pkg/selinux/filecontext"
 )
 
 func TestLookupAgainstTalosFileContexts(t *testing.T) {
+	// tools/labeled-squashfs -> internal/pkg/selinux/policy/file_contexts
 	fc := filepath.Join("..", "..", "internal", "pkg", "selinux", "policy", "file_contexts")
 
-	matcher, err := filecontext.ParseFile(fc)
+	rules, err := parseFileContexts(fc)
 	if err != nil {
 		t.Fatalf("parse %s: %v", fc, err)
 	}
 
+	if len(rules) == 0 {
+		t.Fatalf("no rules parsed")
+	}
+
 	cases := []struct {
-		path string
-		mode fs.FileMode
-		want string
+		path    string
+		ft      fileType
+		want    string
+		wantHit bool
 	}{
-		{"/usr/bin/init", 0, "system_u:object_r:init_exec_t:s0"},
-		{"/usr/bin/runc", 0, "system_u:object_r:containerd_exec_t:s0"},
-		{"/etc", fs.ModeDir, "system_u:object_r:etc_t:s0"},
-		{"/etc/cni/00-foo.conf", 0, "system_u:object_r:cni_conf_t:s0"},
-		{"/usr/bin/foo", 0, "system_u:object_r:bin_exec_t:s0"},
-		{"/usr/lib/modules/somemod.ko", 0, "system_u:object_r:module_t:s0"},
-		{"/", fs.ModeDir, "system_u:object_r:rootfs_t:s0"},
+		// Exact-match literal entries.
+		{"/usr/bin/init", typeReg, "system_u:object_r:init_exec_t:s0", true},
+		{"/usr/bin/poweroff", typeAny, "system_u:object_r:bin_exec_t:s0", true},
+		{"/usr/bin/runc", typeAny, "system_u:object_r:containerd_exec_t:s0", true},
+		// Regex match: /etc(/.*)? covers both /etc and /etc/foo.
+		{"/etc", typeDir, "system_u:object_r:etc_t:s0", true},
+		{"/etc/cni/00-foo.conf", typeReg, "system_u:object_r:cni_conf_t:s0", true},
+		// More specific rule should win (last-match-wins).
+		{"/usr/bin/foo", typeReg, "system_u:object_r:bin_exec_t:s0", true},
+		{"/usr/lib/modules/somemod.ko", typeReg, "system_u:object_r:module_t:s0", true},
+		{"/usr/lib/udev/ata_id", typeReg, "system_u:object_r:udev_exec_t:s0", true},
+		{"/usr/lib/udev/hwdb.bin", typeReg, "system_u:object_r:udev_hwdb_t:s0", true},
+		{"/usr/lib/udev/hwdb.d/20-OUI.hwdb", typeReg, "system_u:object_r:lib_t:s0", true},
+		{"/usr/lib/udev/rules.d/99-talos.rules", typeReg, "system_u:object_r:udev_rules_t:s0", true},
+		// Root entry.
+		{"/", typeDir, "system_u:object_r:rootfs_t:s0", true},
 	}
 
 	for _, tc := range cases {
-		got, ok := matcher.Lookup(tc.path, tc.mode)
-		if !ok || got != tc.want {
-			t.Errorf("Lookup(%q, %v) = %q, %v, want %q, true", tc.path, tc.mode, got, ok, tc.want)
+		got := lookup(rules, tc.path, tc.ft)
+		if tc.wantHit && got != tc.want {
+			t.Errorf("lookup(%q, %v) = %q, want %q", tc.path, tc.ft, got, tc.want)
 		}
+
+		if !tc.wantHit && got != "" {
+			t.Errorf("lookup(%q, %v) = %q, want no match", tc.path, tc.ft, got)
+		}
+	}
+}
+
+func TestParseTypeSpec(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want fileType
+	}{
+		{"--", typeReg},
+		{"-d", typeDir},
+		{"-l", typeLnk},
+		{"-c", typeChr},
+		{"-b", typeBlk},
+		{"-p", typeFifo},
+		{"-s", typeSock},
+	} {
+		got, err := parseTypeSpec(tc.in)
+		if err != nil {
+			t.Errorf("parseTypeSpec(%q): unexpected err %v", tc.in, err)
+
+			continue
+		}
+
+		if got != tc.want {
+			t.Errorf("parseTypeSpec(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+
+	if _, err := parseTypeSpec("-x"); err == nil {
+		t.Errorf("parseTypeSpec(-x): expected error")
 	}
 }

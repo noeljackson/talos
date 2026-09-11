@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 
+	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/internal/trigger"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/network/watch"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
@@ -63,7 +64,7 @@ func (ctrl *RoutingRuleSpecController) Outputs() []controller.Output {
 //nolint:gocyclo
 func (ctrl *RoutingRuleSpecController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	// watch link changes as some routes might need to be re-applied if the link appears
-	watcher, err := watch.NewRtNetlink(watch.NewDefaultRateLimitedTrigger(ctx, r), unix.RTMGRP_IPV4_RULE,
+	watcher, err := watch.NewRtNetlink(trigger.NewDefaultRateLimitedTrigger(ctx, r), unix.RTMGRP_IPV4_RULE,
 		unix.RTNLGRP_IPV4_RULE, unix.RTNLGRP_IPV6_RULE)
 	if err != nil {
 		return err
@@ -164,7 +165,8 @@ func (ctrl *RoutingRuleSpecController) syncRule(
 					}
 				}
 
-				logger.Info("deleted routing rule",
+				logger.Info(
+					"deleted routing rule",
 					zap.Uint8("family", existingRules[i].Family),
 					zap.Uint8("table", existingRules[i].Table),
 					zap.Uint8("action", existingRules[i].Action),
@@ -216,7 +218,8 @@ func (ctrl *RoutingRuleSpecController) syncRule(
 			action = "replaced"
 		}
 
-		logger.Info(action+" routing rule",
+		logger.Info(
+			action+" routing rule",
 			zap.Stringer("family", spec.Family),
 			zap.Stringer("src", spec.Src),
 			zap.Stringer("dst", spec.Dst),

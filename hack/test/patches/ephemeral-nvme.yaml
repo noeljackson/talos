@@ -6,6 +6,8 @@ provisioning:
     match: disk.transport == 'nvme'
   minSize: 3GB
   maxSize: 5GB
+mount:
+  disableAccessTime: true
 ---
 apiVersion: v1alpha1
 kind: SwapVolumeConfig
@@ -16,13 +18,19 @@ provisioning:
   minSize: 500MB
   maxSize: 500MB
 ---
-machine:
-  kubelet:
-    extraConfig:
-      memorySwap:
-        swapBehavior: LimitedSwap
+apiVersion: v1alpha1
+kind: KubeletConfig
+config:
+  memorySwap:
+    swapBehavior: LimitedSwap
 ---
 apiVersion: v1alpha1
 kind: ZswapConfig
 maxPoolPercent: 25
 shrinkerEnabled: true
+---
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+scrub:
+  interval: 120s

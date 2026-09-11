@@ -8,12 +8,13 @@ package api
 
 import (
 	"context"
-	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/blang/semver/v4"
 	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/siderolabs/go-retry/retry"
 	"google.golang.org/grpc/codes"
 
 	"github.com/siderolabs/talos/internal/integration/base"
@@ -21,6 +22,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"github.com/siderolabs/talos/pkg/machinery/resources/etcd"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 )
@@ -67,7 +69,7 @@ func (suite *EtcdSuite) TestForfeitLeadership() {
 
 	for _, node := range nodes {
 		resp, err := suite.Client.EtcdForfeitLeadership(
-			client.WithNodes(suite.ctx, node),
+			client.WithNode(suite.ctx, node),
 			&machineapi.EtcdForfeitLeadershipRequest{},
 		)
 		suite.Require().NoError(err)
@@ -108,7 +110,7 @@ func (suite *EtcdSuite) TestLeaveCluster() {
 
 	suite.T().Log("Removing etcd member", node)
 
-	nodeCtx := client.WithNodes(suite.ctx, node)
+	nodeCtx := client.WithNode(suite.ctx, node)
 
 	_, err := suite.Client.EtcdForfeitLeadership(nodeCtx, &machineapi.EtcdForfeitLeadershipRequest{})
 	suite.Require().NoError(err)
@@ -125,24 +127,16 @@ func (suite *EtcdSuite) TestLeaveCluster() {
 		}
 	}
 
-	stream, err := suite.Client.MachineClient.List(nodeCtx, &machineapi.ListRequest{Root: constants.EtcdDataPath})
+	// LeaveCluster nukes the etcd data in place; /var/lib/etcd itself remains (it may be a
+	// dedicated volume mount point), so assert the data (member directory) is gone rather than
+	// the whole path.
+	stream, err := suite.Client.MachineClient.List(nodeCtx, &machineapi.ListRequest{Root: filepath.Join(constants.EtcdDataPath, "member")})
 	suite.Require().NoError(err)
 
-	for {
-		var info *machineapi.FileInfo
-
-		info, err = stream.Recv()
-		if err != nil {
-			if err == io.EOF || client.StatusCode(err) == codes.Canceled {
-				break
-			}
-		}
-
-		suite.Assert().Equal(
-			"rpc error: code = Unknown desc = lstat /var/lib/etcd: no such file or directory",
-			info.Metadata.Error,
-		)
-	}
+	_, err = stream.Recv()
+	suite.Require().Error(err)
+	suite.Require().Equal(client.StatusCode(err), codes.Unknown)
+	suite.Require().Contains(client.Status(err).Message(), "no such file or directory")
 
 	// NB: Reboot the node so that it can rejoin the etcd cluster. This allows us
 	// to check the cluster health and catch any issues in rejoining.
@@ -235,28 +229,52 @@ func (suite *EtcdSuite) TestRemoveMember() {
 	})
 	suite.Require().NoError(err)
 
-	// verify that memberID disappeared from etcd member list
-	resp, err := suite.Client.EtcdMemberList(controlCtx, &machineapi.EtcdMemberListRequest{})
+	// Verify that memberID disappeared from the etcd member list.
+	//
+	// This is retried because the control node builds an etcd client across all control plane
+	// IPs and health-checks each by dialing: right after the removed member is forfeited/removed,
+	// its etcd can reset the connection, surfacing as a transient "connection reset by peer"
+	// (gRPC Unavailable) while building the client. Re-list until the member is gone.
+	suite.Require().NoError(
+		retry.Constant(time.Second*5, retry.WithUnits(200*time.Millisecond)).RetryWithContext(
+			controlCtx,
+			func(ctx context.Context) error {
+				resp, err := suite.Client.EtcdMemberList(ctx, &machineapi.EtcdMemberListRequest{})
+				if err != nil {
+					return retry.ExpectedError(err)
+				}
+
+				for _, message := range resp.GetMessages() {
+					for _, member := range message.GetMembers() {
+						if member.GetId() == memberID {
+							return retry.ExpectedErrorf("member %d still present in etcd member list", memberID)
+						}
+					}
+				}
+
+				return nil
+			},
+		),
+	)
+
+	// Wipe etcd data so the removed node rejoins the cluster fresh. If ETCD is directory-backed it
+	// lives under EPHEMERAL (wipe EPHEMERAL); if it is a dedicated partition, wipe that partition
+	// directly and leave EPHEMERAL intact.
+	etcdVolumeStatus, err := safe.StateGetByID[*block.VolumeStatus](removeCtx, suite.Client.COSI, constants.EtcdDataVolumeID)
 	suite.Require().NoError(err)
 
-	for _, message := range resp.GetMessages() {
-		for _, member := range message.GetMembers() {
-			suite.Assert().NotEqual(memberID, member.GetId())
-		}
+	partitionsToWipe := []*machineapi.ResetPartitionSpec{{Label: constants.EtcdDataVolumeID, Wipe: true}}
+	if etcdVolumeStatus.TypedSpec().Type == block.VolumeTypeDirectory {
+		partitionsToWipe = []*machineapi.ResetPartitionSpec{{Label: constants.EphemeralPartitionLabel, Wipe: true}}
 	}
 
-	// NB: Reset the ephemeral the node so that it can rejoin the etcd cluster. This allows us
+	// NB: Reset the node so that it can rejoin the etcd cluster. This allows us
 	// to check the cluster health and catch any issues in rejoining.
 	suite.AssertRebooted(
 		suite.ctx, nodeToRemove, func(nodeCtx context.Context) error {
 			_, err = suite.Client.MachineClient.Reset(nodeCtx, &machineapi.ResetRequest{
-				Reboot: true,
-				SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
-					{
-						Label: constants.EphemeralPartitionLabel,
-						Wipe:  true,
-					},
-				},
+				Reboot:                 true,
+				SystemPartitionsToWipe: partitionsToWipe,
 			})
 
 			return err
@@ -307,11 +325,11 @@ func (suite *EtcdSuite) TestDowngrade() {
 
 	nodes := suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeControlPlane)
 	node := nodes[0]
-	downgradeTo := "3.5"
+	downgradeTo := "3.6"
 
 	// test the downgrade validate API
 	validateResp, err := suite.Client.EtcdDowngradeValidate(
-		client.WithNodes(suite.ctx, node),
+		client.WithNode(suite.ctx, node),
 		&machineapi.EtcdDowngradeValidateRequest{Version: downgradeTo},
 	)
 	suite.Require().NoError(err)
@@ -322,7 +340,7 @@ func (suite *EtcdSuite) TestDowngrade() {
 
 	// test the downgrade enable API
 	enableResp, err := suite.Client.EtcdDowngradeEnable(
-		client.WithNodes(suite.ctx, node),
+		client.WithNode(suite.ctx, node),
 		&machineapi.EtcdDowngradeEnableRequest{Version: downgradeTo},
 	)
 	suite.Require().NoError(err)
@@ -333,7 +351,7 @@ func (suite *EtcdSuite) TestDowngrade() {
 
 	// test the downgrade cancel API
 	cancelResp, err := suite.Client.EtcdDowngradeCancel(
-		client.WithNodes(suite.ctx, node),
+		client.WithNode(suite.ctx, node),
 	)
 	suite.Require().NoError(err)
 

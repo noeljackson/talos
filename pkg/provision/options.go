@@ -52,8 +52,8 @@ func WithTalosClient(client *client.Client) Option {
 	}
 }
 
-// WithBootlader enables or disables bootloader (bootloader is enabled by default).
-func WithBootlader(enabled bool) Option {
+// WithBootloader enables or disables bootloader (bootloader is enabled by default).
+func WithBootloader(enabled bool) Option {
 	return func(o *Options) error {
 		o.BootloaderEnabled = enabled
 
@@ -83,15 +83,6 @@ func WithTPM1_2(enabled bool) Option {
 func WithTPM2(enabled bool) Option {
 	return func(o *Options) error {
 		o.TPM2Enabled = enabled
-
-		return nil
-	}
-}
-
-// WithDebugShell drops into debug shell in initramfs.
-func WithDebugShell(enabled bool) Option {
-	return func(o *Options) error {
-		o.WithDebugShell = enabled
 
 		return nil
 	}
@@ -187,6 +178,38 @@ func WithJSONLogs(endpoint string) Option {
 	}
 }
 
+// WithBGP enables an embedded gobgp speaker acting as a fabric peer for testing native BGP.
+func WithBGP(listenAddress, neighborRange, advertise string, localASN, peerASN uint32) Option {
+	return func(o *Options) error {
+		o.BGPEnabled = true
+		o.BGPListenAddress = listenAddress
+		o.BGPNeighborRange = neighborRange
+		o.BGPAdvertise = advertise
+		o.BGPLocalASN = localASN
+		o.BGPPeerASN = peerASN
+
+		return nil
+	}
+}
+
+// WithBGPCLOS enables the fabric peer in full-CLOS mode: nodes have no net0, only dedicated fabric
+// uplink(s). The peer peers unnumbered over every uplink, sends Router Advertisements, programs each
+// node's learned loopback /32 into the host FIB (zebra), and IP-forwards + masquerades the node loopback
+// CIDR so the nodes (reachable only via BGP) can reach the host services and the internet. The per-node
+// uplink count comes from NetworkRequest.FabricUplinks. Linux-only (host FIB + NAT).
+func WithBGPCLOS(advertise string, localASN, peerASN uint32, loopbackCIDR string) Option {
+	return func(o *Options) error {
+		o.BGPEnabled = true
+		o.BGPCLOS = true
+		o.BGPAdvertise = advertise
+		o.BGPLocalASN = localASN
+		o.BGPPeerASN = peerASN
+		o.BGPLoopbackCIDR = loopbackCIDR
+
+		return nil
+	}
+}
+
 // WithSiderolinkAgent enables or disables siderolink agent.
 func WithSiderolinkAgent(v bool) Option {
 	return func(o *Options) error {
@@ -225,8 +248,6 @@ type Options struct {
 	TPM1_2Enabled bool
 	// Enable TPM 2.0 emulation using swtpm.
 	TPM2Enabled bool
-	// Enable debug shell in the bootloader.
-	WithDebugShell bool
 	// Enable IOMMU for VMs and add a new PCI root controller and network interface.
 	IOMMUEnabled bool
 	// Configure additional search paths to look for UEFI firmware.
@@ -243,6 +264,20 @@ type Options struct {
 	JSONLogsEndpoint string
 
 	SiderolinkEnabled bool
+
+	// BGP test fabric peer (embedded gobgp), enabled by --with-bgp.
+	BGPEnabled       bool
+	BGPListenAddress string
+	BGPNeighborRange string
+	BGPAdvertise     string
+	BGPLocalASN      uint32
+	BGPPeerASN       uint32
+	// BGPCLOS runs the fabric peer in full-CLOS mode: unnumbered over every node's dedicated fabric
+	// uplink(s) + Router Advertisements + host FIB programming (zebra) + NAT; enabled by --with-bgp-clos.
+	BGPCLOS bool
+	// BGPLoopbackCIDR is the node loopback identity CIDR the full-CLOS fabric peer IP-forwards and
+	// masquerades so the (BGP-only) nodes can reach the host services and the internet.
+	BGPLoopbackCIDR string
 }
 
 // DefaultOptions returns default options.

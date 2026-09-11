@@ -18,6 +18,7 @@ import (
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 )
 
 var wipeOptions = map[string]machineapi.ResetRequest_WipeMode{
@@ -73,7 +74,6 @@ var resetCmdFlags struct {
 
 	graceful           bool
 	reboot             bool
-	insecure           bool
 	wipeMode           WipeMode
 	userDisksToWipe    []string
 	systemLabelsToWipe []string
@@ -92,44 +92,57 @@ var resetCmd = &cobra.Command{
 
 		resetRequest := buildResetRequest()
 
-		if resetCmdFlags.wait && resetCmdFlags.insecure {
-			return errors.New("cannot use --wait and --insecure together")
+		ctx := cmd.Context()
+
+		clientFactory, err := NewClientFactory(ctx, &resetCmdFlags, action.GRPCDialOptions()...)
+		if err != nil {
+			return err
 		}
 
+		defer clientFactory.Close() //nolint:errcheck
+
 		if !resetCmdFlags.wait {
-			resetNoWait := func(ctx context.Context, c *client.Client) error {
-				if err := helpers.ClientVersionCheck(ctx, c); err != nil {
-					return err
-				}
-
-				if err := c.ResetGeneric(ctx, resetRequest); err != nil {
-					return fmt.Errorf("error executing reset: %s", err)
-				}
-
-				return nil
+			if err := helpers.ClientVersionCheck(ctx, clientFactory); err != nil {
+				return err
 			}
 
-			if resetCmdFlags.insecure {
-				return WithClientMaintenance(nil, resetNoWait)
+			responseChan := multiplex.UnaryViaFactory(
+				ctx, clientFactory,
+				func(ctx context.Context, c *client.Client) (struct{}, error) {
+					return struct{}{}, c.ResetGeneric(ctx, resetRequest)
+				},
+			)
+
+			var errs error
+
+			for resp := range responseChan {
+				if resp.Err != nil {
+					errs = errors.Join(errs, fmt.Errorf("error executing reset on node %s: %w", resp.Node, resp.Err))
+				}
 			}
 
-			return WithClient(resetNoWait)
+			return errs
 		}
 
 		actionFn := func(ctx context.Context, c *client.Client) (string, error) {
 			return resetGetActorID(ctx, c, resetRequest)
 		}
 
-		var postCheckFn func(context.Context, *client.Client, string) error
+		var postCheckFn func(context.Context, *client.Client, string, string) error
 
 		if resetCmdFlags.reboot {
-			postCheckFn = func(ctx context.Context, c *client.Client, preActionBootID string) error {
-				err := WithClientMaintenance(nil,
-					func(ctx context.Context, cli *client.Client) error {
-						_, err := cli.Disks(ctx)
+			postCheckFn = func(ctx context.Context, c *client.Client, node, preActionBootID string) error {
+				maintenanceCli, err := client.New(ctx,
+					client.WithDefaultGRPCDialOptions(),
+					client.WithMaintenanceMode(node, nil),
+				)
+				if err != nil {
+					return err
+				}
 
-						return err
-					})
+				defer maintenanceCli.Close() //nolint:errcheck
+
+				_, err = maintenanceCli.Disks(ctx)
 
 				// if we can get into maintenance mode, reset has succeeded
 				if err == nil {
@@ -137,18 +150,18 @@ var resetCmd = &cobra.Command{
 				}
 
 				// try to get the boot ID in the normal mode to see if the node has rebooted
-				return action.BootIDChangedPostCheckFn(ctx, c, preActionBootID)
+				return action.BootIDChangedPostCheckFn(ctx, c, node, preActionBootID)
 			}
 		}
 
 		return action.NewTracker(
-			&GlobalArgs,
+			clientFactory,
 			action.StopAllServicesEventFn,
 			actionFn,
 			action.WithPostCheck(postCheckFn),
 			action.WithDebug(resetCmdFlags.debug),
 			action.WithTimeout(resetCmdFlags.timeout),
-		).Run()
+		).Run(cmd.Context())
 	},
 }
 
@@ -187,7 +200,6 @@ func resetGetActorID(ctx context.Context, c *client.Client, req *machineapi.Rese
 func init() {
 	resetCmd.Flags().BoolVar(&resetCmdFlags.graceful, "graceful", true, "if true, attempt to cordon/drain node and leave etcd (if applicable)")
 	resetCmd.Flags().BoolVar(&resetCmdFlags.reboot, "reboot", false, "if true, reboot the node after resetting instead of shutting down")
-	resetCmd.Flags().BoolVar(&resetCmdFlags.insecure, "insecure", false, "reset using the insecure (encrypted with no auth) maintenance service")
 	resetCmd.Flags().Var(&resetCmdFlags.wipeMode, "wipe-mode", "disk reset mode")
 	resetCmd.Flags().StringSliceVar(&resetCmdFlags.userDisksToWipe, "user-disks-to-wipe", nil, "if set, wipes defined devices in the list")
 	resetCmd.Flags().StringSliceVar(&resetCmdFlags.systemLabelsToWipe, "system-labels-to-wipe", nil, "if set, just wipe selected system disk partitions by label but keep other partitions intact")

@@ -17,14 +17,18 @@ output:
       colors: false
 linters:
   default: all
+  enable:
+    - forbidigo
+    - loglinter
+    - kubeimportlinter
   disable:
     - contextcheck
     - depguard
     - dupword
+    - embeddedstructfieldcheck
     - err113
     - errorlint
     - exhaustruct
-    - forbidigo
     - forcetypeassert
     - funcorder
     - funlen
@@ -33,6 +37,7 @@ linters:
     - gocognit
     - godoclint
     - godox
+    - gomodguard # new version gomodguard_v2
     - gosec
     - inamedparam
     - ireturn
@@ -58,8 +63,118 @@ linters:
     - wrapcheck
     - wsl # replaced by wsl_v5
   settings:
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.(Print|Printf|Println)$
+          msg: >-
+            talosctl renders text received from the node it is talking to, and a terminal acts on
+            control sequences in it.
+            Print through cmd/talosctl/pkg/talos/safeout instead.
+        - pattern: ^cli\.(Warning|Fatalf)$
+          msg: >-
+            these write to the raw stderr, so a warning quoting a node bypasses the filter.
+            Print through cmd/talosctl/pkg/talos/safeout instead.
+        - pattern: ^os\.(Stdout|Stderr)$
+          msg: >-
+            use safeout.Stdout / safeout.Stderr so node-supplied text cannot drive the
+            operator's terminal. A stream which must stay raw - a
+            file, a pcap, an interactive pty - needs //nolint:forbidigo saying which.
+    custom:
+      loglinter:
+        type: module
+        description: checks logging conventions
+        original-url: github.com/siderolabs/talos/tools/loglinter
+        settings:
+          exclude:
+            - "**/*_test.go"
+            - "vendor/**"
+          rules:
+            stdlib_log_calls:
+              allow:
+                # early boot / legacy runtime paths
+                - "internal/app/init/**/*.go"
+                - "internal/app/machined/pkg/runtime/v1alpha1/**/*.go"
+                - "internal/app/machined/revert.go"
+                - "internal/app/poweroff/**/*.go"
+
+                # CLI / installer
+                - "cmd/installer/**/*.go"
+                - "cmd/talosctl/**/*.go"
+
+                # current service compatibility exceptions
+                - "internal/app/apid/debug.go"
+                - "internal/app/apid/main.go"
+                - "internal/app/apid/service.go"
+                - "internal/app/dashboard/debug.go"
+                - "internal/app/dashboard/main.go"
+                - "internal/app/debug/container_streams.go"
+                - "internal/app/debug/debug.go"
+                - "internal/app/debug/hostns.go"
+                - "internal/app/lifecycle/container.go"
+                - "internal/app/machined/internal/server/v1alpha1/v1alpha1_cluster.go"
+                - "internal/app/machined/internal/server/v1alpha1/v1alpha1_server.go"
+                - "internal/app/machined/main.go"
+                - "internal/app/machined/pkg/system/runner/containerd/containerd.go"
+                - "internal/app/machined/pkg/system/runner/goroutine/goroutine.go"
+                - "internal/app/machined/pkg/system/runner/process/process.go"
+                - "internal/app/machined/pkg/system/service_runner.go"
+                - "internal/app/machined/pkg/system/services/etcd.go"
+                - "internal/app/machined/pkg/system/system.go"
+                - "internal/app/storaged/server.go"
+                - "internal/app/trustd/internal/provider/provider.go"
+                - "internal/app/trustd/internal/reg/reg.go"
+                - "internal/app/trustd/main.go"
+
+                # internal compatibility / low-level package boundaries
+                - "internal/pkg/containers/image/console/progress.go"
+                - "internal/pkg/containers/image/progress/pull_progress.go"
+                - "internal/pkg/cri/pods.go"
+                - "internal/pkg/etcd/etcd.go"
+                - "internal/pkg/extensions/kernel_modules.go"
+                - "internal/pkg/install/install.go"
+                - "internal/pkg/logind/broker.go"
+                - "internal/pkg/mount/switchroot/switchroot.go"
+                - "internal/pkg/mount/v3/all.go"
+                - "internal/pkg/rng/tpm.go"
+                - "internal/pkg/secureboot/tpm2/pcr.go"
+                - "internal/pkg/selinux/selinux.go"
+                - "internal/pkg/uki/uki.go"
+
+                # package-specific exceptions
+                - "pkg/archiver/tar.go"
+                - "pkg/kubernetes/kubernetes.go"
+                - "pkg/logging/zap.go"
+                - "pkg/machinery/client/events.go"
+                - "pkg/provision/providers/qemu/launch.go"
+                - "pkg/provision/providers/qemu/launch_linux.go"
+                - "pkg/provision/providers/vm/dhcpd.go"
+                - "pkg/provision/providers/vm/internal/ipxe/ipxe.go"
+                - "pkg/startup/maxprocs.go"
+
+                # tooling
+                - "tools/**/*.go"
+            slog_imports:
+              allow:
+                # gobgp's LoggerOption requires an *slog.Logger (3rd-party compatibility boundary)
+                - "cmd/talosctl/cmd/mgmt/bgp_launch.go"
+                - "internal/app/machined/pkg/controllers/network/bgp.go"
+                - "internal/app/machined/pkg/runtime/v1alpha1/platform/vmware/vmware_supported.go"
+                - "pkg/provision/providers/vm/dnsd.go"
+            zap_root_component:
+              allow:
+                - "pkg/logging/zap.go"
+      kubeimportlinter:
+        type: module
+        description: checks that versioned Kubernetes imports are aliased
+        original-url: github.com/siderolabs/talos/tools/kubeimportlinter
+        settings:
+          exclude:
+            - "**/*_test.go"
+            - "vendor/**"
     cyclop:
       max-complexity: 20
+    dogsled:
+      max-blank-identifiers: 2
     dupl:
       threshold: 100
     errcheck:
@@ -69,11 +184,62 @@ linters:
         - fmt.Fprintln
         - fmt.Fprintf
         - fmt.Fprint
+        - github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout.Fprintf
+        - github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout.Printf
+        - github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout.Println
+        - github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout.Print
+    exhaustive:
+      default-signifies-exhaustive: false
     goconst:
       min-len: 3
-      min-occurrences: 3
+      min-occurrences: 5
+      ignore-tests: true
+      ignore-string-values:
+        - "^-[a-zA-Z]"
+        - "^--" # various flags
+        - localhost
+        - "127\\.0\\.0\\.1" # common localhost IP
+        - ^false$
+        - ^true$
+        - ^kubeconfig$
+        - ^coredns$
+        - ^flannel$
+        - ^ServiceAccount$
+        - ^ClusterRole
+        - "^\\$patch$"
+        - "^delete$"
+        - "^secrets$"
+        - "^config$"
+        - "^list$"
+        - "^node(s|)$"
+        - "^k8s-app$"
+        - "^kube-proxy$"
+        - "^apiVersion$"
+        - "^kind$"
+        - "^name$"
+        - "^type$"
+        - "^image$"
+        - "^control-plane$"
+        - "^kube-dns$"
+        - "^kube-system$"
+        - "^watch$"
+        - "^tier$"
+        - "^Group$"
+        - "^eth0$"
+        - "^containerd$"
+        - "^(r|)bind$"
+        - "^siderolabs/sbc-"
+        - "^raw\\.xz$"
+        - "^resource(s|)$"
+        - "^Webhook$"
+        - "enabled$"
+        - "disabled$"
+    gocognit:
+      min-complexity: 30
     gocyclo:
       min-complexity: 10
+    godot:
+      scope: declarations
     gomoddirectives:
       replace-allow-list:
         - gopkg.in/yaml.v3
@@ -81,10 +247,16 @@ linters:
         - github.com/mdlayher/kobject
         - golang.zx2c4.com/wireguard/wgctrl
         - github.com/mdlayher/ethtool
-        - github.com/containerd/containerd/v2
+        - github.com/secure-io/siv-go
       replace-local: true
       exclude-forbidden: false
       retract-allow-no-explanation: false
+    gomodguard_v2: {}
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
     lll:
       line-length: 200
       tab-width: 1
@@ -98,13 +270,32 @@ linters:
       simple: true
       range-loops: true
       for-loops: false
+    revive:
+      rules:
+        - name: var-naming
+          disabled: true
+    rowserrcheck: {}
     staticcheck:
       checks: ["all", "-ST1000", "-ST1003", "-ST1016", "-ST1020", "-ST1021", "-ST1022", "-QF1001", "-QF1008"]
+    testpackage: {}
+    unparam:
+      check-exported: false
     unused:
       local-variables-are-used: false
+    whitespace:
+      multi-if: false
+      multi-func: false
   exclusions:
     generated: lax
     rules:
+      # forbidigo guards the code which renders responses from a node; the offline
+      # config and local cluster commands do not have that input.
+      - linters:
+          - forbidigo
+        path-except: ^cmd/talosctl/(cmd/talos|pkg/talos)/
+      - linters:
+          - forbidigo
+        path: cmd/talosctl/pkg/talos/safeout
       - linters:
           - dupl
         path: cmd/talosctl/cmd
@@ -418,14 +609,18 @@ linters:
         text: ^ST1000
       - path: (.+)\.go$
         text: parameter '\w+' seems to be unused, consider removing or renaming it as _
+      - linters:
+          - goconst
+        path: integration/
+        text: make it a constant
     paths:
       - .*\\.pb\\.go$
       - third_party$
       - builtin$
       - examples$
 issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
+  max-issues-per-linter: 1024
+  max-same-issues: 1024
   uniq-by-line: true
   new: false
 formatters:

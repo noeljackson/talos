@@ -29,6 +29,40 @@ const (
 //go:embed loader.conf.tmpl
 var loaderConfigTemplate string
 
+// fatSectorsPerCluster picks the cluster size for the ESP holding the UKI.
+//
+// mkfs.vfat defaults to a single 512 byte sector per cluster at the sizes we
+// build here, which leaves the ESP with a ~900 KiB FAT per copy and a cluster
+// chain of ~200k entries for a single ~100 MiB UKI. Firmware walks that chain
+// on every boot, which is painful on slow media (e.g. an optical drive).
+//
+// The cluster size is capped so that the cluster count stays above the FAT32
+// minimum of 65525: most implementations (EDK2 included) derive the FAT type
+// from the cluster count, so a FAT32 filesystem below that floor reads back as
+// FAT16 and fails to mount.
+func fatSectorsPerCluster(sizeBytes int64) uint {
+	const (
+		sectorSize = 512
+		// FAT32 minimum cluster count, plus room for the reserved sectors and the FATs themselves.
+		minClusters = 65525 + 2048
+		maxSPC      = 8
+	)
+
+	sectors := sizeBytes / sectorSize
+
+	spc := uint(1)
+
+	for next := spc * 2; next <= maxSPC; next *= 2 {
+		if sectors/int64(next) < minClusters {
+			break
+		}
+
+		spc = next
+	}
+
+	return spc
+}
+
 // CreateUEFI creates an iso using a UKI, systemd-boot.
 //
 // The ISO created supports only booting in UEFI mode, and supports SecureBoot.
@@ -79,6 +113,7 @@ func (options Options) CreateUEFI(ctx context.Context, printf func(string, ...an
 	fopts := []makefs.Option{
 		makefs.WithLabel(constants.EFIPartitionLabel),
 		makefs.WithReproducible(true),
+		makefs.WithSectorsPerCluster(fatSectorsPerCluster(isoSize)),
 	}
 
 	if err := makefs.VFAT(ctx, efiBootImg, fopts...); err != nil {
@@ -112,6 +147,21 @@ func (options Options) CreateUEFI(ctx context.Context, printf func(string, ...an
 	}
 
 	if err := os.WriteFile(filepath.Join(options.ScratchDir, "loader/loader.conf"), loaderConfigOut.Bytes(), 0o644); err != nil {
+		return nil, err
+	}
+
+	// Ship a placeholder random seed, marked read-only below.
+	//
+	// systemd-boot v261 grew a code path which creates /loader/random-seed when the file is missing and the
+	// firmware handed out entropy, and it does so without checking whether the medium can be written to. On
+	// an ISO booted as an El Torito CD/DVD that means a create is attempted against read-only media, and some
+	// firmware faults there rather than returning an error, taking the machine down with a synchronous
+	// exception right after a boot entry is selected: https://github.com/siderolabs/talos/issues/14029
+	//
+	// Providing the file keeps systemd-boot out of that path entirely: the open fails with a plain error and
+	// the seed is left alone, which is what systemd <= 260 did. The contents are never consumed (the file is
+	// read-only, and so is the medium), so a fixed placeholder keeps the ISO reproducible.
+	if err := os.WriteFile(filepath.Join(options.ScratchDir, "loader/random-seed"), make([]byte, 32), 0o444); err != nil {
 		return nil, err
 	}
 
@@ -167,6 +217,21 @@ func (options Options) CreateUEFI(ctx context.Context, printf func(string, ...an
 			filepath.Join(options.ScratchDir, "EFI"),
 			filepath.Join(options.ScratchDir, "loader"),
 			"::",
+		},
+	); err != nil {
+		return nil, err
+	}
+
+	// Mark the random seed read-only, so that systemd-boot >= 261.2 recognizes it as a seed it should not
+	// manage, and so that the open in older versions fails before any write is attempted.
+	if _, err := cmd.RunWithOptions(
+		ctx,
+		"mattrib",
+		[]string{
+			"-i",
+			efiBootImg,
+			"+r",
+			"::/loader/random-seed",
 		},
 	); err != nil {
 		return nil, err

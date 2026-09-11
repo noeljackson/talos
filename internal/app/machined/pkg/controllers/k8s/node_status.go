@@ -15,7 +15,7 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/optional"
 	"go.uber.org/zap"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/k8s/internal/nodewatch"
@@ -171,7 +171,7 @@ func (ctrl *NodeStatusController) Run(ctx context.Context, r controller.Runtime,
 		if nodewatcher != nil && watcherKubeconfigVer != currentKubeconfigVer {
 			// kubelet kubeconfig on disk changed — the cached client may be pinned
 			// to a stale endpoint, so rebuild the watcher with a fresh client.
-			logger.Debug(
+			logger.Info(
 				"kubelet kubeconfig changed, restarting node watcher",
 				zap.String("old_hash", watcherKubeconfigVer),
 				zap.String("new_hash", currentKubeconfigVer),
@@ -229,7 +229,8 @@ func (ctrl *NodeStatusController) Run(ctx context.Context, r controller.Runtime,
 				podCIDRs = append(podCIDRs, prefix)
 			}
 
-			if err = safe.WriterModify(ctx, r, k8s.NewNodeStatus(k8s.NamespaceName, node.Name),
+			if err = safe.WriterModify(
+				ctx, r, k8s.NewNodeStatus(k8s.NamespaceName, node.Name),
 				func(res *k8s.NodeStatus) error {
 					res.TypedSpec().Nodename = node.Name
 					res.TypedSpec().Unschedulable = node.Spec.Unschedulable
@@ -239,8 +240,8 @@ func (ctrl *NodeStatusController) Run(ctx context.Context, r controller.Runtime,
 					res.TypedSpec().PodCIDRs = podCIDRs
 
 					for _, condition := range node.Status.Conditions {
-						if condition.Type == v1.NodeReady {
-							res.TypedSpec().NodeReady = condition.Status == v1.ConditionTrue
+						if condition.Type == corev1.NodeReady {
+							res.TypedSpec().NodeReady = condition.Status == corev1.ConditionTrue
 						}
 					}
 

@@ -30,27 +30,43 @@ func (suite *PatchSuite) TestSuccess() {
 	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
 
 	patch := map[string]any{
-		"cluster": map[string]any{
-			"proxy": map[string]any{
-				"image": fmt.Sprintf("%s:v%s", constants.KubeProxyImage, constants.DefaultKubernetesVersion),
-			},
-		},
+		"apiVersion": "v1alpha1",
+		"kind":       "WatchdogTimerConfig",
+		"device":     "/dev/watchdog33",
+		"timeout":    "2m0s",
 	}
 
 	data, err := json.Marshal(patch)
 	suite.Require().NoError(err)
 
-	suite.RunCLI([]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--mode=no-reboot"},
+	suite.RunCLI(
+		[]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--mode=no-reboot"},
 		base.StdoutEmpty(),
 		base.StderrNotEmpty(),
 	)
-	suite.RunCLI([]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--mode=no-reboot", "--dry-run"},
+	suite.RunCLI(
+		[]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--mode=no-reboot", "--dry-run"},
+		base.StdoutEmpty(),
+		base.StderrNotEmpty(),
+	)
+
+	removePatch := map[string]any{
+		"apiVersion": "v1alpha1",
+		"kind":       "WatchdogTimerConfig",
+		"$patch":     "delete",
+	}
+
+	data, err = json.Marshal(removePatch)
+	suite.Require().NoError(err)
+
+	suite.RunCLI(
+		[]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--mode=no-reboot"},
 		base.StdoutEmpty(),
 		base.StderrNotEmpty(),
 	)
 }
 
-// TestError runs comand with error.
+// TestError runs command with error.
 func (suite *PatchSuite) TestError() {
 	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
 

@@ -182,7 +182,9 @@ func (d *DHCP6) parseReply(reply *dhcpv6.Message) (leaseTime time.Duration) {
 
 		d.resolvers = []network.ResolverSpecSpec{
 			{
-				DNSServers:  xslices.Map(reply.Options.DNS(), convertIP),
+				NameServers: xslices.Map(reply.Options.DNS(), func(ip net.IP) network.NameServerSpec {
+					return network.NameServerSpec{Addr: convertIP(ip)}
+				}),
 				ConfigLayer: network.ConfigOperator,
 			},
 		}
@@ -286,7 +288,7 @@ func (d *DHCP6) isIPv6LinkReady(iface *net.Interface, conn *rtnetlink.Conn) (boo
 
 		if addr.Attributes.Address.IsLinkLocalUnicast() && (addr.Flags&unix.IFA_F_TENTATIVE == 0) {
 			if addr.Flags&unix.IFA_F_DADFAILED != 0 {
-				d.logger.Warn("DADFAILED for %v, continuing anyhow", zap.Stringer("address", addr.Attributes.Address), zap.String("link", d.linkName))
+				d.logger.Warn("DAD failed, continuing", zap.Stringer("address", addr.Attributes.Address), zap.String("link", d.linkName))
 			}
 
 			return true, nil

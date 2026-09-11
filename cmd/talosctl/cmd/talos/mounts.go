@@ -6,16 +6,19 @@ package talos
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
+	"io"
+	"math"
+	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/peer"
 
-	"github.com/siderolabs/talos/pkg/cli"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
+	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
-	"github.com/siderolabs/talos/pkg/machinery/formatters"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 )
 
 // mountsCmd represents the mounts command.
@@ -26,21 +29,77 @@ var mountsCmd = &cobra.Command{
 	Long:    ``,
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			var remotePeer peer.Peer
+		ctx := cmd.Context()
 
-			resp, err := c.Mounts(ctx, grpc.Peer(&remotePeer))
-			if err != nil {
-				if resp == nil {
-					return fmt.Errorf("error getting mount information: %s", err)
-				}
+		clientFactory, err := NewClientFactory(ctx, nil)
+		if err != nil {
+			return err
+		}
 
-				cli.Warning("%s", err)
+		defer clientFactory.Close() //nolint:errcheck
+
+		responseChan := multiplex.UnaryViaFactory(
+			ctx, clientFactory,
+			func(ctx context.Context, c *client.Client) (*machineapi.MountsResponse, error) {
+				return c.Mounts(ctx)
+			},
+		)
+
+		return RenderMounts(safeout.Stdout(), responseChan)
+	},
+}
+
+// RenderMounts renders the mounts output for a stream of multiplexed responses.
+func RenderMounts(output io.Writer, responseChan <-chan multiplex.Response[*machineapi.MountsResponse]) error {
+	w := tabwriter.NewWriter(output, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "NODE\tFILESYSTEM\tSIZE(GB)\tUSED(GB)\tAVAILABLE(GB)\tPERCENT USED\tMOUNTED ON")
+
+	flushTimer := time.NewTimer(outputFlushInterval)
+	defer flushTimer.Stop()
+
+	flushTimer.Stop()
+
+	var errs error
+
+	for {
+		select {
+		case resp, ok := <-responseChan:
+			if !ok {
+				return errors.Join(errs, w.Flush())
 			}
 
-			return formatters.RenderMounts(resp, os.Stdout, &remotePeer)
-		})
-	},
+			if resp.Err != nil {
+				errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
+			} else {
+				for _, msg := range resp.Payload.Messages {
+					for _, r := range msg.Stats {
+						percentAvailable := 100.0 - 100.0*(float64(r.Available)/float64(r.Size))
+
+						if math.IsNaN(percentAvailable) {
+							continue
+						}
+
+						safeout.Fprintf(
+							w, "%s\t%s\t%.02f\t%.02f\t%.02f\t%.02f%%\t%s\n",
+							resp.Node,
+							r.Filesystem,
+							float64(r.Size)*1e-9,
+							float64(r.Size-r.Available)*1e-9,
+							float64(r.Available)*1e-9,
+							percentAvailable,
+							r.MountedOn,
+						)
+					}
+				}
+			}
+
+			flushTimer.Reset(outputFlushInterval)
+		case <-flushTimer.C:
+			if err := w.Flush(); err != nil {
+				errs = errors.Join(errs, fmt.Errorf("error flushing output: %w", err))
+			}
+		}
+	}
 }
 
 func init() {

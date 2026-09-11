@@ -6,6 +6,7 @@ package dns_test
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"net"
 	"net/netip"
@@ -17,6 +18,7 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/proxy"
 	dnssrv "github.com/miekg/dns"
 	"github.com/siderolabs/gen/maps"
+	"github.com/siderolabs/gen/xiter"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/gen/xtesting/check"
 	"github.com/stretchr/testify/require"
@@ -73,6 +75,13 @@ func TestDNS(t *testing.T) {
 			errCheck:     check.NoError(),
 		},
 		{
+			name:         "empty destinations but static host exists",
+			hostname:     "static-host-1",
+			nameservers:  nil,
+			expectedCode: dnssrv.RcodeSuccess,
+			errCheck:     check.NoError(),
+		},
+		{
 			// The first one will return SERVFAIL and the second will return REFUSED. We should try both.
 			name:         `should return "refused"`,
 			hostname:     "dnssec-failed.org",
@@ -82,7 +91,7 @@ func TestDNS(t *testing.T) {
 		},
 	}
 
-	for _, dnsAddr := range []string{"127.0.0.1:10700"} {
+	for _, dnsAddr := range []string{"127.0.0.1:10700", "[::1]:10700"} {
 		for _, test := range tests {
 			t.Run(dnsAddr+"/"+test.name, func(t *testing.T) {
 				stop := newManager(t, test.nameservers...)
@@ -123,13 +132,21 @@ func TestDNSEmptyDestinations(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, dnssrv.RcodeServerFailure, r.Rcode, r)
 
+	r, err = dnssrv.Exchange(createQuery("google.com"), "[::1]:10700")
+	require.NoError(t, err)
+	require.Equal(t, dnssrv.RcodeServerFailure, r.Rcode, r)
+
+	r, err = dnssrv.Exchange(createQuery("google.com"), "[::1]:10700")
+	require.NoError(t, err)
+	require.Equal(t, dnssrv.RcodeServerFailure, r.Rcode, r)
+
 	stop()
 }
 
 func Test_ServeBackground(t *testing.T) {
 	t.Cleanup(func() { goleak.VerifyNone(t) })
 
-	m := dns.NewManager(&testReader{}, func(e suture.Event) { t.Log("dns-runners event:", e) }, zaptest.NewLogger(t))
+	m := dns.NewManager(&testMemberReader{}, &testStaticHostReader{}, func(e suture.Event) { t.Log("dns-runners event:", e) }, zaptest.NewLogger(t))
 
 	m.ServeBackground(t.Context())
 
@@ -142,6 +159,8 @@ func Test_ServeBackground(t *testing.T) {
 	for _, err := range m.RunAll(slices.Values([]dns.AddressPair{
 		{Network: "udp", Addr: netip.MustParseAddrPort("127.0.0.1:10700")},
 		{Network: "udp", Addr: netip.MustParseAddrPort("127.0.0.1:10701")},
+		{Network: "udp", Addr: netip.MustParseAddrPort("[::1]:10700")},
+		{Network: "udp", Addr: netip.MustParseAddrPort("[::1]:10701")},
 	}), false) {
 		require.NoError(t, err)
 	}
@@ -174,7 +193,6 @@ func TestRunnerRestart(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 
 		errCh := make(chan error, 1)
-
 		go func() { errCh <- runner.Serve(ctx) }()
 
 		// Give the server time to come up, then assert below that it did not
@@ -208,7 +226,7 @@ func TestRunnerRestart(t *testing.T) {
 func TestRunAllReportsBindFailure(t *testing.T) {
 	t.Cleanup(func() { goleak.VerifyNone(t) })
 
-	m := dns.NewManager(&testReader{}, func(e suture.Event) { t.Log("dns-runners event:", e) }, zaptest.NewLogger(t))
+	m := dns.NewManager(&testMemberReader{}, &testStaticHostReader{}, func(e suture.Event) { t.Log("dns-runners event:", e) }, zaptest.NewLogger(t))
 
 	m.ServeBackground(t.Context())
 
@@ -231,7 +249,8 @@ func TestRunAllReportsBindFailure(t *testing.T) {
 
 func newManager(t *testing.T, nameservers ...string) func() {
 	m := dns.NewManager(
-		&testReader{},
+		&testMemberReader{},
+		&testStaticHostReader{},
 		func(e suture.Event) { t.Log("dns-runners event:", e) },
 		zaptest.NewLogger(t),
 	)
@@ -260,7 +279,7 @@ func newManager(t *testing.T, nameservers ...string) func() {
 	ctx, cancel := context.WithCancel(context.Background()) //nolint:usetesting
 	t.Cleanup(cancel)
 
-	m.SetUpstreams(slices.Values(pxs))
+	m.SetUpstreams(xiter.Map(func(p *proxy.Proxy) dns.Upstream { return p }, slices.Values(pxs)))
 
 	m.ServeBackground(ctx)
 	m.ServeBackground(ctx)
@@ -269,6 +288,9 @@ func newManager(t *testing.T, nameservers ...string) func() {
 		{Network: "udp", Addr: netip.MustParseAddrPort("127.0.0.1:10700")},
 		{Network: "udp", Addr: netip.MustParseAddrPort("127.0.0.1:10701")},
 		{Network: "tcp", Addr: netip.MustParseAddrPort("127.0.0.1:10700")},
+		{Network: "udp", Addr: netip.MustParseAddrPort("[::1]:10700")},
+		{Network: "tcp", Addr: netip.MustParseAddrPort("[::1]:10700")},
+		{Network: "udp", Addr: netip.MustParseAddrPort("[::1]:10700")},
 	}), false) {
 		if err != nil && strings.Contains(err.Error(), "failed to set TCP_FASTOPEN") {
 			continue
@@ -280,6 +302,8 @@ func newManager(t *testing.T, nameservers ...string) func() {
 	for _, err := range m.RunAll(slices.Values([]dns.AddressPair{
 		{Network: "udp", Addr: netip.MustParseAddrPort("127.0.0.1:10700")},
 		{Network: "tcp", Addr: netip.MustParseAddrPort("127.0.0.1:10700")},
+		{Network: "udp", Addr: netip.MustParseAddrPort("[::1]:10700")},
+		{Network: "tcp", Addr: netip.MustParseAddrPort("[::1]:10700")},
 	}), false) {
 		if err != nil && strings.Contains(err.Error(), "failed to set TCP_FASTOPEN") {
 			continue
@@ -311,9 +335,9 @@ func createQuery(name string) *dnssrv.Msg {
 	}
 }
 
-type testReader struct{}
+type testMemberReader struct{}
 
-func (r *testReader) ReadMembers(context.Context) (iter.Seq[*cluster.Member], error) {
+func (r *testMemberReader) ReadMembers(context.Context) (iter.Seq[*cluster.Member], error) {
 	namesToAddresses := map[string][]netip.Addr{
 		"talos-default-controlplane-1": {netip.MustParseAddr("172.20.0.2")},
 		"talos-default-worker-1":       {netip.MustParseAddr("172.20.0.3")},
@@ -328,4 +352,23 @@ func (r *testReader) ReadMembers(context.Context) (iter.Seq[*cluster.Member], er
 	})
 
 	return slices.Values(result), nil
+}
+
+type testStaticHostReader struct{}
+
+func (r *testStaticHostReader) ReadStaticHosts(ctx context.Context, name string) (iter.Seq[netip.Addr], error) {
+	switch name {
+	case "static-host-1":
+		return slices.Values([]netip.Addr{
+			netip.MustParseAddr("10.1.0.1"),
+			netip.MustParseAddr("ff00::1"),
+		}), nil
+	case "static-host-2":
+		return slices.Values([]netip.Addr{
+			netip.MustParseAddr("10.1.0.2"),
+			netip.MustParseAddr("ff00::2"),
+		}), nil
+	default:
+		return nil, errors.New("not found")
+	}
 }

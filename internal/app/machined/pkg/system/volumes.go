@@ -5,6 +5,7 @@
 package system
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/xslices"
 
@@ -36,14 +38,20 @@ func (svcrunner *ServiceRunner) deleteVolumeMountRequest(ctx context.Context, re
 		}
 	}
 
+	activeRequests := make([]volumeRequest, 0, len(requests))
+
 	for _, request := range requests {
 		err := st.Destroy(ctx, block.NewVolumeMountRequest(block.NamespaceName, request.requestID).Metadata())
-		if err != nil {
+		if err != nil && !state.IsNotFoundError(err) {
 			return fmt.Errorf("failed to destroy volume mount request %q: %w", request.requestID, err)
+		}
+
+		if err == nil {
+			activeRequests = append(activeRequests, request)
 		}
 	}
 
-	for _, request := range requests {
+	for _, request := range activeRequests {
 		if _, err := st.WatchFor(ctx, block.NewVolumeMountStatus(block.NamespaceName, request.requestID).Metadata(), state.WithEventTypes(state.Destroyed)); err != nil {
 			return fmt.Errorf("failed to watch for volume mount status to be destroyed %q: %w", request.requestID, err)
 		}
@@ -60,9 +68,79 @@ type volumesMountedCondition struct {
 	pendingRequests []volumeRequest
 }
 
+func checkVolumeLifecycleEvent(event state.Event) error {
+	switch event.Type {
+	case state.Created, state.Updated:
+		if event.Resource.Metadata().Phase() != resource.PhaseRunning {
+			return fmt.Errorf("volume lifecycle is not running, cannot mount volumes")
+		}
+	case state.Destroyed:
+		return fmt.Errorf("volume lifecycle is destroyed, cannot mount volumes")
+	case state.Bootstrapped, state.Noop:
+		return fmt.Errorf("unexpected event type %q for volume lifecycle", event.Type)
+	case state.Errored:
+		return fmt.Errorf("watch error: %w", event.Error)
+	}
+
+	return nil
+}
+
+//nolint:gocyclo
+func waitForMountStatusReadyWithLifecycle(ctx context.Context, st state.State, lifecycleWatchCh <-chan state.Event, requestID string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	mountStatusWatchCh := make(chan state.Event)
+
+	if err := st.Watch(ctx, block.NewVolumeMountStatus(block.NamespaceName, requestID).Metadata(), mountStatusWatchCh); err != nil {
+		return fmt.Errorf("failed to watch volume mount status %q: %w", requestID, err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event := <-lifecycleWatchCh:
+			if err := checkVolumeLifecycleEvent(event); err != nil {
+				return err
+			}
+		case event := <-mountStatusWatchCh:
+			switch event.Type {
+			case state.Created, state.Updated:
+				if event.Resource.Metadata().Phase() == resource.PhaseRunning {
+					return nil
+				}
+			case state.Destroyed:
+				// ignore
+			case state.Errored:
+				return fmt.Errorf("watch error: %w", event.Error)
+			case state.Bootstrapped, state.Noop:
+				return fmt.Errorf("unexpected event type %q for mount status", event.Type)
+			}
+		}
+	}
+}
+
+//nolint:gocyclo
 func (cond *volumesMountedCondition) Wait(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	lifecycleWatchCh := make(chan state.Event)
+
+	if err := cond.st.Watch(ctx, block.NewVolumeLifecycle(block.NamespaceName, block.VolumeLifecycleID).Metadata(), lifecycleWatchCh); err != nil {
+		return fmt.Errorf("failed to watch volume lifecycle: %w", err)
+	}
+
+	// wait for the initial watch event
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case event := <-lifecycleWatchCh:
+		if err := checkVolumeLifecycleEvent(event); err != nil {
+			return err
+		}
+	}
 
 	// we mount all requests sequentially one by one
 	for idx := range cond.requests {
@@ -83,17 +161,11 @@ func (cond *volumesMountedCondition) Wait(ctx context.Context) error {
 			}
 
 			// wait for the mount status
-			_, err := cond.st.WatchFor(
-				ctx,
-				block.NewVolumeMountStatus(block.NamespaceName, req.requestID).Metadata(),
-				state.WithEventTypes(state.Created, state.Updated),
-				state.WithPhases(resource.PhaseRunning),
-			)
-			if err != nil {
+			if err := waitForMountStatusReadyWithLifecycle(ctx, cond.st, lifecycleWatchCh, req.requestID); err != nil {
 				return err
 			}
 
-			err = cond.lockVolumeMountStatus(ctx, req.requestID)
+			err := cond.lockVolumeMountStatus(ctx, req.requestID)
 			if err == nil {
 				break
 			}
@@ -154,5 +226,43 @@ func WaitForVolumesToBeMounted(st state.State, requests []volumeRequest) conditi
 		st:              st,
 		requests:        requests,
 		pendingRequests: slices.Clone(requests),
+	}
+}
+
+// FindBackingVolume walks up the parent chain of a volume which is not backed by a block device of
+// its own (e.g. a directory) and returns the ID of the closest ancestor volume which is, i.e. the
+// volume the given one resides on.
+func FindBackingVolume(ctx context.Context, st state.State, volumeID string) (string, error) {
+	seen := map[string]struct{}{volumeID: {}}
+
+	volumeStatus, err := safe.ReaderGetByID[*block.VolumeStatus](ctx, st, volumeID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get volume status %q: %w", volumeID, err)
+	}
+
+	for {
+		// overlay volumes declare their parent directly, mounted volumes (including directories) via
+		// the mount spec
+		parentID := cmp.Or(volumeStatus.TypedSpec().ParentID, volumeStatus.TypedSpec().MountSpec.ParentID)
+		if parentID == "" {
+			return "", fmt.Errorf("volume %q is not located and doesn't reside on another volume", volumeID)
+		}
+
+		if _, ok := seen[parentID]; ok {
+			return "", fmt.Errorf("cycle detected in the parent chain of volume %q at %q", volumeID, parentID)
+		}
+
+		seen[parentID] = struct{}{}
+
+		parentStatus, err := safe.ReaderGetByID[*block.VolumeStatus](ctx, st, parentID)
+		if err != nil {
+			return "", fmt.Errorf("failed to get parent volume status %q of volume %q: %w", parentID, volumeID, err)
+		}
+
+		if parentStatus.TypedSpec().Location != "" {
+			return parentID, nil
+		}
+
+		volumeStatus = parentStatus
 	}
 }

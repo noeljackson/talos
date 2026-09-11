@@ -21,9 +21,8 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/talos/cgroupsprinter"
-	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/internal/pkg/cgroups"
-	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -57,91 +56,99 @@ To see schema examples, refer to https://github.com/siderolabs/talos/tree/main/c
 `,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			if err := helpers.FailIfMultiNodes(ctx, "cgroups"); err != nil {
-				return err
-			}
+		ctx := cmd.Context()
 
-			var schema cgroupsprinter.Schema
+		clientFactory, err := NewClientFactory(ctx, &cgroupsCmdFlags)
+		if err != nil {
+			return err
+		}
 
-			switch {
-			case cgroupsCmdFlags.schemaFile != "":
-				in, err := os.Open(cgroupsCmdFlags.schemaFile)
-				if err != nil {
-					return fmt.Errorf("error opening schema file: %w", err)
-				}
+		defer clientFactory.Close() //nolint:errcheck
 
-				defer in.Close() //nolint:errcheck
+		ctx, c, _, err := clientFactory.BuildClientEnforceSingleNode(ctx, "cgroups")
+		if err != nil {
+			return err
+		}
 
-				if err = yaml.NewDecoder(in).Decode(&schema); err != nil {
-					return fmt.Errorf("error decoding schema file: %w", err)
-				}
-			case cgroupsCmdFlags.presetName != "":
-				presetNames := cgroupsprinter.GetPresetNames()
+		var schema cgroupsprinter.Schema
 
-				if slices.Index(presetNames, cgroupsCmdFlags.presetName) == -1 {
-					return fmt.Errorf("invalid preset name: %s (valid %v)", cgroupsCmdFlags.presetName, presetNames)
-				}
-
-				schema = cgroupsprinter.GetPreset(cgroupsCmdFlags.presetName)
-			default:
-				return fmt.Errorf("either schema file or preset must be specified")
-			}
-
-			if err := schema.Compile(); err != nil {
-				return fmt.Errorf("error compiling schema: %w", err)
-			}
-
-			processResolveMap := buildProcessResolveMap(ctx, c)
-			devicesResolveMap := buildDevicesResolveMap(ctx, c)
-
-			r, err := c.Copy(ctx, constants.CgroupMountPath)
+		switch {
+		case cgroupsCmdFlags.schemaFile != "":
+			in, err := os.Open(cgroupsCmdFlags.schemaFile)
 			if err != nil {
-				return fmt.Errorf("error copying: %w", err)
+				return fmt.Errorf("error opening schema file: %w", err)
 			}
 
-			defer r.Close() //nolint:errcheck
+			defer in.Close() //nolint:errcheck
 
-			tree, err := cgroups.TreeFromTarGz(r)
-			if err != nil {
-				return fmt.Errorf("error reading cgroups: %w", err)
+			if err = yaml.NewDecoder(in).Decode(&schema); err != nil {
+				return fmt.Errorf("error decoding schema file: %w", err)
+			}
+		case cgroupsCmdFlags.presetName != "":
+			presetNames := cgroupsprinter.GetPresetNames()
+
+			if slices.Index(presetNames, cgroupsCmdFlags.presetName) == -1 {
+				return fmt.Errorf("invalid preset name: %s (valid %v)", cgroupsCmdFlags.presetName, presetNames)
 			}
 
-			if !cgroupsCmdFlags.skipCRIResolve {
-				cgroupNameResolveMap := buildCgroupResolveMap(ctx, c)
-				tree.ResolveNames(cgroupNameResolveMap)
-			}
+			schema = cgroupsprinter.GetPreset(cgroupsCmdFlags.presetName)
+		default:
+			return fmt.Errorf("either schema file or preset must be specified")
+		}
 
-			tree.Walk(func(node *cgroups.Node) {
-				node.CgroupProcsResolved = xslices.Map(node.CgroupProcs, func(pid cgroups.Value) cgroups.RawValue {
-					if name, ok := processResolveMap[pid.String()]; ok {
-						return cgroups.RawValue(name)
-					}
+		if err := schema.Compile(); err != nil {
+			return fmt.Errorf("error compiling schema: %w", err)
+		}
 
-					return cgroups.RawValue(pid.String())
-				})
+		processResolveMap := buildProcessResolveMap(ctx, c)
+		devicesResolveMap := buildDevicesResolveMap(ctx, c)
 
-				for dev := range node.IOStat {
-					if name, ok := devicesResolveMap[dev]; ok {
-						node.IOStat[name] = node.IOStat[dev]
-						delete(node.IOStat, dev)
-					}
+		r, err := c.Copy(ctx, constants.CgroupMountPath)
+		if err != nil {
+			return fmt.Errorf("error copying: %w", err)
+		}
+
+		defer r.Close() //nolint:errcheck
+
+		tree, err := cgroups.TreeFromTarGz(r)
+		if err != nil {
+			return fmt.Errorf("error reading cgroups: %w", err)
+		}
+
+		if !cgroupsCmdFlags.skipCRIResolve {
+			cgroupNameResolveMap := buildCgroupResolveMap(ctx, c)
+			tree.ResolveNames(cgroupNameResolveMap)
+		}
+
+		tree.Walk(func(node *cgroups.Node) {
+			node.CgroupProcsResolved = xslices.Map(node.CgroupProcs, func(pid cgroups.Value) cgroups.RawValue {
+				if name, ok := processResolveMap[pid.String()]; ok {
+					return cgroups.RawValue(name)
 				}
+
+				return cgroups.RawValue(pid.String())
 			})
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-
-			defer w.Flush() //nolint:errcheck
-
-			headerLine := "NAME\t" + schema.HeaderLine() + "\n"
-
-			_, err = w.Write([]byte(headerLine))
-			if err != nil {
-				return fmt.Errorf("error writing header line: %w", err)
+			for dev := range node.IOStat {
+				if name, ok := devicesResolveMap[dev]; ok {
+					node.IOStat[name] = node.IOStat[dev]
+					delete(node.IOStat, dev)
+				}
 			}
-
-			return cgroupsprinter.PrintNode(".", w, &schema, tree.Root, nil, 0, nil, false, true)
 		})
+
+		w := tabwriter.NewWriter(safeout.Stdout(), 0, 0, 3, ' ', 0)
+
+		defer w.Flush() //nolint:errcheck
+
+		headerLine := "NAME\t" + schema.HeaderLine() + "\n"
+
+		_, err = w.Write([]byte(headerLine))
+		if err != nil {
+			return fmt.Errorf("error writing header line: %w", err)
+		}
+
+		return cgroupsprinter.PrintNode(".", w, &schema, tree.Root, nil, 0, nil, false, true)
 	},
 }
 
@@ -154,7 +161,7 @@ func buildCgroupResolveMap(ctx context.Context, c *client.Client) map[string]str
 
 	containersResp, err := c.Containers(ctx, constants.K8sContainerdNamespace, common.ContainerDriver_CRI)
 	if err != nil {
-		cli.Warning("error getting containers: %s", err)
+		safeout.Warningf("error getting containers: %s", err)
 	} else {
 		for _, ctr := range containersResp.Messages[0].Containers {
 			if ctr.Uid != "" && ctr.PodId != "" {
@@ -179,7 +186,7 @@ func buildProcessResolveMap(ctx context.Context, c *client.Client) map[string]st
 
 	processesResp, err := c.Processes(ctx)
 	if err != nil {
-		cli.Warning("error getting processes: %s", err)
+		safeout.Warningf("error getting processes: %s", err)
 
 		return processResolveMap
 	}
@@ -212,7 +219,7 @@ func buildDevicesResolveMap(ctx context.Context, c *client.Client) map[string]st
 
 	r, err := c.Copy(ctx, "/sys/dev/block")
 	if err != nil {
-		cli.Warning("error copying devices: %s", err)
+		safeout.Warningf("error copying devices: %s", err)
 
 		return devicesResolveMap
 	}
@@ -221,7 +228,7 @@ func buildDevicesResolveMap(ctx context.Context, c *client.Client) map[string]st
 
 	gzR, err := gzip.NewReader(r)
 	if err != nil {
-		cli.Warning("error reading devices: %s", err)
+		safeout.Warningf("error reading devices: %s", err)
 
 		return devicesResolveMap
 	}

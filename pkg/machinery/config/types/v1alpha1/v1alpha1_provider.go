@@ -74,6 +74,11 @@ func (c *Config) Machine() config.MachineConfig {
 	return c.MachineConfig
 }
 
+// UdevRulesConfig implements the config.Provider interface.
+func (c *Config) UdevRulesConfig() config.UdevConfig {
+	return c.Machine().Udev()
+}
+
 // SeccompProfiles implements the config.Provider interface.
 func (m *MachineConfig) SeccompProfiles() []config.SeccompProfile {
 	return xslices.Map(m.MachineSeccompProfiles, func(m *MachineSeccompProfile) config.SeccompProfile { return m })
@@ -87,26 +92,6 @@ func (m *MachineSeccompProfile) Name() string {
 // Value implements the config.Provider interface.
 func (m *MachineSeccompProfile) Value() map[string]any {
 	return m.MachineSeccompProfileValue.Object
-}
-
-// NodeLabels implements the config.Provider interface.
-func (m *MachineConfig) NodeLabels() config.NodeLabels {
-	return m.MachineNodeLabels
-}
-
-// NodeAnnotations implements the config.Provider interface.
-func (m *MachineConfig) NodeAnnotations() config.NodeAnnotations {
-	return m.MachineNodeAnnotations
-}
-
-// NodeTaints implements the config.Provider interface.
-func (m *MachineConfig) NodeTaints() config.NodeTaints {
-	return m.MachineNodeTaints
-}
-
-// BaseRuntimeSpecOverrides implements the config.Provider interface.
-func (m *MachineConfig) BaseRuntimeSpecOverrides() map[string]any {
-	return m.MachineBaseRuntimeSpecOverrides.Object
 }
 
 // Cluster implements the config.Provider interface.
@@ -272,57 +257,6 @@ func (m *MachineConfig) Network() config.MachineNetwork {
 	return m.MachineNetwork
 }
 
-// Controlplane implements the config.Provider interface.
-func (m *MachineConfig) Controlplane() config.MachineControlPlane {
-	if m.MachineControlPlane == nil {
-		return &MachineControlPlaneConfig{}
-	}
-
-	return m.MachineControlPlane
-}
-
-// Pods implements the config.Provider interface.
-func (m *MachineConfig) Pods() []map[string]any {
-	return xslices.Map(m.MachinePods, func(u Unstructured) map[string]any { return u.Object })
-}
-
-// ControllerManager implements the config.Provider interface.
-func (m *MachineControlPlaneConfig) ControllerManager() config.MachineControllerManager {
-	if m.MachineControllerManager == nil {
-		return &MachineControllerManagerConfig{}
-	}
-
-	return m.MachineControllerManager
-}
-
-// Scheduler implements the config.Provider interface.
-func (m *MachineControlPlaneConfig) Scheduler() config.MachineScheduler {
-	if m.MachineScheduler == nil {
-		return &MachineSchedulerConfig{}
-	}
-
-	return m.MachineScheduler
-}
-
-// Disabled implements the config.Provider interface.
-func (m *MachineControllerManagerConfig) Disabled() bool {
-	return pointer.SafeDeref(m.MachineControllerManagerDisabled)
-}
-
-// Disabled implements the config.Provider interface.
-func (m *MachineSchedulerConfig) Disabled() bool {
-	return pointer.SafeDeref(m.MachineSchedulerDisabled)
-}
-
-// Kubelet implements the config.Provider interface.
-func (m *MachineConfig) Kubelet() config.Kubelet {
-	if m.MachineKubelet == nil {
-		return &KubeletConfig{}
-	}
-
-	return m.MachineKubelet
-}
-
 // Env implements the config.Provider interface.
 func (m *MachineConfig) Env() config.Env {
 	return m.MachineEnv
@@ -419,14 +353,8 @@ func (m *MachineConfig) Logging() config.Logging {
 	return m.MachineLogging
 }
 
-// Kernel implements the config.MachineConfig interface.
-func (m *MachineConfig) Kernel() config.Kernel {
-	if m.MachineKernel == nil {
-		return &KernelConfig{}
-	}
-
-	return m.MachineKernel
-}
+// K8sKubeletConfigSignal implements the config.K8sKubeletConfig interface.
+func (k *KubeletConfig) K8sKubeletConfigSignal() {}
 
 // Image implements the config.Provider interface.
 func (k *KubeletConfig) Image() string {
@@ -503,33 +431,9 @@ func (k *KubeletConfig) DefaultRuntimeSeccompProfileEnabled() bool {
 	return pointer.SafeDeref(k.KubeletDefaultRuntimeSeccompProfileEnabled)
 }
 
-// RegisterWithFQDN implements the config.Provider interface.
-func (k *KubeletConfig) RegisterWithFQDN() bool {
-	return pointer.SafeDeref(k.KubeletRegisterWithFQDN)
-}
-
-// NodeIP implements the config.Provider interface.
-func (k *KubeletConfig) NodeIP() config.KubeletNodeIP {
-	if k.KubeletNodeIP == nil {
-		return &KubeletNodeIPConfig{}
-	}
-
-	return k.KubeletNodeIP
-}
-
-// SkipNodeRegistration implements the config.Provider interface.
-func (k *KubeletConfig) SkipNodeRegistration() bool {
-	return pointer.SafeDeref(k.KubeletSkipNodeRegistration)
-}
-
 // DisableManifestsDirectory implements the KubeletConfig interface.
 func (k *KubeletConfig) DisableManifestsDirectory() bool {
 	return pointer.SafeDeref(k.KubeletDisableManifestsDirectory)
-}
-
-// ValidSubnets implements the config.Provider interface.
-func (k *KubeletNodeIPConfig) ValidSubnets() []string {
-	return k.KubeletNodeIPValidSubnets
 }
 
 // RegistryMirrorConfigs returns a map of registry mirror configurations.
@@ -1302,6 +1206,13 @@ func (t *TimeConfig) BootTimeout() time.Duration {
 	return t.TimeBootTimeout
 }
 
+// UseNTS implements the config.Provider interface.
+//
+// Deprecated v1alpha1 TimeConfig does not support NTS.
+func (t *TimeConfig) UseNTS() bool {
+	return false
+}
+
 // Image implements the config.Provider interface.
 func (i *InstallConfig) Image() string {
 	return i.InstallImage
@@ -1514,6 +1425,9 @@ func (i InstallExtensionConfig) Image() string {
 	return i.ExtensionImage
 }
 
+// K8sCoreDNSConfigSignal implements config.K8sCoreDNSConfig interface.
+func (c *CoreDNS) K8sCoreDNSConfigSignal() {}
+
 // Enabled implements the config.Provider interface.
 func (c *CoreDNS) Enabled() bool {
 	return c.CoreDNSDisabled == nil || !*c.CoreDNSDisabled
@@ -1634,6 +1548,12 @@ func (e *EncryptionConfig) BlockSize() uint64 {
 // Options implements the config.Provider interface.
 func (e *EncryptionConfig) Options() []string {
 	return e.EncryptionPerfOptions
+}
+
+// AllowDiscards implements the config.Provider interface.
+func (e *EncryptionConfig) AllowDiscards() bool {
+	// not supported in v1alpha1
+	return false
 }
 
 // Keys implements the config.Provider interface.

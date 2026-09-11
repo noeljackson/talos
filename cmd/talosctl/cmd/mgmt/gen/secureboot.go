@@ -75,6 +75,7 @@ var genSecurebootDatabaseCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return generateSecureBootDatabase(
+			cmd.Context(),
 			genSecurebootCmdFlags.outputDirectory,
 			genSecurebootDatabaseCmdFlags.enrolledCertificatePath,
 			genSecurebootDatabaseCmdFlags.signingKeyPath,
@@ -142,16 +143,18 @@ func saveAsDER(file string, pem []byte) error {
 // generateSecureBootDatabase generates a UEFI database to enroll the signing certificate.
 //
 // ref: https://blog.hansenpartnership.com/the-meaning-of-all-the-uefi-keys/
-func generateSecureBootDatabase(path, enrolledCertificatePath, signingKeyPath, signingCertificatePath string, includeWellKnownCerts bool) error {
+func generateSecureBootDatabase(ctx context.Context, path, enrolledCertificatePath, signingKeyPath, signingCertificatePath string, includeWellKnownCerts bool) error {
 	in := profile.SigningKeyAndCertificate{
 		KeyPath:  signingKeyPath,
 		CertPath: signingCertificatePath,
 	}
 
-	signer, err := in.GetSigner(context.Background()) // context not used
+	signer, err := in.GetSigner(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create signer: %w", err)
 	}
+
+	defer signer.Close() //nolint:errcheck
 
 	enrolledPEM, err := os.ReadFile(enrolledCertificatePath)
 	if err != nil {
@@ -183,13 +186,17 @@ func init() {
 	genSecurebootCmd.AddCommand(genSecurebootPCRCmd)
 
 	genSecurebootDatabaseCmd.Flags().StringVar(
-		&genSecurebootDatabaseCmdFlags.enrolledCertificatePath, "enrolled-certificate", helpers.ArtifactPath(constants.SecureBootSigningCertAsset), "path to the certificate to enroll")
+		&genSecurebootDatabaseCmdFlags.enrolledCertificatePath, "enrolled-certificate", helpers.ArtifactPath(constants.SecureBootSigningCertAsset), "path to the certificate to enroll",
+	)
 	genSecurebootDatabaseCmd.Flags().StringVar(
-		&genSecurebootDatabaseCmdFlags.signingCertificatePath, "signing-certificate", helpers.ArtifactPath(constants.SecureBootSigningCertAsset), "path to the certificate used to sign the database")
+		&genSecurebootDatabaseCmdFlags.signingCertificatePath, "signing-certificate", helpers.ArtifactPath(constants.SecureBootSigningCertAsset), "path to the certificate used to sign the database",
+	)
 	genSecurebootDatabaseCmd.Flags().StringVar(
-		&genSecurebootDatabaseCmdFlags.signingKeyPath, "signing-key", helpers.ArtifactPath(constants.SecureBootSigningKeyAsset), "path to the key used to sign the database")
+		&genSecurebootDatabaseCmdFlags.signingKeyPath, "signing-key", helpers.ArtifactPath(constants.SecureBootSigningKeyAsset), "path to the key used to sign the database",
+	)
 	genSecurebootDatabaseCmd.Flags().BoolVar(
-		&genSecurebootDatabaseCmdFlags.includeWellKnownCerts, "include-well-known-uefi-certs", false, "include well-known UEFI (Microsoft) certificates in the database")
+		&genSecurebootDatabaseCmdFlags.includeWellKnownCerts, "include-well-known-uefi-certs", false, "include well-known UEFI (Microsoft) certificates in the database",
+	)
 	genSecurebootCmd.AddCommand(genSecurebootDatabaseCmd)
 }
 

@@ -65,7 +65,7 @@ func (p *Pkg) WriteDebug(w io.Writer) {
 	fmt.Fprintf(w, "option java_package = \"dev.talos.api.resource.definitions.%s\";\n\n", pkgName)
 
 	if p.imports.Len() > 0 {
-		for i := 0; i < p.imports.Len(); i++ {
+		for i := range p.imports.Len() {
 			importPath := p.imports.Get(i)
 			if !strings.ContainsRune(importPath, '.') {
 				importPath = "talos.resource.definitions." + importPath
@@ -77,7 +77,7 @@ func (p *Pkg) WriteDebug(w io.Writer) {
 		fmt.Fprintln(w, ``)
 	}
 
-	for i := 0; i < p.protoDefs.Len(); i++ {
+	for i := range p.protoDefs.Len() {
 		p.protoDefs.Get(i).WriteDebug(w)
 		fmt.Fprintln(w)
 	}
@@ -93,7 +93,7 @@ func (p *Pkg) Format(w io.Writer) {
 	fmt.Fprintf(w, "option java_package = \"dev.talos.api.resource.definitions.%s\";\n\n", pkgName)
 
 	if p.imports.Len() > 0 {
-		for i := 0; i < p.imports.Len(); i++ {
+		for i := range p.imports.Len() {
 			importPath := p.imports.Get(i)
 			if !strings.ContainsRune(importPath, '.') {
 				importPath = "talos.resource.definitions." + importPath
@@ -105,7 +105,7 @@ func (p *Pkg) Format(w io.Writer) {
 		fmt.Fprintln(w, ``)
 	}
 
-	for i := 0; i < p.protoDefs.Len(); i++ {
+	for i := range p.protoDefs.Len() {
 		p.protoDefs.Get(i).Format(w)
 		fmt.Fprintln(w)
 	}
@@ -114,8 +114,9 @@ func (p *Pkg) Format(w io.Writer) {
 type protoDef struct {
 	name string
 
-	goPkg    string
-	comments []string
+	goPkg      string
+	comments   []string
+	deprecated bool
 
 	isInit bool
 	fields slices.Sorted[protoField]
@@ -145,7 +146,11 @@ func (p *protoDef) WriteDebug(w io.Writer) {
 
 	fmt.Fprintf(w, "message %s { //%s.%s\n", p.name, p.goPkg, p.name)
 
-	for i := 0; i < p.fields.Len(); i++ {
+	if p.deprecated {
+		fmt.Fprintln(w, "  option deprecated = true;")
+	}
+
+	for i := range p.fields.Len() {
 		fmt.Fprintf(w, "  ")
 		p.fields.Get(i).WriteDebug(w)
 	}
@@ -160,7 +165,11 @@ func (p *protoDef) Format(w io.Writer) {
 
 	fmt.Fprintf(w, "message %s {\n", p.name)
 
-	for i := 0; i < p.fields.Len(); i++ {
+	if p.deprecated {
+		fmt.Fprintln(w, "  option deprecated = true;")
+	}
+
+	for i := range p.fields.Len() {
 		fmt.Fprintf(w, "  ")
 		p.fields.Get(i).Format(w)
 	}
@@ -173,7 +182,8 @@ type protoField struct {
 	typ  string
 	num  int
 
-	goType string
+	goType   string
+	comments []string
 }
 
 func protoFieldCmp(left, right protoField) int {
@@ -196,11 +206,31 @@ func protoFieldCmp(left, right protoField) int {
 }
 
 func (pf protoField) WriteDebug(w io.Writer) {
+	for _, comment := range pf.comments {
+		fmt.Fprintf(w, "%s\n  ", comment)
+	}
+
 	fmt.Fprintf(w, "%s %s = %d; // %s \n", pf.typ, ToSnakeCase(pf.name), pf.num, pf.goType)
 }
 
 func (pf protoField) Format(w io.Writer) {
+	for _, comment := range pf.comments {
+		fmt.Fprintf(w, "%s\n  ", comment)
+	}
+
 	fmt.Fprintf(w, "%s %s = %d;\n", pf.typ, ToSnakeCase(pf.name), pf.num)
+}
+
+// isDeprecated reports whether the type's doc comment carries a Go-style `// Deprecated: ...` marker. Such types are
+// annotated with `option deprecated = true;` in the generated proto, which in turn excludes them from the API docs.
+func isDeprecated(comments []string) bool {
+	for _, c := range comments {
+		if strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(c, "//")), "Deprecated:") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // PrepareProtoData prepares the data for the protobuf generation.
@@ -209,7 +239,7 @@ func (pf protoField) Format(w io.Writer) {
 func PrepareProtoData(pkgsTypes slices.Sorted[*types.Type], constants consts.ConstBlocks) slices.Sorted[*Pkg] {
 	result := slices.NewSortedCompare([]*Pkg{}, protoPkgsCmp)
 
-	for i := 0; i < pkgsTypes.Len(); i++ {
+	for i := range pkgsTypes.Len() {
 		pkgType := pkgsTypes.Get(i)
 
 		protoPkg := sliceutil.GetOrAdd(&result, &Pkg{
@@ -218,12 +248,13 @@ func PrepareProtoData(pkgsTypes slices.Sorted[*types.Type], constants consts.Con
 		})
 
 		def := sliceutil.GetOrAdd(protoPkg.Defs(), &protoDef{
-			name:     pkgType.Name,
-			goPkg:    pkgType.Pkg,
-			comments: pkgType.Comments,
+			name:       pkgType.Name,
+			goPkg:      pkgType.Pkg,
+			comments:   pkgType.Comments,
+			deprecated: isDeprecated(pkgType.Comments),
 		})
 
-		for j := 0; j < pkgType.Fields().Len(); j++ {
+		for j := range pkgType.Fields().Len() {
 			field := pkgType.Fields().Get(j)
 
 			fieldTypeData := types.TypeInfo(field.TypeData.Type())
@@ -236,10 +267,11 @@ func PrepareProtoData(pkgsTypes slices.Sorted[*types.Type], constants consts.Con
 				}
 
 				sliceutil.AddIfNotFound(def.Fields(), protoField{
-					name:   field.Name,
-					typ:    typeName,
-					num:    field.Num,
-					goType: field.TypeData.Type().String(),
+					name:     field.Name,
+					typ:      typeName,
+					num:      field.Num,
+					goType:   field.TypeData.Type().String(),
+					comments: field.Comments,
 				})
 
 				continue
@@ -260,10 +292,11 @@ func PrepareProtoData(pkgsTypes slices.Sorted[*types.Type], constants consts.Con
 				}
 
 				sliceutil.AddIfNotFound(def.Fields(), protoField{
-					name:   field.Name,
-					typ:    typeName,
-					num:    field.Num,
-					goType: field.TypeData.Type().String(),
+					name:     field.Name,
+					typ:      typeName,
+					num:      field.Num,
+					goType:   field.TypeData.Type().String(),
+					comments: field.Comments,
 				})
 
 				continue
@@ -294,10 +327,11 @@ func PrepareProtoData(pkgsTypes slices.Sorted[*types.Type], constants consts.Con
 				}
 
 				sliceutil.AddIfNotFound(def.Fields(), protoField{
-					name:   field.Name,
-					typ:    typeName,
-					num:    field.Num,
-					goType: field.TypeData.Type().String(),
+					name:     field.Name,
+					typ:      typeName,
+					num:      field.Num,
+					goType:   field.TypeData.Type().String(),
+					comments: field.Comments,
 				})
 
 				continue
@@ -324,6 +358,7 @@ func PrepareProtoData(pkgsTypes slices.Sorted[*types.Type], constants consts.Con
 					typText = fmt.Sprintf("map<%s, %s>", keyTypeName, elemTypeName)
 				case fieldTyp.ElemTypePkg == pkgType.Pkg:
 					var elemTypeName string
+
 					importElem, elemTypeName = mustFormatTypeName(fieldTyp.ElemTypePkg, fieldTyp.ElemTypeName, pkgType.Pkg)
 					typText = fmt.Sprintf("map<%s, %s>", keyTypeName, elemTypeName)
 				default:
@@ -335,10 +370,11 @@ func PrepareProtoData(pkgsTypes slices.Sorted[*types.Type], constants consts.Con
 				}
 
 				sliceutil.AddIfNotFound(def.Fields(), protoField{
-					name:   field.Name,
-					typ:    typText,
-					num:    field.Num,
-					goType: field.TypeData.Type().String(),
+					name:     field.Name,
+					typ:      typText,
+					num:      field.Num,
+					goType:   field.TypeData.Type().String(),
+					comments: field.Comments,
 				})
 
 				continue
@@ -358,6 +394,7 @@ func mustFormatTypeName(fieldTypePkg string, fieldType string, declPkg string) (
 	return importPath, name
 }
 
+//nolint:gocyclo
 func formatTypeName(fieldTypePkg string, fieldType string, declPkg string) (string, string) {
 	if fieldTypePkg == declPkg {
 		return "", fieldType
@@ -506,8 +543,8 @@ func ToSnakeCase(str string) string {
 	snake = strings.ToLower(snake)
 
 	// special case for "SomethingsIps"
-	if strings.HasSuffix(snake, "_i_ps") {
-		snake = strings.TrimSuffix(snake, "_i_ps") + "_ips"
+	if before, ok := strings.CutSuffix(snake, "_i_ps"); ok {
+		snake = before + "_ips"
 	}
 
 	return snake

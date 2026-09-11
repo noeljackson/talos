@@ -226,7 +226,9 @@ func (svcrunner *ServiceRunner) Run(notifyChannels ...chan<- struct{}) error {
 	condition := svcrunner.service.Condition(svcrunner.runtime)
 
 	if dependencies := svcrunner.service.DependsOn(svcrunner.runtime); len(dependencies) > 0 {
-		serviceConditions := xslices.Map(dependencies, func(dep string) conditions.Condition { return waitForService(instance, StateEventUp, dep) })
+		serviceConditions := xslices.Map(dependencies, func(dep string) conditions.Condition {
+			return waitForService(instance, []StateEvent{StateEventUp}, dep)
+		})
 		serviceDependencies := conditions.WaitForAll(serviceConditions...)
 
 		condition = conditions.WaitForAll(serviceDependencies, condition)
@@ -323,13 +325,25 @@ func (svcrunner *ServiceRunner) run(ctx context.Context, runnr runner.Runner) er
 	errCh := make(chan error)
 
 	go func() {
-		errCh <- runnr.Run(func(s events.ServiceState, msg string, args ...any) {
+		_, err := runnr.Run(ctx, func(s events.ServiceState, msg string, args ...any) {
 			svcrunner.UpdateState(ctx, s, msg, args...)
 
 			if _, healthSupported := svcrunner.service.(HealthcheckedService); healthSupported && s != events.StateRunning {
 				svcrunner.healthState.Update(false, "service not running")
 			}
-		}, svcrunner.pidRecorder)
+		}, func(pid int32) {
+			if err := svcrunner.pidRecorder(svcrunner.id, pid, false); err != nil {
+				log.Printf("error recording pid for %q: %v", svcrunner.id, err)
+			}
+		})
+
+		// clear the PID before reporting the result: delivering the result lets run() return and
+		// the service be restarted, and a later clear would destroy the new run's PID resource.
+		if pidErr := svcrunner.pidRecorder(svcrunner.id, 0, true); pidErr != nil {
+			log.Printf("error clearing pid for %q: %v", svcrunner.id, pidErr)
+		}
+
+		errCh <- err
 	}()
 
 	if healthSvc, ok := svcrunner.service.(HealthcheckedService); ok {
@@ -365,13 +379,7 @@ func (svcrunner *ServiceRunner) run(ctx context.Context, runnr runner.Runner) er
 
 	select {
 	case <-ctx.Done():
-		err := runnr.Stop()
-
 		<-errCh
-
-		if err != nil {
-			return fmt.Errorf("error stopping service: %w", err)
-		}
 	case err := <-errCh:
 		if err != nil {
 			return fmt.Errorf("error running service: %w", err)
@@ -463,10 +471,10 @@ func (svcrunner *ServiceRunner) inStateLocked(event StateEvent) bool {
 	switch event {
 	case StateEventUp:
 		// up when:
-		//   a) either skipped or already finished
+		//   a) skipped
 		//   b) or running and healthy (if supports health checks)
 		switch svcrunner.state { //nolint:exhaustive
-		case events.StateSkipped, events.StateFinished:
+		case events.StateSkipped:
 			return true
 		case events.StateRunning:
 			// check if service supports health checks
@@ -486,11 +494,7 @@ func (svcrunner *ServiceRunner) inStateLocked(event StateEvent) bool {
 			return false
 		}
 	case StateEventFinished:
-		if svcrunner.state == events.StateFinished {
-			return true
-		}
-
-		return false
+		return svcrunner.state == events.StateFinished
 	default:
 		panic("unsupported event")
 	}

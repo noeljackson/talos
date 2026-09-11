@@ -17,8 +17,8 @@ import (
 	"github.com/gomarkdown/markdown/html"
 	"github.com/invopop/jsonschema"
 	"github.com/microcosm-cc/bluemonday"
+	orderedmap "github.com/pb33f/ordered-map/v2"
 	validatejsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-	orderedmap "github.com/wk8/go-ordered-map/v2"
 )
 
 const ConfigSchemaURLFormat = "https://talos.dev/%s/schemas/%s"
@@ -89,17 +89,17 @@ func fieldToDefinitionInfo(pkg string, field *Field) SchemaDefinitionInfo {
 		}
 	}
 
-	if strings.HasPrefix(goType, "[]") {
+	if after, ok := strings.CutPrefix(goType, "[]"); ok {
 		return SchemaDefinitionInfo{
 			typeInfo:           SchemaTypeInfo{typeName: "array"},
-			arrayItemsTypeInfo: goTypeToTypeInfo(pkg, strings.TrimPrefix(goType, "[]")),
+			arrayItemsTypeInfo: goTypeToTypeInfo(pkg, after),
 		}
 	}
 
-	if strings.HasPrefix(goType, "map[string]") {
+	if after, ok := strings.CutPrefix(goType, "map[string]"); ok {
 		return SchemaDefinitionInfo{
 			typeInfo:         SchemaTypeInfo{typeName: "object"},
-			mapValueTypeInfo: goTypeToTypeInfo(pkg, strings.TrimPrefix(goType, "map[string]")),
+			mapValueTypeInfo: goTypeToTypeInfo(pkg, after),
 		}
 	}
 
@@ -206,6 +206,7 @@ func populateDescriptionFields(description string, schema *jsonschema.Schema) {
 	}
 }
 
+//nolint:gocyclo
 func structToSchema(pkg string, st *Struct, allStructs []*Struct) *jsonschema.Schema {
 	schema := jsonschema.Schema{
 		Type:                 "object",

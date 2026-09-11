@@ -19,7 +19,7 @@ import (
 // ConfigController watches v1alpha1.Config, updates Talos API access config.
 type ConfigController = transform.Controller[*config.MachineConfig, *kubeaccess.Config]
 
-// NewConfigController instanciates the config controller.
+// NewConfigController instantiates the config controller.
 func NewConfigController() *ConfigController {
 	return transform.NewController(
 		transform.Settings[*config.MachineConfig, *kubeaccess.Config]{
@@ -44,12 +44,16 @@ func NewConfigController() *ConfigController {
 
 				*spec = kubeaccess.ConfigSpec{}
 
-				if cfg != nil && cfg.Config().Machine() != nil {
-					c := cfg.Config()
+				c := cfg.Config().K8sTalosAPIAccessConfig()
 
-					spec.Enabled = c.Machine().Features().KubernetesTalosAPIAccess().Enabled()
-					spec.AllowedAPIRoles = c.Machine().Features().KubernetesTalosAPIAccess().AllowedRoles()
-					spec.AllowedKubernetesNamespaces = c.Machine().Features().KubernetesTalosAPIAccess().AllowedKubernetesNamespaces()
+				spec.Enabled = c != nil
+
+				if spec.Enabled {
+					spec.AllowedAPIRoles = c.AllowedRoles()
+					spec.AllowedKubernetesNamespaces = c.AllowedKubernetesNamespaces()
+				} else {
+					spec.AllowedAPIRoles = nil
+					spec.AllowedKubernetesNamespaces = nil
 				}
 
 				return nil

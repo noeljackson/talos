@@ -131,6 +131,34 @@ func (b *Builder) WithConvertEncryptionConfiguration(encryption configconfig.Enc
 	return b
 }
 
+// WithTrim sets VolumeConfigSpec.Trim.
+func (b *Builder) WithTrim(cfg configconfig.Config, volumeTrimCfg configconfig.VolumeTrimConfigProvider) *Builder {
+	b.opts = append(b.opts, func(spec *block.VolumeConfigSpec) error {
+		enabled, interval := ResolveTrim(cfg, volumeTrimCfg)
+
+		spec.TrimEnabled = enabled
+		spec.TrimInterval = interval
+
+		return nil
+	})
+
+	return b
+}
+
+// WithScrub sets VolumeConfigSpec scrub settings.
+func (b *Builder) WithScrub(cfg configconfig.Config, volumeScrubCfg configconfig.VolumeScrubConfigProvider) *Builder {
+	b.opts = append(b.opts, func(spec *block.VolumeConfigSpec) error {
+		enabled, interval := ResolveScrub(cfg, volumeScrubCfg)
+
+		spec.ScrubEnabled = enabled
+		spec.ScrubInterval = interval
+
+		return nil
+	})
+
+	return b
+}
+
 // WithFunc adds an arbitraty spec-modifying `func(*block.VolumeConfigSpec) error` to the builder.
 // Errors returned by the function are collected and returned by Apply/WriterFunc.
 func (b *Builder) WithFunc(fn func(*block.VolumeConfigSpec) error) *Builder {

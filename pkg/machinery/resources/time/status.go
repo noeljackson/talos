@@ -25,6 +25,11 @@ type Status = typed.Resource[StatusSpec, StatusExtension]
 
 // StatusSpec describes time sync state.
 //
+// This spec is used as a reconcile trigger by other controllers (most notably the
+// certificate generating ones in the `secrets` package), so it should only ever carry
+// fields which change rarely: anything which changes on every NTP poll belongs in
+// [NTPStatusSpec] instead.
+//
 //gotagsrewrite:gen
 type StatusSpec struct {
 	// Synced indicates whether time is in sync.

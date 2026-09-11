@@ -15,7 +15,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
+	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
+	"github.com/siderolabs/talos/pkg/machinery/resources/storage"
 )
 
 // KernelModuleConfigController watches v1alpha1.Config, creates/updates/deletes kernel module specs.
@@ -33,6 +35,17 @@ func (ctrl *KernelModuleConfigController) Inputs() []controller.Input {
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
 			ID:        optional.Some(config.ActiveID),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: network.NamespaceName,
+			Type:      network.LinkSpecType,
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: storage.NamespaceName,
+			Type:      storage.MDArraySpecType,
+			Kind:      controller.InputWeak,
 		},
 	}
 }
@@ -65,10 +78,20 @@ func (ctrl *KernelModuleConfigController) Run(ctx context.Context, r controller.
 			}
 		}
 
+		linkSpecs, err := safe.ReaderListAll[*network.LinkSpec](ctx, r)
+		if err != nil {
+			return fmt.Errorf("error listing link specs: %w", err)
+		}
+
+		mdaSpecs, err := safe.ReaderListAll[*storage.MDArraySpec](ctx, r)
+		if err != nil {
+			return fmt.Errorf("error md array specs specs: %w", err)
+		}
+
 		r.StartTrackingOutputs()
 
-		if cfg != nil && cfg.Config().Machine() != nil {
-			for _, module := range cfg.Config().Machine().Kernel().Modules() {
+		if cfg != nil {
+			for _, module := range cfg.Config().KernelModuleConfigs() {
 				item := runtime.NewKernelModuleSpec(runtime.NamespaceName, module.Name())
 
 				if err = safe.WriterModify(ctx, r, item, func(res *runtime.KernelModuleSpec) error {
@@ -79,6 +102,37 @@ func (ctrl *KernelModuleConfigController) Run(ctx context.Context, r controller.
 				}); err != nil {
 					return err
 				}
+			}
+		}
+
+		modules := map[string]struct{}{}
+
+		for linkSpec := range linkSpecs.All() {
+			// TODO: we can move link drivers to use same logic
+			// as long as they are created by Talos
+			if linkSpec.TypedSpec().Kind == network.LinkKindVRF {
+				modules["vrf"] = struct{}{}
+			}
+		}
+
+		for mdaSpec := range mdaSpecs.All() {
+			// TODO: add support for other RAID levels if needed
+			if mdaSpec.TypedSpec().Level == storage.MDLevelRAID1 {
+				modules["raid1"] = struct{}{}
+			}
+		}
+
+		for module := range modules {
+			if err = safe.WriterModify(
+				ctx, r,
+				runtime.NewKernelModuleSpec(runtime.NamespaceName, module),
+				func(res *runtime.KernelModuleSpec) error {
+					res.TypedSpec().Name = module
+
+					return nil
+				},
+			); err != nil {
+				return err
 			}
 		}
 

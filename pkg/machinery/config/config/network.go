@@ -11,6 +11,7 @@ import (
 	"github.com/siderolabs/gen/optional"
 
 	"github.com/siderolabs/talos/pkg/machinery/cel"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 )
 
@@ -112,10 +113,21 @@ type NetworkHostnameConfig interface {
 	AutoHostname() nethelpers.AutoHostnameKind
 }
 
+// NetworkResolver is a single instance of a DNS resolver configuration.
+type NetworkResolver struct {
+	Addr          netip.Addr
+	Protocol      nethelpers.DNSProtocol
+	TLSServerName string
+}
+
 // NetworkResolverConfig defines a resolver configuration.
 type NetworkResolverConfig interface {
-	Resolvers() []netip.Addr
-	SearchDomains() []string
+	Resolvers() []NetworkResolver
+	// SearchDomains returns the configured search domains.
+	//
+	// An absent value means search domains are not configured (inherit from other layers);
+	// a present (possibly empty) value overrides search domains from DHCP or platform.
+	SearchDomains() optional.Optional[[]string]
 	DisableSearchDomain() bool
 }
 
@@ -125,6 +137,7 @@ type NetworkTimeSyncConfig interface {
 	Disabled() bool
 	Servers() []string
 	BootTimeout() time.Duration
+	UseNTS() bool
 }
 
 // NetworkPhysicalLinkConfig defines a physical network link configuration.
@@ -140,6 +153,14 @@ type NetworkDummyLinkConfig interface {
 	NetworkCommonLinkConfig
 }
 
+// NetworkVethConfig defines a veth pair configuration.
+type NetworkVethConfig interface {
+	NetworkCommonLinkConfig
+
+	NetworkVethConfigSignal()
+	Peer() NetworkCommonLinkConfig
+}
+
 // NetworkHardwareAddressConfig defines a hardware (MAC) address configuration.
 type NetworkHardwareAddressConfig interface {
 	HardwareAddress() optional.Optional[nethelpers.HardwareAddr]
@@ -153,6 +174,12 @@ type NetworkCommonLinkConfig interface {
 	Addresses() []NetworkAddressConfig
 	Routes() []NetworkRouteConfig
 	Multicast() optional.Optional[bool]
+}
+
+// NetworkAdditionalLinkConfigs defines additional link configurations for a network link.
+// This is used for links that can have multiple configurations, such as veth pairs.
+type NetworkAdditionalLinkConfigs interface {
+	AdditionalLinkConfigs() []NetworkCommonLinkConfig
 }
 
 // NetworkAddressConfig defines a network address configuration.
@@ -191,6 +218,7 @@ type NetworkDHCPv4Config interface {
 	NetworkDHCPv4Config() // signal method
 	RouteMetric() optional.Optional[uint32]
 	IgnoreHostname() optional.Optional[bool]
+	IgnoreRoutes() optional.Optional[bool]
 	ClientIdentifier() nethelpers.ClientIdentifier
 	DUIDRaw() optional.Optional[nethelpers.HardwareAddr]
 }
@@ -379,4 +407,84 @@ type NetworkRoutingRuleConfig interface {
 	OIFName() string
 	FwMark() uint32
 	FwMask() uint32
+}
+
+// NetworkHostDNSConfig defines a host DNS configuration.
+type NetworkHostDNSConfig interface {
+	HostDNSEnabled() bool
+	ForwardKubeDNSToHost() bool
+	ResolveMemberNames() bool
+}
+
+// NetworkHTTPProbeConfig defines an HTTP probe configuration.
+type NetworkHTTPProbeConfig interface {
+	NetworkCommonProbeConfig
+	URL() meta.URL
+	Timeout() time.Duration
+}
+
+// NetworkBGPInstanceConfig defines a native BGP routing instance configuration.
+//
+//nolint:interfacebloat
+type NetworkBGPInstanceConfig interface {
+	NamedDocument
+	// BGPInstanceConfigSignal is a signal method for documents implementing this interface.
+	BGPInstanceConfigSignal()
+	// VRF is the Linux VRF link used by the instance; empty means the default routing domain.
+	VRF() string
+	// LocalASN is the local autonomous system number.
+	LocalASN() uint32
+	// RouterID is the BGP router-id; zero value means derive it from an advertised address.
+	RouterID() netip.Addr
+	// RouteSource is the preferred source address set on BGP-installed routes (kernel src / RTA_PREFSRC);
+	// zero value lets the kernel select the source.
+	RouteSource() netip.Addr
+	// AdvertiseLinks lists link names or aliases whose addresses are originated as connected networks using their configured prefix lengths.
+	AdvertiseLinks() []string
+	// Multipath enables ECMP (multiple best paths) for received routes.
+	Multipath() bool
+	// MaxPaths caps the number of ECMP next-hops; zero means use the implementation default.
+	MaxPaths() uint8
+	// InstallRoutes reports whether neighbor-learned routes should be installed into the Linux FIB.
+	InstallRoutes() bool
+	// ImportRoutes lists one-way route imports from other BGP instances.
+	ImportRoutes() []NetworkBGPImportRoute
+	// Neighbors lists the configured BGP neighbors.
+	Neighbors() []NetworkBGPNeighbor
+}
+
+// NetworkBGPImportRoute defines selected routes imported from another BGP instance.
+type NetworkBGPImportRoute interface {
+	// BGPInstance is the name of the source BGP instance.
+	BGPInstance() string
+	// Prefixes lists covering selectors for routes learned by the source instance.
+	Prefixes() []netip.Prefix
+}
+
+// NetworkBGPNeighbor defines a single BGP neighbor.
+type NetworkBGPNeighbor interface {
+	// Address is the neighbor IP for a numbered session; zero value when the session is unnumbered.
+	Address() netip.Addr
+	// Link is the link name for an unnumbered (IPv6 link-local) session; empty when numbered.
+	Link() string
+	// PeerASN is the expected peer ASN; zero means accept any ASN (eBGP "external").
+	PeerASN() uint32
+	// LocalASN is the local ASN override; zero means use the instance ASN.
+	LocalASN() uint32
+	// Passive reports whether the local speaker waits for the neighbor to connect.
+	Passive() bool
+	// HoldTime is the BGP hold timer; zero means use the implementation default.
+	HoldTime() time.Duration
+	// BFD returns this neighbor's BFD configuration, or nil when BFD is disabled.
+	BFD() NetworkBGPBFD
+}
+
+// NetworkBGPBFD defines BFD parameters for a BGP neighbor.
+type NetworkBGPBFD interface {
+	// TransmitInterval is the desired minimum transmit interval.
+	TransmitInterval() time.Duration
+	// ReceiveInterval is the required minimum receive interval.
+	ReceiveInterval() time.Duration
+	// DetectMultiplier is the BFD detection multiplier; zero means use the implementation default.
+	DetectMultiplier() uint8
 }

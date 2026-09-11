@@ -19,7 +19,7 @@ import (
 // InfoController looks up control plane infos.
 type InfoController = transform.Controller[*config.MachineConfig, *cluster.Info]
 
-// NewInfoController instanciates the cluster info controller.
+// NewInfoController instantiates the cluster info controller.
 func NewInfoController() *InfoController {
 	return transform.NewController(
 		transform.Settings[*config.MachineConfig, *cluster.Info]{
@@ -29,15 +29,24 @@ func NewInfoController() *InfoController {
 					return optional.None[*cluster.Info]()
 				}
 
-				if cfg.Config().Cluster() == nil {
+				if cfg.Config().DiscoveryIdentityConfig() == nil {
+					return optional.None[*cluster.Info]()
+				}
+
+				if cfg.Config().K8sClusterConfig() == nil {
 					return optional.None[*cluster.Info]()
 				}
 
 				return optional.Some(cluster.NewInfo())
 			},
 			TransformFunc: func(ctx context.Context, r controller.Reader, logger *zap.Logger, cfg *config.MachineConfig, info *cluster.Info) error {
-				info.TypedSpec().ClusterID = cfg.Config().Cluster().ID()
-				info.TypedSpec().ClusterName = cfg.Config().Cluster().Name()
+				if identity := cfg.Config().DiscoveryIdentityConfig(); identity != nil {
+					info.TypedSpec().ClusterID = identity.ClusterID()
+				} else {
+					info.TypedSpec().ClusterID = ""
+				}
+
+				info.TypedSpec().ClusterName = cfg.Config().K8sClusterConfig().ClusterName()
 
 				return nil
 			},

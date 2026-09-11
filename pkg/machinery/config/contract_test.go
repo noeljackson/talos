@@ -30,7 +30,7 @@ func TestContractParseVersion(t *testing.T) {
 		"v1.5":           config.TalosVersion1_5,
 		"v1.5.":          config.TalosVersion1_5,
 		"v1.5.1":         config.TalosVersion1_5,
-		"v1.88":          {1, 88},
+		"v1.88":          {Major: 1, Minor: 88},
 		"v1.5.3-alpha.4": config.TalosVersion1_5,
 		"1.6":            config.TalosVersion1_6,
 	} {
@@ -42,6 +42,32 @@ func TestContractParseVersion(t *testing.T) {
 			assert.Equal(t, expected, actual)
 		})
 	}
+}
+
+func TestContractDisableKubernetesEtcd(t *testing.T) {
+	t.Parallel()
+
+	var contract *config.VersionContract
+
+	assert.False(t, contract.KubernetesDisabled())
+	assert.True(t, contract.DisableKubernetes().KubernetesDisabled())
+
+	assert.False(t, contract.EtcdDisabled())
+	assert.True(t, contract.DisableEtcd().EtcdDisabled())
+
+	assert.True(t, contract.DisableEtcd().DisableKubernetes().Greater(config.TalosVersion1_14))
+	assert.Equal(t, "current", contract.DisableEtcd().DisableKubernetes().String())
+
+	contract = config.TalosVersion1_14
+
+	assert.False(t, contract.KubernetesDisabled())
+	assert.True(t, contract.DisableKubernetes().KubernetesDisabled())
+
+	assert.False(t, contract.EtcdDisabled())
+	assert.True(t, contract.DisableEtcd().EtcdDisabled())
+
+	assert.True(t, contract.DisableEtcd().DisableKubernetes().Greater(config.TalosVersion1_13))
+	assert.Equal(t, "v1.14", contract.DisableEtcd().DisableKubernetes().String())
 }
 
 func TestContractCurrent(t *testing.T) {
@@ -72,6 +98,48 @@ func TestContractCurrent(t *testing.T) {
 	assert.False(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.True(t, contract.GrubUseUKICmdlineDefault())
 	assert.True(t, contract.KubeSpanMultidocConfig())
+	assert.True(t, contract.HostDNSMultidocConfig())
+	assert.True(t, contract.MultidocKubernetesConfigSupported())
+	assert.True(t, contract.FilesystemTrimEnabledByDefault())
+	assert.True(t, contract.MultidocSysctlConfigSupported())
+	assert.True(t, contract.MultidocKernelModuleConfigSupported())
+	assert.True(t, contract.UnattendedInstallConfig())
+}
+
+func TestContract1_14(t *testing.T) {
+	contract := config.TalosVersion1_14
+
+	assert.True(t, contract.PodSecurityAdmissionEnabled())
+	assert.True(t, contract.StableHostnameEnabled())
+	assert.True(t, contract.KubeletDefaultRuntimeSeccompProfileEnabled())
+	assert.False(t, contract.KubernetesAlternateImageRegistries())
+	assert.True(t, contract.KubernetesAllowSchedulingOnControlPlanes())
+	assert.True(t, contract.KubernetesDiscoveryBackendDisabled())
+	assert.True(t, contract.ApidExtKeyUsageCheckEnabled())
+	assert.True(t, contract.APIServerAuditPolicySupported())
+	assert.True(t, contract.KubeletManifestsDirectoryDisabled())
+	assert.True(t, contract.SecretboxEncryptionSupported())
+	assert.True(t, contract.DiskQuotaSupportEnabled())
+	assert.True(t, contract.KubePrismEnabled())
+	assert.True(t, contract.HostDNSEnabled())
+	assert.True(t, contract.UseRSAServiceAccountKey())
+	assert.True(t, contract.ClusterNameForWorkers())
+	assert.True(t, contract.HostDNSForwardKubeDNSToHost())
+	assert.True(t, contract.AddExcludeFromExternalLoadBalancer())
+	assert.True(t, contract.SecureBootEnrollEnforcementSupported())
+	assert.True(t, contract.VolumeConfigEncryptionSupported())
+	assert.True(t, contract.MultidocNetworkConfigSupported())
+	assert.True(t, contract.HideDisablePSP())
+	assert.True(t, contract.HideRBACAndKeyUsage())
+	assert.False(t, contract.PopulateClusterSANsFromEndpoint())
+	assert.True(t, contract.GrubUseUKICmdlineDefault())
+	assert.True(t, contract.KubeSpanMultidocConfig())
+	assert.True(t, contract.HostDNSMultidocConfig())
+	assert.True(t, contract.MultidocKubernetesConfigSupported())
+	assert.True(t, contract.FilesystemTrimEnabledByDefault())
+	assert.True(t, contract.MultidocSysctlConfigSupported())
+	assert.True(t, contract.MultidocKernelModuleConfigSupported())
+	assert.True(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_13(t *testing.T) {
@@ -102,6 +170,12 @@ func TestContract1_13(t *testing.T) {
 	assert.False(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.True(t, contract.GrubUseUKICmdlineDefault())
 	assert.True(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_12(t *testing.T) {
@@ -132,6 +206,12 @@ func TestContract1_12(t *testing.T) {
 	assert.False(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.True(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_11(t *testing.T) {
@@ -162,6 +242,12 @@ func TestContract1_11(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_10(t *testing.T) {
@@ -192,6 +278,12 @@ func TestContract1_10(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_9(t *testing.T) {
@@ -222,6 +314,12 @@ func TestContract1_9(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_8(t *testing.T) {
@@ -252,6 +350,12 @@ func TestContract1_8(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_7(t *testing.T) {
@@ -282,6 +386,12 @@ func TestContract1_7(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_6(t *testing.T) {
@@ -312,6 +422,12 @@ func TestContract1_6(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_5(t *testing.T) {
@@ -342,6 +458,12 @@ func TestContract1_5(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_4(t *testing.T) {
@@ -372,6 +494,12 @@ func TestContract1_4(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_3(t *testing.T) {
@@ -402,6 +530,12 @@ func TestContract1_3(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_2(t *testing.T) {
@@ -432,6 +566,12 @@ func TestContract1_2(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_1(t *testing.T) {
@@ -462,6 +602,12 @@ func TestContract1_1(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }
 
 func TestContract1_0(t *testing.T) {
@@ -492,4 +638,10 @@ func TestContract1_0(t *testing.T) {
 	assert.True(t, contract.PopulateClusterSANsFromEndpoint())
 	assert.False(t, contract.GrubUseUKICmdlineDefault())
 	assert.False(t, contract.KubeSpanMultidocConfig())
+	assert.False(t, contract.HostDNSMultidocConfig())
+	assert.False(t, contract.MultidocKubernetesConfigSupported())
+	assert.False(t, contract.FilesystemTrimEnabledByDefault())
+	assert.False(t, contract.MultidocSysctlConfigSupported())
+	assert.False(t, contract.MultidocKernelModuleConfigSupported())
+	assert.False(t, contract.UnattendedInstallConfig())
 }

@@ -48,6 +48,15 @@ func WithKubePrismPort(port int) Option {
 	}
 }
 
+// WithSkipUnattendedInstallConfig specifies whether to skip generating UnattendedInstallConfig.
+func WithSkipUnattendedInstallConfig(skip bool) Option {
+	return func(o *Options) error {
+		o.SkipUnattendedInstallConfig = skip
+
+		return nil
+	}
+}
+
 // WithInstallDisk specifies install disk to use in Talos cluster.
 func WithInstallDisk(disk string) Option {
 	return func(o *Options) error {
@@ -150,10 +159,10 @@ func WithDebug(enable bool) Option {
 	}
 }
 
-// WithClusterCNIConfig specifies custom cluster CNI config.
-func WithClusterCNIConfig(config *v1alpha1.CNIConfig) Option {
+// WithCustomCNIUrl specifies custom cluster CNI config.
+func WithCustomCNIUrl(manifestURL string) Option {
 	return func(o *Options) error {
-		o.CNIConfig = config
+		o.CNICustomURL = manifestURL
 
 		return nil
 	}
@@ -277,7 +286,7 @@ type Options struct {
 
 	// Cluster settings.
 	DNSDomain                      string
-	CNIConfig                      *v1alpha1.CNIConfig
+	CNICustomURL                   string
 	AllowSchedulingOnControlPlanes bool
 	LocalAPIServerPort             int
 	AdditionalSubjectAltNames      []string
@@ -288,6 +297,8 @@ type Options struct {
 	HostDNSForwardKubeDNSToHost optional.Optional[bool]
 
 	KubeSpanEnabled optional.Optional[bool]
+
+	SkipUnattendedInstallConfig bool
 
 	// Client options.
 	Roles        role.Set

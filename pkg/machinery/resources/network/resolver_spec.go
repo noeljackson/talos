@@ -11,7 +11,9 @@ import (
 	"github.com/cosi-project/runtime/pkg/resource/meta"
 	"github.com/cosi-project/runtime/pkg/resource/protobuf"
 	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/gen/xslices"
 
+	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/proto"
 )
 
@@ -24,14 +26,47 @@ type ResolverSpec = typed.Resource[ResolverSpecSpec, ResolverSpecExtension]
 // ResolverID is the ID of the singleton instance.
 const ResolverID resource.ID = "resolvers"
 
+// NameServerSpec describes a single DNS nameserver with additional configuration.
+//
+//gotagsrewrite:gen
+type NameServerSpec struct {
+	Addr          netip.Addr             `yaml:"addr" protobuf:"1"`
+	Protocol      nethelpers.DNSProtocol `yaml:"protocol" protobuf:"2"`
+	TLSServerName string                 `yaml:"tlsServerName" protobuf:"3"`
+}
+
+// String returns a string representation of the NameServerSpec for logging purposes.
+func (ns NameServerSpec) String() string {
+	switch ns.Protocol {
+	case nethelpers.DNSProtocolDNSOverTLS:
+		return ns.Addr.String() + " (DoT, TLS Server Name: " + ns.TLSServerName + ")"
+	case nethelpers.DNSProtocolDNSOverHTTP:
+		return ns.Addr.String() + " (DoH, TLS Server Name: " + ns.TLSServerName + ")"
+	case nethelpers.DNSProtocolDefault:
+		return ns.Addr.String()
+	default:
+		return ns.Addr.String() + " (Unknown Protocol)"
+	}
+}
+
 // ResolverSpecSpec describes DNS resolvers.
 //
 //gotagsrewrite:gen
 //redactgen:gen
 type ResolverSpecSpec struct {
-	DNSServers    []netip.Addr `yaml:"dnsServers" protobuf:"1"`
-	ConfigLayer   ConfigLayer  `yaml:"layer" protobuf:"2"`
-	SearchDomains []string     `yaml:"searchDomains,omitempty" protobuf:"3"`
+	// DNSServers is a flat list of DNS server IP addresses.
+	//
+	// Deprecated: This field is deprecated in favor of NameServers which contain more information.
+	DNSServers []netip.Addr `yaml:"dnsServers" protobuf:"1"`
+	// NameServers is a list of DNS servers with additional configuration.
+	NameServers   []NameServerSpec `yaml:"nameServers,omitempty" protobuf:"4"`
+	ConfigLayer   ConfigLayer      `yaml:"layer" protobuf:"2"`
+	SearchDomains []string         `yaml:"searchDomains,omitempty" protobuf:"3"`
+	// SearchDomainsOverridden indicates that SearchDomains was explicitly set on the machine
+	// configuration layer and must override (rather than merge with) search domains from previous
+	// layers. This is a separate field because protobuf cannot distinguish an empty slice from an
+	// unset one, and an empty override is used to clear DHCP/platform search domains.
+	SearchDomainsOverridden bool `yaml:"searchDomainsOverridden,omitempty" protobuf:"5"`
 }
 
 // NewResolverSpec initializes a ResolverSpec resource.
@@ -40,6 +75,22 @@ func NewResolverSpec(namespace resource.Namespace, id resource.ID) *ResolverSpec
 		resource.NewMetadata(namespace, ResolverSpecType, id, resource.VersionUndefined),
 		ResolverSpecSpec{},
 	)
+}
+
+// Convert handles conversion of deprecated fields to the new ones and vice versa for backward compatibility.
+func (s *ResolverSpecSpec) Convert() {
+	if s.NameServers == nil && s.DNSServers != nil {
+		s.NameServers = xslices.Map(s.DNSServers, func(addr netip.Addr) NameServerSpec {
+			return NameServerSpec{
+				Addr:     addr,
+				Protocol: nethelpers.DNSProtocolDefault,
+			}
+		})
+	} else if s.DNSServers == nil && s.NameServers != nil {
+		s.DNSServers = xslices.Map(s.NameServers, func(ns NameServerSpec) netip.Addr {
+			return ns.Addr
+		})
+	}
 }
 
 // ResolverSpecExtension provides auxiliary methods for ResolverSpec.

@@ -7,9 +7,9 @@ package installer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 
+	"github.com/siderolabs/gen/xerrors"
 	"github.com/spf13/cobra"
 
 	"github.com/siderolabs/talos/cmd/installer/pkg/install"
@@ -44,7 +44,7 @@ func runInstallCmd(ctx context.Context) (err error) {
 
 	p, err := platform.NewPlatform(options.Platform)
 	if err != nil {
-		return err
+		return xerrors.NewTaggedf[install.InvalidInputTag]("%w", err)
 	}
 
 	config, err := configloader.NewFromStdin()
@@ -55,14 +55,14 @@ func runInstallCmd(ctx context.Context) (err error) {
 			// machine configuration can be only missing while running an upgrade in maintenance mode, assume that we should follow GrubUseUKICmdline
 			options.GrubUseUKICmdline = true
 		} else {
-			return fmt.Errorf("error loading machine configuration: %w", err)
+			return xerrors.NewTaggedf[install.InvalidInputTag]("error loading machine configuration: %w", err)
 		}
 	} else {
 		var warnings []string
 
-		warnings, err = config.Validate(p.Mode())
+		warnings, err = config.ValidateAsClient(p.Mode())
 		if err != nil {
-			return fmt.Errorf("machine configuration is invalid: %w", err)
+			return xerrors.NewTaggedf[install.InvalidInputTag]("machine configuration is invalid: %w", err)
 		}
 
 		if len(warnings) > 0 {
@@ -73,14 +73,35 @@ func runInstallCmd(ctx context.Context) (err error) {
 			}
 		}
 
-		if config.Machine() != nil && config.Machine().Install().LegacyBIOSSupport() {
-			options.LegacyBIOSSupport = true
-		}
+		// defaults from the deprecated .machine.install section (if present).
+		legacyBIOSSupport := config.Machine() != nil && config.Machine().Install().LegacyBIOSSupport()
 
 		// if we don't have v1alpha1 config (we are in maintenance mode),
 		// or if we have v1alpha1 config, and GrubUseUKICmdline is set to true,
 		// then we should set the option to true
-		if config.Machine() == nil || config.Machine().Install().GrubUseUKICmdline() {
+		grubUseUKICmdline := config.Machine() == nil || config.Machine().Install().GrubUseUKICmdline()
+
+		// A config with no .machine.install section has nowhere to hold extraKernelArgs, so there is no
+		// legacy command line to preserve and the UKI is the only source for the kernel arguments. The
+		// check above reads a missing setting the same as an explicit false, so look at the raw config.
+		if raw := config.RawV1Alpha1(); raw != nil && raw.MachineConfig != nil && raw.MachineConfig.MachineInstall == nil { //nolint:staticcheck // legacy configuration
+			grubUseUKICmdline = true
+		}
+
+		// the UnattendedInstallConfig document takes precedence over the deprecated .machine.install section.
+		if config.UnattendedInstallConfig() != nil {
+			// legacyBIOSSupport is not supported in the new config.
+			legacyBIOSSupport = false
+
+			// GrubUseUKICmdline is always true when UnattendedInstallConfig is used.
+			grubUseUKICmdline = true
+		}
+
+		if legacyBIOSSupport {
+			options.LegacyBIOSSupport = true
+		}
+
+		if grubUseUKICmdline {
 			options.GrubUseUKICmdline = true
 		}
 	}

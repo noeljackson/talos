@@ -16,6 +16,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/ctest"
 	k8sctrl "github.com/siderolabs/talos/internal/app/machined/pkg/controllers/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
@@ -45,11 +46,11 @@ func (suite *KubeletConfigSuite) TestReconcile() {
 			&v1alpha1.Config{
 				ConfigVersion: "v1alpha1",
 				MachineConfig: &v1alpha1.MachineConfig{
-					MachineKubelet: &v1alpha1.KubeletConfig{
+					MachineKubelet: &v1alpha1.KubeletConfig{ //nolint:staticcheck // legacy config
 						KubeletImage:      "kubelet",
 						KubeletClusterDNS: []string{"10.0.0.1"},
-						KubeletExtraArgs: v1alpha1.Args{
-							"enable-feature": v1alpha1.NewArgValue("foo", nil),
+						KubeletExtraArgs: meta.Args{
+							"enable-feature": meta.NewArgValue("foo", nil),
 						},
 						KubeletExtraMounts: []v1alpha1.ExtraMount{
 							{
@@ -58,7 +59,7 @@ func (suite *KubeletConfigSuite) TestReconcile() {
 								Type:        "tmpfs",
 							},
 						},
-						KubeletExtraConfig: v1alpha1.Unstructured{
+						KubeletExtraConfig: meta.Unstructured{
 							Object: map[string]any{
 								"serverTLSBootstrap": true,
 							},
@@ -129,7 +130,7 @@ func (suite *KubeletConfigSuite) TestReconcileDefaults() {
 			&v1alpha1.Config{
 				ConfigVersion: "v1alpha1",
 				MachineConfig: &v1alpha1.MachineConfig{
-					MachineKubelet: &v1alpha1.KubeletConfig{
+					MachineKubelet: &v1alpha1.KubeletConfig{ //nolint:staticcheck // legacy config
 						KubeletImage: "kubelet",
 					},
 				},
@@ -140,7 +141,7 @@ func (suite *KubeletConfigSuite) TestReconcileDefaults() {
 						},
 					},
 					ClusterNetwork: &v1alpha1.ClusterNetworkConfig{
-						ServiceSubnet: []string{constants.DefaultIPv4ServiceNet},
+						ServiceSubnet: []string{constants.DefaultIPv4ServiceCIDR},
 					},
 				},
 			},

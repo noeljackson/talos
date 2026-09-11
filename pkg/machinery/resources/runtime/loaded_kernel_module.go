@@ -14,12 +14,18 @@ import (
 )
 
 // LoadedKernelModuleType is type of LoadedKernelModule resource.
+//
+// Deprecated: use KernelModuleStatus instead.
 const LoadedKernelModuleType = resource.Type("LoadedKernelModules.runtime.talos.dev")
 
-// LoadedKernelModule resource holds information about Linux kernel module to load.
+// LoadedKernelModule resource holds information about loaded Linux kernel modules.
+//
+// Deprecated: use KernelModuleStatus instead.
 type LoadedKernelModule = typed.Resource[LoadedKernelModuleSpec, LoadedKernelModuleExtension]
 
-// LoadedKernelModuleSpec describes Linux kernel module to load.
+// LoadedKernelModuleSpec describes loaded Linux kernel modules.
+//
+// Deprecated: use KernelModuleStatus instead.
 //
 //gotagsrewrite:gen
 type LoadedKernelModuleSpec struct {
@@ -31,6 +37,8 @@ type LoadedKernelModuleSpec struct {
 }
 
 // NewLoadedKernelModule initializes a LoadedKernelModule resource.
+//
+// Deprecated: use NewKernelModuleStatus instead.
 func NewLoadedKernelModule(namespace resource.Namespace, id resource.ID) *LoadedKernelModule {
 	return typed.NewResource[LoadedKernelModuleSpec, LoadedKernelModuleExtension](
 		resource.NewMetadata(namespace, LoadedKernelModuleType, id, resource.VersionUndefined),
@@ -39,13 +47,14 @@ func NewLoadedKernelModule(namespace resource.Namespace, id resource.ID) *Loaded
 }
 
 // LoadedKernelModuleExtension is auxiliary resource data for LoadedKernelModule.
+//
+// Deprecated: use KernelModuleStatusExtension instead.
 type LoadedKernelModuleExtension struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
 func (LoadedKernelModuleExtension) ResourceDefinition() meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             LoadedKernelModuleType,
-		Aliases:          []resource.Type{"module", "modules"},
 		DefaultNamespace: NamespaceName,
 		PrintColumns: []meta.PrintColumn{
 			{

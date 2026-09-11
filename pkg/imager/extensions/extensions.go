@@ -56,10 +56,6 @@ func (builder *Builder) Build(ctx context.Context) error {
 		return err
 	}
 
-	if err = builder.applySystemExtensionSELinuxLabels(extensionsList); err != nil {
-		return err
-	}
-
 	extensionPathsWithKernelModules := findExtensionsWithKernelModules(extensionsList, builder.Quirks)
 
 	if len(extensionPathsWithKernelModules) > 0 {
@@ -123,6 +119,12 @@ func (builder *Builder) validateExtensions(extensions []*extensions.Extension) e
 }
 
 func (builder *Builder) compressExtensions(ctx context.Context, extensions []*extensions.Extension, tempDir string) (*extinterface.Config, error) {
+	// Label the final layer list, including the generated modules.dep extension,
+	// before compression excludes filesystem-provided xattrs.
+	if err := builder.applySystemExtensionSELinuxLabels(extensions); err != nil {
+		return nil, err
+	}
+
 	cfg := &extinterface.Config{}
 
 	builder.Printf("compressing system extensions")

@@ -6,6 +6,7 @@ package network_test
 
 import (
 	"net/netip"
+	"net/url"
 	"testing"
 	"time"
 
@@ -275,7 +276,7 @@ func TestOperatorSpecRedactSecrets(t *testing.T) {
 func TestProbeSpecRedactSecrets(t *testing.T) {
 	t.Parallel()
 
-	md := resource.NewMetadata(network.NamespaceName, network.ProbeSpecType, "tcp:example.com:80", resource.VersionUndefined)
+	md := resource.NewMetadata(network.NamespaceName, network.ProbeSpecType, "http:https://example.com/health", resource.VersionUndefined)
 
 	runRedactTests(t, md, []redactTestCase[network.ProbeSpecSpec]{
 		{
@@ -299,6 +300,63 @@ func TestProbeSpecRedactSecrets(t *testing.T) {
 					Timeout:  time.Second,
 				},
 				ConfigLayer: network.ConfigMachineConfiguration,
+			},
+		},
+		{
+			name: "http without credentials",
+			spec: func() network.ProbeSpecSpec {
+				return network.ProbeSpecSpec{
+					Interval: time.Second,
+					HTTP: network.HTTPProbeSpec{
+						URL:     mustParseURL("https://example.com/health"),
+						Timeout: time.Second,
+					},
+				}
+			},
+			expected: network.ProbeSpecSpec{
+				Interval: time.Second,
+				HTTP: network.HTTPProbeSpec{
+					URL:     mustParseURL("https://example.com/health"),
+					Timeout: time.Second,
+				},
+			},
+		},
+		{
+			name: "http with password",
+			spec: func() network.ProbeSpecSpec {
+				return network.ProbeSpecSpec{
+					Interval: time.Second,
+					HTTP: network.HTTPProbeSpec{
+						URL:     mustParseURL("https://user:super-secret@example.com/health?foo=bar"),
+						Timeout: time.Second,
+					},
+				}
+			},
+			expected: network.ProbeSpecSpec{
+				Interval: time.Second,
+				HTTP: network.HTTPProbeSpec{
+					URL:     mustParseURL("https://user:" + constants.Redacted + "@example.com/health?foo=bar"),
+					Timeout: time.Second,
+				},
+			},
+		},
+		{
+			name: "http with username only",
+			spec: func() network.ProbeSpecSpec {
+				return network.ProbeSpecSpec{
+					Interval: time.Second,
+					HTTP: network.HTTPProbeSpec{
+						URL:     mustParseURL("https://user@example.com/health"),
+						Timeout: time.Second,
+					},
+				}
+			},
+			expected: network.ProbeSpecSpec{
+				Interval: time.Second,
+				HTTP: network.HTTPProbeSpec{
+					URL:     mustParseURL("https://user:" + constants.Redacted + "@example.com/health"),
+					Timeout: time.Second,
+				},
 			},
 		},
 	})
@@ -348,13 +406,27 @@ func TestRedactSecretsNoSecrets(t *testing.T) {
 				name: "resolver",
 				spec: func() network.ResolverSpecSpec {
 					return network.ResolverSpecSpec{
-						DNSServers:    []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+						DNSServers: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+						NameServers: []network.NameServerSpec{
+							{
+								Addr:          netip.MustParseAddr("1.1.1.1"),
+								Protocol:      nethelpers.DNSProtocolDNSOverTLS,
+								TLSServerName: "cloudflare-dns.com",
+							},
+						},
 						SearchDomains: []string{"example.com"},
 						ConfigLayer:   network.ConfigMachineConfiguration,
 					}
 				},
 				expected: network.ResolverSpecSpec{
-					DNSServers:    []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+					DNSServers: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+					NameServers: []network.NameServerSpec{
+						{
+							Addr:          netip.MustParseAddr("1.1.1.1"),
+							Protocol:      nethelpers.DNSProtocolDNSOverTLS,
+							TLSServerName: "cloudflare-dns.com",
+						},
+					},
 					SearchDomains: []string{"example.com"},
 					ConfigLayer:   network.ConfigMachineConfiguration,
 				},
@@ -407,13 +479,24 @@ func TestRedactSecretsNoSecrets(t *testing.T) {
 				spec: func() network.TimeServerSpecSpec {
 					return network.TimeServerSpecSpec{
 						NTPServers:  []string{"time.cloudflare.com"},
+						UseNTS:      true,
 						ConfigLayer: network.ConfigMachineConfiguration,
 					}
 				},
 				expected: network.TimeServerSpecSpec{
 					NTPServers:  []string{"time.cloudflare.com"},
+					UseNTS:      true,
 					ConfigLayer: network.ConfigMachineConfiguration,
 				},
 			},
 		})
+}
+
+func mustParseURL(rawURL string) *url.URL {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		panic(err)
+	}
+
+	return u
 }

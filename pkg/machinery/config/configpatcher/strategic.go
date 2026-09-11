@@ -8,8 +8,6 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/siderolabs/gen/xslices"
-
 	coreconfig "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
@@ -20,7 +18,7 @@ import (
 // StrategicMergePatch is a strategic merge config patch.
 type StrategicMergePatch interface {
 	Documents() []config.Document
-	Provider() coreconfig.Provider
+	Bytes() ([]byte, error)
 }
 
 // StrategicMerge performs strategic merge config patching.
@@ -42,9 +40,11 @@ func StrategicMerge(cfg coreconfig.Provider, patch StrategicMergePatch) (corecon
 		return id
 	}
 
-	leftIndex := xslices.ToMap(left, func(d config.Document) (string, config.Document) {
-		return documentID(d), d
-	})
+	leftIndex := make(map[string]config.Document, len(left))
+
+	for _, d := range left {
+		leftIndex[documentID(d)] = d
+	}
 
 	for _, rightDoc := range right {
 		id := documentID(rightDoc)
@@ -70,8 +70,12 @@ func StrategicMerge(cfg coreconfig.Provider, patch StrategicMergePatch) (corecon
 				idx := slices.Index(left, leftDoc)
 				left = slices.Delete(left, idx, idx+1)
 			}
-		} else {
-			left = append(left, rightDoc)
+		} else if _, isSel := rightDoc.(configloader.Selector); !isSel {
+			// only append documents which are not delete selectors;
+			// a delete selector for a non-existent document is silently skipped
+			cloned := rightDoc.Clone()
+			left = append(left, cloned)
+			leftIndex[id] = cloned
 		}
 	}
 
@@ -91,6 +95,6 @@ func (s strategicMergePatch) Documents() []config.Document {
 	return s.provider.Documents()
 }
 
-func (s strategicMergePatch) Provider() coreconfig.Provider { return s.provider }
+func (s strategicMergePatch) Bytes() ([]byte, error) { return s.provider.Bytes() }
 
 var _ StrategicMergePatch = strategicMergePatch{}

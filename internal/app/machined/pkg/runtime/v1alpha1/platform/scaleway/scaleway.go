@@ -117,7 +117,8 @@ func (s *Scaleway) ParseMetadata(metadata *instance.Metadata) (*runtime.Platform
 		addr := netip.PrefixFrom(ip, bits)
 
 		publicIPs = append(publicIPs, address)
-		networkConfig.Addresses = append(networkConfig.Addresses,
+		networkConfig.Addresses = append(
+			networkConfig.Addresses,
 			network.AddressSpecSpec{
 				ConfigLayer: network.ConfigPlatform,
 				LinkName:    "eth0",
@@ -179,8 +180,6 @@ func (s *Scaleway) ParseMetadata(metadata *instance.Metadata) (*runtime.Platform
 }
 
 // Configuration implements the runtime.Platform interface.
-//
-//nolint:stylecheck
 func (s *Scaleway) Configuration(ctx context.Context, r state.State) ([]byte, error) {
 	if err := netutils.Wait(ctx, r); err != nil {
 		return nil, err

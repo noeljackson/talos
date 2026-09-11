@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"time"
 
@@ -16,7 +15,8 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 
-	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/global"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/pkg/cluster"
 	"github.com/siderolabs/talos/pkg/cluster/check"
 	"github.com/siderolabs/talos/pkg/cluster/hydrophone"
@@ -24,6 +24,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	clusterres "github.com/siderolabs/talos/pkg/machinery/resources/cluster"
+	"github.com/siderolabs/talos/pkg/reporter"
 )
 
 type clusterNodes struct {
@@ -96,33 +97,47 @@ var healthCmd = &cobra.Command{
 			return err
 		}
 
-		if err := runHealth(); err != nil {
+		ctx := cmd.Context()
+
+		clientFactory, err := NewClientFactory(ctx, &healthCmdFlags)
+		if err != nil {
+			return err
+		}
+
+		defer clientFactory.Close() //nolint:errcheck
+
+		if err := runHealth(ctx, clientFactory); err != nil {
 			return err
 		}
 
 		if healthCmdFlags.runE2E {
-			return runE2E()
+			return runE2E(ctx, clientFactory)
 		}
 
 		return nil
 	},
 }
 
-func runHealth() error {
+func runHealth(ctx context.Context, clientFactory *global.ClientFactory) error {
 	if healthCmdFlags.runOnServer {
-		return WithClient(healthOnServer)
+		return healthOnServer(ctx, clientFactory)
 	}
 
-	return WithClientNoNodes(healthOnClient)
+	return healthOnClient(ctx, clientFactory)
 }
 
-func healthOnClient(ctx context.Context, c *client.Client) error {
+func healthOnClient(ctx context.Context, clientFactory *global.ClientFactory) error {
+	ctx, c, _, err := clientFactory.BuildClientEnforceSingleNode(ctx, "health")
+	if err != nil {
+		return err
+	}
+
 	clientProvider := &cluster.ConfigClientProvider{
 		DefaultClient: c,
 	}
 	defer clientProvider.Close() //nolint:errcheck
 
-	clusterInfo, err := buildClusterInfo(healthCmdFlags.clusterState)
+	clusterInfo, err := buildClusterInfo(ctx, c, healthCmdFlags.clusterState)
 	if err != nil {
 		return err
 	}
@@ -144,11 +159,17 @@ func healthOnClient(ctx context.Context, c *client.Client) error {
 	checkCtx, checkCtxCancel := context.WithTimeout(ctx, healthCmdFlags.clusterWaitTimeout)
 	defer checkCtxCancel()
 
-	return check.Wait(checkCtx, &state, append(check.DefaultClusterChecks(), check.ExtraClusterChecks()...), check.StderrReporter())
+	// the condition lines are assembled from node names, service states and API
+	// errors the nodes chose, and the reporter colorizes them and writes to the
+	// terminal itself, so the text is filtered on its way in.
+	rep := check.StderrReporter(reporter.WithLineFilter(safeout.String))
+
+	return check.Wait(checkCtx, &state, append(check.DefaultClusterChecks(), check.ExtraClusterChecks()...), rep)
 }
 
-func healthOnServer(ctx context.Context, c *client.Client) error {
-	if err := helpers.FailIfMultiNodes(ctx, "health"); err != nil {
+func healthOnServer(ctx context.Context, clientFactory *global.ClientFactory) error {
+	ctx, c, _, err := clientFactory.BuildClientEnforceSingleNode(ctx, "health")
+	if err != nil {
 		return err
 	}
 
@@ -180,35 +201,34 @@ func healthOnServer(ctx context.Context, c *client.Client) error {
 			return err
 		}
 
-		if msg.GetMetadata().GetError() != "" {
-			return fmt.Errorf("healthcheck error: %s", msg.GetMetadata().GetError())
-		}
-
-		fmt.Fprintln(os.Stderr, msg.GetMessage())
+		fmt.Fprintln(safeout.Stderr(), msg.GetMessage())
 	}
 }
 
-func runE2E() error {
-	return WithClient(func(ctx context.Context, c *client.Client) error {
-		clientProvider := &cluster.ConfigClientProvider{
-			DefaultClient: c,
-		}
-		defer clientProvider.Close() //nolint:errcheck
+func runE2E(ctx context.Context, clientFactory *global.ClientFactory) error {
+	ctx, c, _, err := clientFactory.BuildClientEnforceSingleNode(ctx, "health")
+	if err != nil {
+		return err
+	}
 
-		state := &cluster.KubernetesClient{
-			ClientProvider: clientProvider,
-			ForceEndpoint:  healthCmdFlags.forceEndpoint,
-		}
+	clientProvider := &cluster.ConfigClientProvider{
+		DefaultClient: c,
+	}
+	defer clientProvider.Close() //nolint:errcheck
 
-		// Run cluster readiness checks
-		checkCtx, checkCtxCancel := context.WithTimeout(ctx, healthCmdFlags.clusterWaitTimeout)
-		defer checkCtxCancel()
+	state := &cluster.KubernetesClient{
+		ClientProvider: clientProvider,
+		ForceEndpoint:  healthCmdFlags.forceEndpoint,
+	}
 
-		options := hydrophone.DefaultOptions()
-		options.UseSpinner = true
+	// Run cluster readiness checks
+	checkCtx, checkCtxCancel := context.WithTimeout(ctx, healthCmdFlags.clusterWaitTimeout)
+	defer checkCtxCancel()
 
-		return hydrophone.Run(checkCtx, state, options)
-	})
+	options := hydrophone.DefaultOptions()
+	options.UseSpinner = true
+
+	return hydrophone.Run(checkCtx, state, options)
 }
 
 func init() {
@@ -222,29 +242,21 @@ func init() {
 	healthCmd.Flags().BoolVar(&healthCmdFlags.runE2E, "run-e2e", false, "run Kubernetes e2e test")
 }
 
-func buildClusterInfo(clusterState clusterNodes) (cluster.Info, error) {
+func buildClusterInfo(ctx context.Context, c *client.Client, clusterState clusterNodes) (cluster.Info, error) {
 	// if nodes are set explicitly via command line args, use them
 	if len(clusterState.ControlPlaneNodes) > 0 || len(clusterState.WorkerNodes) > 0 {
 		return &clusterState, nil
 	}
 
 	// read members from the Talos API
-
 	var members []*clusterres.Member
 
-	err := WithClientNoNodes(func(ctx context.Context, c *client.Client) error {
-		items, err := safe.StateListAll[*clusterres.Member](ctx, c.COSI)
-		if err != nil {
-			return err
-		}
-
-		items.ForEach(func(item *clusterres.Member) { members = append(members, item) })
-
-		return nil
-	})
+	items, err := safe.StateListAll[*clusterres.Member](ctx, c.COSI)
 	if err != nil {
 		return nil, err
 	}
+
+	items.ForEach(func(item *clusterres.Member) { members = append(members, item) })
 
 	return check.NewDiscoveredClusterInfo(members)
 }

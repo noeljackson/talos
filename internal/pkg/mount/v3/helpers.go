@@ -16,6 +16,7 @@ import (
 
 	"github.com/siderolabs/talos/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/xfs"
 	"github.com/siderolabs/talos/pkg/xfs/fsopen"
 )
 
@@ -29,7 +30,9 @@ func discard(string, ...any) {}
 func NewCgroup2() *Manager {
 	return NewManager(
 		WithTarget(constants.CgroupMountPath),
-		WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NODEV|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_RELATIME),
+		WithSecure(),
+		WithNoExec(),
+		WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 		WithFsopen(
 			"cgroup2",
 			fsopen.WithBoolParameter("nsdelegate"),
@@ -54,10 +57,12 @@ func NewReadOnlyOverlay(sources []string, target string, printer func(string, ..
 		fsOptions = append(fsOptions, fsopen.WithStringParameter("lowerdir", sources[0]))
 	}
 
-	options = append(options,
+	options = append(
+		options,
 		WithPrinter(printer),
 		WithTarget(target),
 		WithReadOnly(),
+		WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NODEV),
 		WithFsopen("overlay", fsOptions...),
 	)
 
@@ -85,11 +90,99 @@ func NewOverlayWithBasePath(sources []string, target, basePath string, printer f
 		fsOptions = append(fsOptions, fsopen.WithStringParameter("lowerdir", sources[0]))
 	}
 
-	options = append(options,
+	options = append(
+		options,
 		WithTarget(target),
 		WithExtraDirs(diff, workdir),
+		WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NODEV),
 		WithFsopen("overlay", fsOptions...),
 		WithPrinter(printer),
+	)
+
+	return NewManager(options...)
+}
+
+// NewSecureWritableOverlay composes a WRITABLE overlay over the given lower layers and returns its
+// detached mount — a pathless writable handle — as an xfs.Root.
+//
+// The upperdir ("diff") and workdir ("work") live on an anonymous tmpfs created from upperFSOpts
+// (e.g. mode/size and a SELinux context=), which is released as soon as the overlay is composed -
+// overlayfs keeps its own reference (see TestNewSecureWritableOverlay). lowerFDs are the lower
+// layers (highest-priority first) and may be closed after this returns. The handle is "secure" in
+// that it is never attached to a path.
+func NewSecureWritableOverlay(lowerFDs []int, upperFSOpts []fsopen.Option, printer func(string, ...any)) (xfs.Root, error) {
+	// Anonymous tmpfs backing the overlay upper/work; released once the overlay is composed.
+	base, err := NewManager(WithDetached(), WithFsopen("tmpfs", upperFSOpts...)).Mount()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create overlay base tmpfs: %w", err)
+	}
+
+	defer base.Root().Close() //nolint:errcheck
+
+	baseFD, err := base.Root().Fd()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, dir := range []string{"diff", "work"} {
+		if err := unix.Mkdirat(baseFD, dir, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
+			return nil, fmt.Errorf("failed to create overlay %q dir: %w", dir, err)
+		}
+	}
+
+	upperFD, err := unix.Openat(baseFD, "diff", unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open overlay upperdir: %w", err)
+	}
+
+	defer unix.Close(upperFD) //nolint:errcheck
+
+	workFD, err := unix.Openat(baseFD, "work", unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open overlay workdir: %w", err)
+	}
+
+	defer unix.Close(workFD) //nolint:errcheck
+
+	fsOptions := make([]fsopen.Option, 0, len(lowerFDs)+2)
+	for _, fd := range lowerFDs {
+		fsOptions = append(fsOptions, fsopen.WithFdParameter("lowerdir+", fd))
+	}
+
+	fsOptions = append(fsOptions,
+		fsopen.WithFdParameter("upperdir", upperFD),
+		fsopen.WithFdParameter("workdir", workFD),
+	)
+
+	point, err := NewManager(
+		WithPrinter(printer),
+		WithDetached(),
+		WithFsopen("overlay", fsOptions...),
+	).Mount()
+	if err != nil {
+		return nil, fmt.Errorf("failed to compose writable overlay: %w", err)
+	}
+
+	return point.Root(), nil
+}
+
+// NewSecureTmpfs returns a Manager for a  writable tmpfs at target with the given mode.
+func NewSecureTmpfs(target, mode, label string, printer func(string, ...any), options ...ManagerOption) *Manager {
+	fsOpts := []fsopen.Option{
+		fsopen.WithStringParameter("mode", mode),
+	}
+
+	if label != "" && selinux.IsEnabled() {
+		fsOpts = append(fsOpts, fsopen.WithStringParameter("context", label))
+	}
+
+	options = append(
+		options,
+		WithTarget(target),
+		WithSecure(),
+		WithNoExec(),
+		WithPrinter(printer),
+		WithFsopen("tmpfs", fsOpts...),
 	)
 
 	return NewManager(options...)
@@ -116,6 +209,7 @@ func Squashfs(target, squashfsFile string, printer func(string, ...any)) (*Manag
 		WithTarget(target),
 		WithPrinter(printer),
 		WithReadOnly(),
+		WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NODEV),
 		WithShared(),
 		WithExtraUnmountCallbacks(func(m *Manager) {
 			dev.Detach() //nolint:errcheck
@@ -188,7 +282,8 @@ func Pseudo(printer func(string, ...any)) Managers {
 			WithPrinter(printer),
 			WithTarget("/proc"),
 			WithKeepOpenAfterMount(),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV),
+			WithSecure(),
+			WithNoExec(),
 			WithFsopen("proc"),
 		),
 		newManager(
@@ -196,6 +291,8 @@ func Pseudo(printer func(string, ...any)) Managers {
 			WithPrinter(printer),
 			WithTarget("/sys"),
 			WithKeepOpenAfterMount(),
+			WithSecure(),
+			WithNoExec(),
 			WithFsopen("sysfs"),
 		),
 	)
@@ -208,9 +305,12 @@ func PseudoLate(printer func(string, ...any)) Managers {
 			always,
 			WithPrinter(printer),
 			WithTarget("/run"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_RELATIME),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithSelinuxLabel(constants.RunSelinuxLabel),
 			WithRecursiveUnmount(),
+			WithLazyUnmount(),
 			WithFsopen(
 				"tmpfs",
 				fsopen.WithStringParameter("mode", "0755"),
@@ -220,8 +320,12 @@ func PseudoLate(printer func(string, ...any)) Managers {
 			always,
 			WithPrinter(printer),
 			WithTarget("/system"),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithSelinuxLabel(constants.SystemSelinuxLabel),
 			WithRecursiveUnmount(),
+			WithLazyUnmount(),
 			WithFsopen(
 				"tmpfs",
 				fsopen.WithStringParameter("mode", "0755"),
@@ -231,7 +335,8 @@ func PseudoLate(printer func(string, ...any)) Managers {
 			always,
 			WithPrinter(printer),
 			WithTarget("/tmp"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV),
+			WithSecure(),
+			WithNoExec(),
 			WithFsopen(
 				"tmpfs",
 				fsopen.WithStringParameter("mode", "0755"),
@@ -248,7 +353,9 @@ func PseudoSub(printer func(string, ...any)) Managers {
 			always,
 			WithPrinter(printer),
 			WithTarget("/dev/shm"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV|unix.MOUNT_ATTR_RELATIME),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithFsopen("tmpfs"),
 		),
 		newManager(
@@ -274,48 +381,63 @@ func PseudoSub(printer func(string, ...any)) Managers {
 			always,
 			WithPrinter(printer),
 			WithTarget("/sys/fs/bpf"),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithFsopen("bpf"),
 		),
 		newManager(
 			always,
 			WithPrinter(printer),
 			WithTarget("/sys/kernel/security"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV|unix.MOUNT_ATTR_RELATIME),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithFsopen("securityfs"),
 		),
 		newManager(
 			always,
 			WithPrinter(printer),
 			WithTarget("/sys/kernel/tracing"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV),
+			WithSecure(),
+			WithNoExec(),
 			WithFsopen("tracefs"),
 		),
 		newManager(
 			always,
 			WithPrinter(printer),
 			WithTarget("/sys/kernel/config"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV|unix.MOUNT_ATTR_RELATIME),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithFsopen("configfs"),
 		),
 		newManager(
 			always,
 			WithPrinter(printer),
 			WithTarget("/sys/kernel/debug"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV|unix.MOUNT_ATTR_RELATIME),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithFsopen("debugfs"),
 		),
 		newManager(
 			selinux.IsEnabled,
 			WithPrinter(printer),
 			WithTarget("/sys/fs/selinux"),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_RELATIME),
+			WithSecure(),
+			WithNoExec(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithFsopen("selinuxfs"),
 		),
 		newManager(
 			hasEFIVars,
 			WithPrinter(printer),
 			WithTarget(constants.EFIVarsMountPoint),
-			WithMountAttributes(unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV|unix.MOUNT_ATTR_RELATIME|unix.MOUNT_ATTR_RDONLY),
+			WithSecure(),
+			WithNoExec(),
+			WithReadOnly(),
+			WithMountAttributes(unix.MOUNT_ATTR_RELATIME),
 			WithFsopen("efivarfs"),
 		),
 	)

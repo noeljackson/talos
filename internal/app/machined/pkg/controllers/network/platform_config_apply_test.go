@@ -190,6 +190,7 @@ func (suite *PlatformConfigApplySuite) TestResolvers() {
 	platformConfig.TypedSpec().Resolvers = []network.ResolverSpecSpec{
 		{
 			DNSServers:  []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+			NameServers: []network.NameServerSpec{{Addr: netip.MustParseAddr("1.1.1.1")}},
 			ConfigLayer: network.ConfigPlatform,
 		},
 	}
@@ -200,7 +201,8 @@ func (suite *PlatformConfigApplySuite) TestResolvers() {
 	}, func(r *network.ResolverSpec, asrt *assert.Assertions) {
 		spec := r.TypedSpec()
 
-		asrt.Equal("[1.1.1.1]", fmt.Sprintf("%s", spec.DNSServers))
+		asrt.Equal("[1.1.1.1]", fmt.Sprintf("%s", spec.DNSServers)) //nolint:staticcheck
+		asrt.Equal([]network.NameServerSpec{{Addr: netip.MustParseAddr("1.1.1.1")}}, spec.NameServers)
 		asrt.Equal(network.ConfigPlatform, spec.ConfigLayer)
 	}, rtestutils.WithNamespace(network.ConfigNamespaceName))
 }
@@ -247,15 +249,16 @@ func (suite *PlatformConfigApplySuite) TestProbes() {
 	}
 	suite.Create(platformConfig)
 
-	ctest.AssertResources(suite, []string{
-		"platform/tcp:example.com:80",
-		"platform/tcp:example.com:443",
-	}, func(r *network.ProbeSpec, asrt *assert.Assertions) {
-		spec := r.TypedSpec()
+	ctest.AssertResources(
+		suite, []string{
+			"platform/tcp:example.com:80",
+			"platform/tcp:example.com:443",
+		}, func(r *network.ProbeSpec, asrt *assert.Assertions) {
+			spec := r.TypedSpec()
 
-		asrt.Equal(time.Second, spec.Interval)
-		asrt.Equal(network.ConfigPlatform, spec.ConfigLayer)
-	},
+			asrt.Equal(time.Second, spec.Interval)
+			asrt.Equal(network.ConfigPlatform, spec.ConfigLayer)
+		},
 		rtestutils.WithNamespace(network.ConfigNamespaceName),
 	)
 }
@@ -319,7 +322,8 @@ func TestPlatformConfigApplySuite(t *testing.T) {
 						&netctrl.PlatformConfigApplyController{
 							V1alpha1Platform: &metal.Metal{},
 						},
-					))
+					),
+				)
 			},
 		},
 	})

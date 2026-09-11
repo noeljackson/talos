@@ -18,4 +18,18 @@ const (
 	FilesystemTypeISO9660                        // iso9660
 	FilesystemTypeSwap                           // swapi
 	FilesystemTypeVirtiofs                       // virtiofs
+	FilesystemTypeBtrfs                          // btrfs
 )
+
+// SupportsTrim returns true if the filesystem supports discarding unused blocks
+// (the FITRIM ioctl, equivalent of the fstrim(8) command).
+func (t FilesystemType) SupportsTrim() bool {
+	switch t {
+	case FilesystemTypeXFS, FilesystemTypeEXT4, FilesystemTypeBtrfs:
+		return true
+	case FilesystemTypeNone, FilesystemTypeVFAT, FilesystemTypeISO9660, FilesystemTypeSwap, FilesystemTypeVirtiofs:
+		return false
+	default:
+		return false
+	}
+}

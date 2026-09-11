@@ -15,28 +15,35 @@ import (
 	"sync"
 	"text/tabwriter"
 
-	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/fatih/color"
 	"github.com/gosuri/uiprogress"
 	"github.com/siderolabs/go-talos-support/support"
 	"github.com/siderolabs/go-talos-support/support/bundle"
+	"github.com/siderolabs/go-talos-support/support/bundle/encryption"
 	"github.com/siderolabs/go-talos-support/support/collectors"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/global"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/pkg/kubeconfig"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clusterresource "github.com/siderolabs/talos/pkg/machinery/resources/cluster"
 )
 
 var supportCmdFlags struct {
-	output     string
-	numWorkers int
-	verbose    bool
+	global.InsecureFlags
+
+	output                        string
+	numWorkers                    int
+	verbose                       bool
+	noEncryption                  bool
+	encryptionRecipients          []string
+	encryptionNoDefaultRecipients bool
 }
 
 // supportCmd represents the support command.
@@ -61,19 +68,65 @@ var supportCmd = &cobra.Command{
 - For the cluster:
 
 	- Kubernetes nodes and kube-system pods manifests.
+
+By default, the generated bundle is encrypted using age encryption to the list of recipients
+set by the members of the 'siderolabs' GitHub organization. The encrypted bundle by default will
+only be decryptable by the Sidero Labs team, but you can also specify additional recipients using the
+--encryption-recipients flag, or disable encryption completely using the --no-encryption flag.
+Default encryption recipients can be removed by setting --encryption-no-default-recipients flag.
 `,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(GlobalArgs.Nodes) == 0 {
-			return errors.New("please provide at least a single node to gather the debug information from")
+		ctx := cmd.Context()
+
+		clientFactory, err := NewClientFactory(ctx, &supportCmdFlags)
+		if err != nil {
+			return err
 		}
 
-		f, err := openArchive()
+		defer clientFactory.Close() //nolint:errcheck
+
+		if supportCmdFlags.noEncryption && (len(supportCmdFlags.encryptionRecipients) > 0 || supportCmdFlags.encryptionNoDefaultRecipients) {
+			return errors.New("--encryption-recipients and --encryption-no-default-recipients cannot be used with --no-encryption")
+		}
+
+		var encryptionOpts []encryption.Option
+
+		if !supportCmdFlags.noEncryption {
+			opts, recipients, err := buildEncryptionOptions()
+			if err != nil {
+				return err
+			}
+
+			encryptionOpts = opts
+
+			fmt.Fprintln(safeout.Stderr(), "Encrypting support bundle to the following recipients:")
+
+			for _, r := range recipients {
+				fmt.Fprintf(safeout.Stderr(), "  - %s\n", r)
+			}
+		}
+
+		f, err := openArchive(ctx, clientFactory)
 		if err != nil {
 			return err
 		}
 
 		defer f.Close() //nolint:errcheck
+
+		var (
+			archiveOutput io.Writer = f
+			encWriter     io.WriteCloser
+		)
+
+		if !supportCmdFlags.noEncryption {
+			encWriter, err = encryption.Encrypt(f, encryptionOpts...)
+			if err != nil {
+				return err
+			}
+
+			archiveOutput = encWriter
+		}
 
 		progress := make(chan bundle.Progress)
 
@@ -94,7 +147,7 @@ var supportCmd = &cobra.Command{
 			return nil
 		})
 
-		collectErr := collectData(f, progress)
+		collectErr := collectData(ctx, archiveOutput, progress, clientFactory)
 
 		close(progress)
 
@@ -102,45 +155,57 @@ var supportCmd = &cobra.Command{
 			return e
 		}
 
+		// flush the age encryption layer before reporting success.
+		if encWriter != nil {
+			if err = encWriter.Close(); err != nil {
+				return err
+			}
+		}
+
 		if err = errors.print(); err != nil {
 			return err
 		}
 
-		fmt.Fprintf(os.Stderr, "Support bundle is written to %s\n", supportCmdFlags.output)
+		fmt.Fprintf(safeout.Stderr(), "Support bundle is written to %s\n", supportCmdFlags.output)
 
 		return collectErr
 	},
 }
 
-func collectData(dest *os.File, progress chan bundle.Progress) error {
-	return WithClientNoNodes(func(ctx context.Context, c *client.Client) error {
-		clientset, err := getKubernetesClient(ctx, c)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create kubernetes client %s\n", err)
-		}
+func collectData(ctx context.Context, dest io.Writer, progress chan bundle.Progress, clientFactory *global.ClientFactory) error {
+	var errs error
 
-		opts := []bundle.Option{
-			bundle.WithArchiveOutput(dest),
-			bundle.WithKubernetesClient(clientset),
-			bundle.WithTalosClient(c),
-			bundle.WithNodes(GlobalArgs.Nodes...),
-			bundle.WithNumWorkers(supportCmdFlags.numWorkers),
-			bundle.WithProgressChan(progress),
-		}
+	nodeCtx, c, err := clientFactory.BuildClientFirstNode(ctx)
+	if err != nil {
+		return err
+	}
 
-		if !supportCmdFlags.verbose {
-			opts = append(opts, bundle.WithLogOutput(io.Discard))
-		}
+	clientset, err := getKubernetesClient(nodeCtx, c)
+	if err != nil {
+		errs = errors.Join(errs, fmt.Errorf("failed to create kubernetes client: %w", err))
+	}
 
-		options := bundle.NewOptions(opts...)
+	opts := []bundle.Option{
+		bundle.WithArchiveOutput(dest),
+		bundle.WithKubernetesClient(clientset),
+		bundle.WithTalosClientProvider(clientFactory.BuildClient),
+		bundle.WithNodes(clientFactory.Nodes()...),
+		bundle.WithNumWorkers(supportCmdFlags.numWorkers),
+		bundle.WithProgressChan(progress),
+	}
 
-		collectors, err := collectors.GetForOptions(ctx, options)
-		if err != nil {
-			return err
-		}
+	if !supportCmdFlags.verbose {
+		opts = append(opts, bundle.WithLogOutput(io.Discard))
+	}
 
-		return support.CreateSupportBundle(ctx, options, collectors...)
-	})
+	options := bundle.NewOptions(opts...)
+
+	collectors, err := collectors.GetForOptions(ctx, options)
+	if err != nil {
+		errs = errors.Join(errs, fmt.Errorf("failed to create collectors: %w", err))
+	}
+
+	return errors.Join(errs, support.CreateSupportBundle(ctx, options, collectors...))
 }
 
 func getKubernetesClient(ctx context.Context, c *client.Client) (*k8s.Clientset, error) {
@@ -171,7 +236,7 @@ func getKubernetesClient(ctx context.Context, c *client.Client) (*k8s.Clientset,
 	}
 
 	// just checking that k8s responds
-	_, err = clientset.CoreV1().Namespaces().Get(ctx, "kube-system", v1.GetOptions{})
+	_, err = clientset.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -179,35 +244,68 @@ func getKubernetesClient(ctx context.Context, c *client.Client) (*k8s.Clientset,
 	return clientset, nil
 }
 
-func getDiscoveryConfig() (*clusterresource.Config, error) {
-	var config *clusterresource.Config
-
-	if e := WithClient(func(ctx context.Context, c *client.Client) error {
-		var err error
-
-		config, err = safe.StateGet[*clusterresource.Config](
-			ctx,
-			c.COSI,
-			resource.NewMetadata(clusterresource.NamespaceName, clusterresource.IdentityType, clusterresource.LocalIdentity, resource.VersionUndefined),
-		)
-
-		return err
-	}); e != nil {
-		return nil, e
+func getClusterInfo(ctx context.Context, clientFactory *global.ClientFactory) (*clusterresource.Info, error) {
+	ctx, c, err := clientFactory.BuildClientFirstNode(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	return config, nil
+	return safe.StateGetByID[*clusterresource.Info](
+		ctx,
+		c.COSI,
+		clusterresource.InfoID,
+	)
 }
 
-func openArchive() (*os.File, error) {
+// buildEncryptionOptions builds the age encryption options based on the command
+// flags and returns the list of recipients (for display) the bundle is encrypted to.
+func buildEncryptionOptions() ([]encryption.Option, []string, error) {
+	var (
+		opts       []encryption.Option
+		recipients []string
+	)
+
+	if supportCmdFlags.encryptionNoDefaultRecipients {
+		if len(supportCmdFlags.encryptionRecipients) == 0 {
+			return nil, nil, errors.New("no recipients to encrypt to: --encryption-no-default-recipients is set but no --encryption-recipients provided")
+		}
+
+		opts = append(opts, encryption.WithRecipients(supportCmdFlags.encryptionRecipients...))
+		recipients = append(recipients, supportCmdFlags.encryptionRecipients...)
+
+		return opts, recipients, nil
+	}
+
+	defaults, err := encryption.DefaultRecipients()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, r := range defaults {
+		recipients = append(recipients, r.String())
+	}
+
+	if len(supportCmdFlags.encryptionRecipients) > 0 {
+		opts = append(opts, encryption.WithAdditionalRecipients(supportCmdFlags.encryptionRecipients...))
+		recipients = append(recipients, supportCmdFlags.encryptionRecipients...)
+	}
+
+	return opts, recipients, nil
+}
+
+func openArchive(ctx context.Context, clientFactory *global.ClientFactory) (*os.File, error) {
 	if supportCmdFlags.output == "" {
 		supportCmdFlags.output = "support"
 
-		if config, err := getDiscoveryConfig(); err == nil && config.TypedSpec().DiscoveryEnabled {
-			supportCmdFlags.output += "-" + config.TypedSpec().ServiceClusterID
+		if info, err := getClusterInfo(ctx, clientFactory); err == nil && info.TypedSpec().ClusterName != "" {
+			supportCmdFlags.output += "-" + info.TypedSpec().ClusterName
 		}
 
 		supportCmdFlags.output += ".zip"
+
+		if !supportCmdFlags.noEncryption {
+			supportCmdFlags.output += ".age"
+		}
 	}
 
 	if _, err := os.Stat(supportCmdFlags.output); err != nil {
@@ -217,7 +315,7 @@ func openArchive() (*os.File, error) {
 	} else {
 		buf := bufio.NewReader(os.Stdin)
 
-		fmt.Printf("%s already exists, overwrite? [y/N]: ", supportCmdFlags.output)
+		safeout.Printf("%s already exists, overwrite? [y/N]: ", supportCmdFlags.output)
 
 		choice, err := buf.ReadString('\n')
 		if err != nil {
@@ -257,13 +355,19 @@ func (sbe *supportBundleErrors) print() error {
 
 	var wroteHeader bool
 
-	w := tabwriter.NewWriter(os.Stderr, 0, 0, 3, ' ', 0)
+	// the rows are colorized, and a color escape written through the filter would be
+	// escaped into literal text, so the stream stays raw and every cell coming from
+	// a node is escaped by hand below.
+	w := tabwriter.NewWriter(os.Stderr, 0, 0, 3, ' ', 0) //nolint:forbidigo // see above
 
 	for _, err := range sbe.errors {
 		if !wroteHeader {
 			wroteHeader = true
 
-			fmt.Fprintln(os.Stderr, "Processed with errors:")
+			// the header goes through the tabwriter too, so that it keeps its place
+			// in the output: a line without a tab is a block of its own and is
+			// written out unchanged.
+			fmt.Fprintln(w, "Processed with errors:")
 			fmt.Fprintln(w, "\tSOURCE\tERROR")
 		}
 
@@ -272,11 +376,11 @@ func (sbe *supportBundleErrors) print() error {
 			details[i] = strings.TrimSpace(d)
 		}
 
-		fmt.Fprintf(w, "\t%s\t%s\n", err.source, color.RedString(details[0]))
+		fmt.Fprintf(w, "\t%s\t%s\n", safeout.Cell(err.source), color.RedString("%s", safeout.Cell(details[0])))
 
 		if len(details) > 1 {
 			for _, line := range details[1:] {
-				fmt.Fprintf(w, "\t\t%s\n", color.RedString(line))
+				fmt.Fprintf(w, "\t\t%s\n", color.RedString("%s", safeout.Cell(line)))
 			}
 		}
 	}
@@ -347,4 +451,17 @@ func init() {
 	supportCmd.Flags().StringVarP(&supportCmdFlags.output, "output", "O", "", "output file to write support archive to")
 	supportCmd.Flags().IntVarP(&supportCmdFlags.numWorkers, "num-workers", "w", 1, "number of workers per node")
 	supportCmd.Flags().BoolVarP(&supportCmdFlags.verbose, "verbose", "v", false, "verbose output")
+	supportCmd.Flags().BoolVar(
+		&supportCmdFlags.noEncryption, "no-encryption", false,
+		"do not encrypt the support bundle (output is written as-is)",
+	)
+	supportCmd.Flags().StringArrayVar(
+		&supportCmdFlags.encryptionRecipients, "encryption-recipients", nil,
+		"additional age recipients (SSH or age public keys) to encrypt the support bundle to (can be specified multiple times)",
+	)
+	supportCmd.Flags().BoolVar(
+		&supportCmdFlags.encryptionNoDefaultRecipients, "encryption-no-default-recipients", false,
+		"do not encrypt to the default recipients, only to the ones provided via --encryption-recipients",
+	)
+	supportCmdFlags.InsecureFlags.AddFlags(supportCmd)
 }

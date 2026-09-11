@@ -62,7 +62,8 @@ func (a *Akamai) ParseMetadata(
 	// external IP
 	for _, iface := range interfaceAddresses.IPv4.Public {
 		publicIPs = append(publicIPs, iface.Addr().String())
-		networkConfig.Addresses = append(networkConfig.Addresses,
+		networkConfig.Addresses = append(
+			networkConfig.Addresses,
 			network.AddressSpecSpec{
 				ConfigLayer: network.ConfigPlatform,
 				LinkName:    "eth0",
@@ -75,7 +76,8 @@ func (a *Akamai) ParseMetadata(
 	}
 
 	for _, iface := range interfaceAddresses.IPv4.Private {
-		networkConfig.Addresses = append(networkConfig.Addresses,
+		networkConfig.Addresses = append(
+			networkConfig.Addresses,
 			network.AddressSpecSpec{
 				ConfigLayer: network.ConfigPlatform,
 				LinkName:    "eth0",
@@ -90,7 +92,8 @@ func (a *Akamai) ParseMetadata(
 	for _, iface := range interfaceAddresses.IPv6.Ranges {
 		publicIPs = append(publicIPs, iface.Addr().String())
 
-		networkConfig.Addresses = append(networkConfig.Addresses,
+		networkConfig.Addresses = append(
+			networkConfig.Addresses,
 			network.AddressSpecSpec{
 				ConfigLayer: network.ConfigPlatform,
 				LinkName:    "eth0",
@@ -102,7 +105,8 @@ func (a *Akamai) ParseMetadata(
 		)
 	}
 
-	networkConfig.Addresses = append(networkConfig.Addresses,
+	networkConfig.Addresses = append(
+		networkConfig.Addresses,
 		network.AddressSpecSpec{
 			ConfigLayer: network.ConfigPlatform,
 			LinkName:    "eth0",

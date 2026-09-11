@@ -33,11 +33,13 @@ import (
 )
 
 type mountContext struct {
-	point             *mount.Point
-	readOnly          bool
-	disableAccessTime bool
-	secure            bool
-	unmounter         func() error
+	point               *mount.Point
+	readOnly            bool
+	disableAccessTime   bool
+	secure              bool
+	noExec              bool
+	securityInitialized bool
+	unmounter           func() error
 }
 
 // MountController performs actual mount/unmount operations based on the MountRequests.
@@ -389,9 +391,11 @@ func (ctrl *MountController) handleBindMountOperation(
 			}
 		}
 
-		opts := []mount.ManagerOption{
-			mount.WithSelinuxLabel(volumeStatus.TypedSpec().MountSpec.SelinuxLabel),
-		}
+		opts := bindMountOptions(
+			volumeStatus.TypedSpec().MountSpec.SelinuxLabel,
+			mountRequest.TypedSpec().Secure,
+			mountRequest.TypedSpec().NoExec,
+		)
 
 		manager := mount.NewManager(slices.Concat(
 			[]mount.ManagerOption{
@@ -415,7 +419,8 @@ func (ctrl *MountController) handleBindMountOperation(
 			}
 		}
 
-		logger.Info("bind mount",
+		logger.Info(
+			"bind mount",
 			zap.String("volume", volumeStatus.Metadata().ID()),
 			zap.String("source", mountSource),
 			zap.String("target", mountTarget),
@@ -424,11 +429,22 @@ func (ctrl *MountController) handleBindMountOperation(
 		ctrl.activeMounts[mountRequest.Metadata().ID()] = &mountContext{
 			point:     mountpoint,
 			readOnly:  mountRequest.TypedSpec().ReadOnly,
+			secure:    mountRequest.TypedSpec().Secure,
+			noExec:    mountRequest.TypedSpec().NoExec,
 			unmounter: manager.Unmount,
 		}
 	}
 
-	return nil
+	mountCtx := ctrl.activeMounts[mountRequest.Metadata().ID()]
+
+	return updateMountSecurity(
+		logger,
+		mountRequest.Metadata().ID(),
+		volumeStatus.Metadata().ID(),
+		mountCtx,
+		mountRequest.TypedSpec().Secure,
+		mountRequest.TypedSpec().NoExec,
+	)
 }
 
 //nolint:gocyclo
@@ -591,7 +607,8 @@ func (ctrl *MountController) handleDiskMountOperation(
 		)
 
 		for _, param := range volumeStatus.TypedSpec().MountSpec.Parameters {
-			logger.Info("adding new parameter",
+			logger.Info(
+				"adding new parameter",
 				zap.String("parameter", param.Name),
 				zap.String("parameter.type", param.Type.String()),
 				zap.String("parameter.string", pointer.SafeDeref(param.String)),
@@ -632,6 +649,10 @@ func (ctrl *MountController) handleDiskMountOperation(
 			opts = append(opts, mount.WithSecure())
 		}
 
+		if mountRequest.TypedSpec().NoExec {
+			opts = append(opts, mount.WithNoExec())
+		}
+
 		if mountRequest.TypedSpec().ReadOnly {
 			opts = append(opts, mount.WithReadOnly())
 		}
@@ -665,23 +686,27 @@ func (ctrl *MountController) handleDiskMountOperation(
 			}
 		}
 
-		logger.Info("volume mount",
+		logger.Info(
+			"volume mount",
 			zap.String("volume", volumeStatus.Metadata().ID()),
 			zap.String("source", mountSource),
 			zap.String("target", mountTarget),
 			zap.Stringer("filesystem", mountFilesystem),
 			zap.Bool("read_only", mountRequest.TypedSpec().ReadOnly),
 			zap.Bool("secure", mountRequest.TypedSpec().Secure),
+			zap.Bool("no_exec", mountRequest.TypedSpec().NoExec),
 			zap.Bool("disable_access_time", mountRequest.TypedSpec().DisableAccessTime),
 			zap.Bool("detached", mountRequest.TypedSpec().Detached),
 		)
 
 		mountCtx = &mountContext{
-			point:             mountpoint,
-			readOnly:          mountRequest.TypedSpec().ReadOnly,
-			disableAccessTime: mountRequest.TypedSpec().DisableAccessTime,
-			secure:            mountRequest.TypedSpec().Secure,
-			unmounter:         manager.Unmount,
+			point:               mountpoint,
+			readOnly:            mountRequest.TypedSpec().ReadOnly,
+			disableAccessTime:   mountRequest.TypedSpec().DisableAccessTime,
+			secure:              mountRequest.TypedSpec().Secure,
+			noExec:              mountRequest.TypedSpec().NoExec,
+			securityInitialized: true,
+			unmounter:           manager.Unmount,
 		}
 		ctrl.activeMounts[mountRequest.Metadata().ID()] = mountCtx
 	}
@@ -700,7 +725,8 @@ func (ctrl *MountController) handleDiskMountOperation(
 			return fmt.Errorf("failed to remount %q: %w", mountRequest.Metadata().ID(), err)
 		}
 
-		logger.Info("volume remounted",
+		logger.Info(
+			"volume remounted",
 			zap.String("volume", volumeStatus.Metadata().ID()),
 			zap.String("read_only", fmt.Sprintf("%v -> %v", mountCtx.readOnly, mountRequest.TypedSpec().ReadOnly)),
 		)
@@ -715,7 +741,8 @@ func (ctrl *MountController) handleDiskMountOperation(
 			return fmt.Errorf("failed to update disableAccessTime for %q: %w", mountRequest.Metadata().ID(), err)
 		}
 
-		logger.Info("volume mount attributes updated",
+		logger.Info(
+			"volume mount attributes updated",
 			zap.String("volume", volumeStatus.Metadata().ID()),
 			zap.String("disable_access_time", fmt.Sprintf("%v -> %v", mountCtx.disableAccessTime, mountRequest.TypedSpec().DisableAccessTime)),
 		)
@@ -723,19 +750,76 @@ func (ctrl *MountController) handleDiskMountOperation(
 		mountCtx.disableAccessTime = mountRequest.TypedSpec().DisableAccessTime
 	}
 
-	//nolint:dupl
-	if mountCtx.secure != mountRequest.TypedSpec().Secure {
-		err := mountCtx.point.SetSecure(mountRequest.TypedSpec().Secure)
-		if err != nil {
-			return fmt.Errorf("failed to update secure for %q: %w", mountRequest.Metadata().ID(), err)
+	return updateMountSecurity(
+		logger,
+		mountRequest.Metadata().ID(),
+		volumeStatus.Metadata().ID(),
+		mountCtx,
+		mountRequest.TypedSpec().Secure,
+		mountRequest.TypedSpec().NoExec,
+	)
+}
+
+func bindMountOptions(selinuxLabel string, secure, noExec bool) []mount.ManagerOption {
+	opts := []mount.ManagerOption{
+		mount.WithSelinuxLabel(selinuxLabel),
+	}
+
+	if secure {
+		opts = append(opts, mount.WithSecure())
+	}
+
+	if noExec {
+		opts = append(opts, mount.WithNoExec())
+	}
+
+	return opts
+}
+
+func updateMountSecurity(logger *zap.Logger, mountID, volumeID string, mountCtx *mountContext, secure, noExec bool) error {
+	initialize := !mountCtx.securityInitialized
+
+	if initialize || mountCtx.secure != secure {
+		if err := mountCtx.point.SetSecure(secure); err != nil {
+			return fmt.Errorf("failed to update secure for %q: %w", mountID, err)
 		}
 
-		logger.Info("volume mount attributes updated",
-			zap.String("volume", volumeStatus.Metadata().ID()),
-			zap.String("secure", fmt.Sprintf("%v -> %v", mountCtx.secure, mountRequest.TypedSpec().Secure)),
+		if !initialize {
+			logger.Info(
+				"volume mount attributes updated",
+				zap.String("volume", volumeID),
+				zap.String("secure", fmt.Sprintf("%v -> %v", mountCtx.secure, secure)),
+			)
+		}
+
+		mountCtx.secure = secure
+	}
+
+	if initialize || mountCtx.noExec != noExec {
+		if err := mountCtx.point.SetNoExec(noExec); err != nil {
+			return fmt.Errorf("failed to update noexec for %q: %w", mountID, err)
+		}
+
+		if !initialize {
+			logger.Info(
+				"volume mount attributes updated",
+				zap.String("volume", volumeID),
+				zap.String("no_exec", fmt.Sprintf("%v -> %v", mountCtx.noExec, noExec)),
+			)
+		}
+
+		mountCtx.noExec = noExec
+	}
+
+	if initialize {
+		logger.Info(
+			"volume mount attributes initialized",
+			zap.String("volume", volumeID),
+			zap.Bool("secure", secure),
+			zap.Bool("no_exec", noExec),
 		)
 
-		mountCtx.secure = mountRequest.TypedSpec().Secure
+		mountCtx.securityInitialized = true
 	}
 
 	return nil
@@ -755,11 +839,23 @@ func (ctrl *MountController) handleOverlayMountOperation(
 		return fmt.Errorf("overlay mount is not supported for %q", volumeStatus.TypedSpec().ParentID)
 	}
 
+	overlayOpts := []mount.ManagerOption{
+		mount.WithSelinuxLabel(volumeStatus.TypedSpec().MountSpec.SelinuxLabel),
+	}
+
+	if volumeStatus.TypedSpec().MountSpec.Secure {
+		overlayOpts = append(overlayOpts, mount.WithSecure())
+	}
+
+	if volumeStatus.TypedSpec().MountSpec.NoExec {
+		overlayOpts = append(overlayOpts, mount.WithNoExec())
+	}
+
 	manager := mount.NewVarOverlay(
 		[]string{mountTarget},
 		mountTarget,
 		logger.Sugar().Infof,
-		mount.WithSelinuxLabel(volumeStatus.TypedSpec().MountSpec.SelinuxLabel),
+		overlayOpts...,
 	)
 
 	mountpoint, err := manager.Mount()
@@ -782,7 +878,8 @@ func (ctrl *MountController) handleOverlayMountOperation(
 		return fmt.Errorf("failed to update target settings %q: %w", mountRequest.Metadata().ID(), err)
 	}
 
-	logger.Info("overlay mount",
+	logger.Info(
+		"overlay mount",
 		zap.String("volume", volumeStatus.Metadata().ID()),
 		zap.String("target", mountTarget),
 		zap.String("parent", volumeStatus.TypedSpec().ParentID),
@@ -815,7 +912,8 @@ func (ctrl *MountController) handleSwapMountOperation(
 		point: mount.NewPoint(mountSource, 0, "", 0, "swap"),
 	}
 
-	logger.Info("swap enabled",
+	logger.Info(
+		"swap enabled",
 		zap.String("volume", volumeStatus.Metadata().ID()),
 		zap.String("source", mountSource),
 	)
@@ -869,7 +967,8 @@ func (ctrl *MountController) handleDiskUnmountOperation(
 
 	delete(ctrl.activeMounts, mountRequest.Metadata().ID())
 
-	logger.Info("volume unmount",
+	logger.Info(
+		"volume unmount",
 		zap.String("volume", mountRequest.Metadata().ID()),
 		zap.String("source", mountCtx.point.Source()),
 		zap.String("target", mountCtx.point.Target()),
@@ -895,7 +994,8 @@ func (ctrl *MountController) handleDirectoryUnmountOperation(
 
 	delete(ctrl.activeMounts, mountRequest.Metadata().ID())
 
-	logger.Info("volume unmount",
+	logger.Info(
+		"volume unmount",
 		zap.String("volume", mountRequest.Metadata().ID()),
 		zap.String("source", mountCtx.point.Source()),
 		zap.String("target", mountCtx.point.Target()),
@@ -928,7 +1028,8 @@ func (ctrl *MountController) handleSwapUmountOperation(
 
 	delete(ctrl.activeMounts, mountRequest.Metadata().ID())
 
-	logger.Info("swap disabled",
+	logger.Info(
+		"swap disabled",
 		zap.String("volume", volumeStatus.Metadata().ID()),
 		zap.String("source", mountCtx.point.Source()),
 	)

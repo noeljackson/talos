@@ -108,6 +108,14 @@ func (p *provisioner) Create(ctx context.Context, request provision.ClusterReque
 		}
 	}
 
+	if options.BGPEnabled {
+		fmt.Fprintln(options.LogWriter, "creating BGP fabric peer")
+
+		if err = p.CreateBGP(state, request, options); err != nil {
+			return nil, fmt.Errorf("error creating BGP fabric peer: %w", err)
+		}
+	}
+
 	if options.JSONLogsEndpoint != "" {
 		fmt.Fprintln(options.LogWriter, "creating JSON logs server")
 
@@ -124,7 +132,8 @@ func (p *provisioner) Create(ctx context.Context, request provision.ClusterReque
 		return nil, err
 	}
 
-	// On darwin, qemu creates the bridge interface to which the dhcpd server is attached to, so at least one machine has to be created first.
+	// On darwin the bridge already exists here: CreateNetwork brought it up and holds it open for the
+	// network lifetime, so the dhcpd finds it regardless of node creation order.
 	fmt.Fprintln(options.LogWriter, "creating dhcpd")
 
 	if err = p.CreateDHCPd(ctx, state, request); err != nil {

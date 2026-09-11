@@ -124,7 +124,8 @@ func (ctrl *SystemInfoController) Run(ctx context.Context, r controller.Runtime,
 			return err
 		}
 
-		if err := r.CleanupOutputs(ctx,
+		if err := r.CleanupOutputs(
+			ctx,
 			resource.NewMetadata(hardware.NamespaceName, hardware.SystemInformationType, hardware.SystemInformationID, resource.VersionUndefined),
 			resource.NewMetadata(hardware.NamespaceName, hardware.ProcessorType, "", resource.VersionUndefined),
 			resource.NewMetadata(hardware.NamespaceName, hardware.MemoryModuleType, "", resource.VersionUndefined),
@@ -150,6 +151,7 @@ func (ctrl *SystemInfoController) reconcileSystemInformation(ctx context.Context
 
 	if err := safe.WriterModify(ctx, r, hardware.NewSystemInformation(hardware.SystemInformationID), func(res *hardware.SystemInformation) error {
 		hwadapter.SystemInformation(res).Update(&ctrl.SMBIOS.SystemInformation, uuidRewrite)
+		res.TypedSpec().BIOSVersion = ctrl.SMBIOS.BIOSInformation.Version
 
 		return nil
 	}); err != nil {

@@ -14,15 +14,16 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/cosi-project/runtime/pkg/resource/rtestutils"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-retry/retry"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"go.yaml.in/yaml/v4"
 	"google.golang.org/grpc/backoff"
@@ -231,26 +232,12 @@ func (apiSuite *APISuite) ReadBootID(ctx context.Context) (string, error) {
 	reqCtx, reqCtxCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer reqCtxCancel()
 
-	reader, err := apiSuite.Client.Read(reqCtx, "/proc/sys/kernel/random/boot_id")
+	bootID, err := safe.StateGetByID[*runtimeres.BootID](reqCtx, apiSuite.Client.COSI, runtimeres.BootIDID)
 	if err != nil {
 		return "", err
 	}
 
-	defer reader.Close() //nolint:errcheck
-
-	body, err := io.ReadAll(reader)
-	if err != nil {
-		return "", err
-	}
-
-	bootID := strings.TrimSpace(string(body))
-
-	_, err = io.Copy(io.Discard, reader)
-	if err != nil {
-		return "", err
-	}
-
-	return bootID, reader.Close()
+	return bootID.TypedSpec().BootID, nil
 }
 
 // ReadBootIDWithRetry reads node boot_id.
@@ -312,9 +299,11 @@ func (apiSuite *APISuite) AssertRebootedNoChecks(ctx context.Context, node strin
 
 	apiSuite.Assert().NotEmpty(bootIDBefore, "boot_id should not be empty")
 
-	apiSuite.Assert().NoError(rebootFunc(nodeCtx))
+	apiSuite.Require().NoError(rebootFunc(nodeCtx))
 
 	apiSuite.AssertBootIDChanged(nodeCtx, bootIDBefore, node, timeout)
+
+	apiSuite.ClearConnectionRefused(ctx, node)
 }
 
 // AssertBootIDChanged waits until node boot id changes.
@@ -329,6 +318,11 @@ func (apiSuite *APISuite) AssertBootIDChanged(nodeCtx context.Context, bootIDBef
 			return retry.ExpectedError(err)
 		}
 
+		if bootIDAfter == "" {
+			// bootID should not be empty
+			return retry.ExpectedErrorf("bootID is empty for node %q", node)
+		}
+
 		if bootIDAfter == bootIDBefore {
 			// bootID should be different after reboot
 			return retry.ExpectedErrorf("bootID didn't change for node %q: before %s, after %s", node, bootIDBefore, bootIDAfter)
@@ -340,50 +334,19 @@ func (apiSuite *APISuite) AssertBootIDChanged(nodeCtx context.Context, bootIDBef
 
 // WaitForBootDone waits for boot phase done event.
 func (apiSuite *APISuite) WaitForBootDone(ctx context.Context) {
-	apiSuite.WaitForSequenceDone(
-		ctx,
-		runtime.SequenceBoot,
-		apiSuite.DiscoverNodeInternalIPs(ctx)...,
-	)
-}
+	apiSuite.ClearConnectionRefused(ctx, apiSuite.DiscoverNodeInternalIPs(ctx)...)
 
-// WaitForSequenceDone waits for sequence done event.
-func (apiSuite *APISuite) WaitForSequenceDone(ctx context.Context, sequence runtime.Sequence, nodes ...string) {
-	nodesNotDone := make(map[string]struct{})
-
-	for _, node := range nodes {
-		nodesNotDone[node] = struct{}{}
+	for _, node := range apiSuite.DiscoverNodeInternalIPs(ctx) {
+		rtestutils.AssertResource(
+			client.WithNode(ctx, node),
+			apiSuite.T(),
+			apiSuite.Client.COSI,
+			runtimeres.MachineStatusID,
+			func(machineStatus *runtimeres.MachineStatus, asrt *assert.Assertions) {
+				asrt.Equal(runtimeres.MachineStageRunning, machineStatus.TypedSpec().Stage)
+			},
+		)
 	}
-
-	apiSuite.Require().NoError(retry.Constant(5*time.Minute, retry.WithUnits(time.Second*10)).Retry(func() error {
-		eventsCtx, cancel := context.WithTimeout(client.WithNodes(ctx, nodes...), 5*time.Second)
-		defer cancel()
-
-		err := apiSuite.Client.EventsWatch(eventsCtx, func(ch <-chan client.Event) {
-			defer cancel()
-
-			for event := range ch {
-				if msg, ok := event.Payload.(*machineapi.SequenceEvent); ok {
-					if msg.GetAction() == machineapi.SequenceEvent_STOP && msg.GetSequence() == sequence.String() {
-						delete(nodesNotDone, event.Node)
-
-						if len(nodesNotDone) == 0 {
-							return
-						}
-					}
-				}
-			}
-		}, client.WithTailEvents(-1))
-		if err != nil {
-			return retry.ExpectedError(err)
-		}
-
-		if len(nodesNotDone) > 0 {
-			return retry.ExpectedErrorf("nodes %#v sequence %s is not completed", nodesNotDone, sequence.String())
-		}
-
-		return nil
-	}))
 }
 
 // ClearConnectionRefused clears cached connection refused errors which might be left after node reboot.
@@ -403,22 +366,24 @@ func (apiSuite *APISuite) ClearConnectionRefused(ctx context.Context, nodes ...s
 
 	apiSuite.Require().NoError(retry.Constant(backoff.DefaultConfig.MaxDelay, retry.WithUnits(time.Second)).Retry(func() error {
 		for range numMasterNodes * 5 {
-			_, err := apiSuite.Client.Version(client.WithNodes(ctx, nodes...))
-			if err == nil {
-				continue
+			for _, node := range nodes {
+				_, err := apiSuite.Client.Version(client.WithNode(ctx, node))
+				if err == nil {
+					continue
+				}
+
+				apiSuite.T().Log(err.Error())
+
+				if client.StatusCode(err) == codes.Unavailable || client.StatusCode(err) == codes.Canceled {
+					return retry.ExpectedError(err)
+				}
+
+				if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "connection reset by peer") {
+					return retry.ExpectedError(err)
+				}
+
+				return err
 			}
-
-			apiSuite.T().Log(err.Error())
-
-			if client.StatusCode(err) == codes.Unavailable || client.StatusCode(err) == codes.Canceled {
-				return retry.ExpectedError(err)
-			}
-
-			if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "connection reset by peer") {
-				return retry.ExpectedError(err)
-			}
-
-			return err
 		}
 
 		return nil
@@ -427,15 +392,22 @@ func (apiSuite *APISuite) ClearConnectionRefused(ctx context.Context, nodes ...s
 
 // HashKubeletCert returns hash of the kubelet certificate file.
 //
-// This function can be used to verify that the node ephemeral partition got wiped.
+// This function can be used to verify that the KUBELET volume got wiped.
+//
+// An empty string is returned if the certificate is not there: the KUBELET volume is only mounted
+// once the kubelet service starts, so the cert is not readable on a node which is still booting.
 func (apiSuite *APISuite) HashKubeletCert(ctx context.Context, node string) (string, error) {
 	reqCtx, reqCtxCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer reqCtxCancel()
 
-	reqCtx = client.WithNodes(reqCtx, node)
+	reqCtx = client.WithNode(reqCtx, node)
 
 	reader, err := apiSuite.Client.Read(reqCtx, "/var/lib/kubelet/pki/kubelet-client-current.pem")
 	if err != nil {
+		if client.StatusCode(err) == codes.NotFound {
+			return "", nil
+		}
+
 		return "", err
 	}
 
@@ -443,11 +415,12 @@ func (apiSuite *APISuite) HashKubeletCert(ctx context.Context, node string) (str
 
 	hash := sha256.New()
 
-	_, err = io.Copy(hash, reader)
-	if err != nil {
-		if client.StatusCode(err) != codes.NotFound { // not found, swallow it
+	if _, err = io.Copy(hash, reader); err != nil {
+		if client.StatusCode(err) != codes.NotFound {
 			return "", err
 		}
+
+		return "", reader.Close()
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), reader.Close()
@@ -511,47 +484,90 @@ func (apiSuite *APISuite) AssertServicesRunning(ctx context.Context, node string
 	}
 }
 
-// AssertExpectedModules verifies that expected kernel modules are loaded on the node.
-func (apiSuite *APISuite) AssertExpectedModules(ctx context.Context, node string, expectedModules map[string]string) {
+// LatestServiceEventTimestamp returns the timestamp of the latest recorded event for a service.
+func (apiSuite *APISuite) LatestServiceEventTimestamp(ctx context.Context, node string, serviceName string) time.Time {
 	nodeCtx := client.WithNode(ctx, node)
 
-	fileReader, err := apiSuite.Client.Read(nodeCtx, "/proc/modules")
+	resp, err := apiSuite.Client.ServiceInfo(nodeCtx, serviceName)
 	apiSuite.Require().NoError(err)
+	apiSuite.Require().NotEmpty(resp, "expected service %s to be registered", serviceName)
 
-	defer func() {
-		apiSuite.Require().NoError(fileReader.Close())
-	}()
+	var latest time.Time
 
-	scanner := bufio.NewScanner(fileReader)
+	for _, serviceInfo := range resp {
+		for _, event := range serviceInfo.Service.GetEvents().GetEvents() {
+			if event.GetTs() == nil {
+				continue
+			}
 
-	var loadedModules []string
-
-	for scanner.Scan() {
-		loadedModules = append(loadedModules, strings.Split(scanner.Text(), " ")[0])
+			eventTime := event.GetTs().AsTime()
+			if eventTime.After(latest) {
+				latest = eventTime
+			}
+		}
 	}
 
-	apiSuite.Require().NoError(scanner.Err())
+	apiSuite.Require().False(latest.IsZero(), "expected service %s to have timestamped events", serviceName)
 
-	fileReader, err = apiSuite.Client.Read(nodeCtx, fmt.Sprintf("/usr/lib/modules/%s/modules.dep", constants.DefaultKernelVersion))
-	apiSuite.Require().NoError(err)
+	return latest
+}
 
-	defer func() {
-		apiSuite.Require().NoError(fileReader.Close())
-	}()
+// AssertServiceEventsInOrder waits for a healthy service to emit the expected states after the given timestamp.
+func (apiSuite *APISuite) AssertServiceEventsInOrder(ctx context.Context, node string, serviceName string, since time.Time, expectedEvents []string) {
+	nodeCtx := client.WithNode(ctx, node)
 
-	scanner = bufio.NewScanner(fileReader)
+	apiSuite.Require().EventuallyWithT(func(collect *assert.CollectT) {
+		resp, err := apiSuite.Client.ServiceInfo(nodeCtx, serviceName)
+		if !assert.NoError(collect, err) || !assert.NotEmpty(collect, resp, "expected service %s to be registered", serviceName) {
+			return
+		}
 
-	var modulesDep []string
+		actualEvents := make([]string, 0)
+		healthy := false
 
-	for scanner.Scan() {
-		modulesDep = append(modulesDep, filepath.Base(strings.Split(scanner.Text(), ":")[0]))
-	}
+		for _, serviceInfo := range resp {
+			healthy = healthy || serviceInfo.Service.GetHealth().GetHealthy()
 
-	apiSuite.Require().NoError(scanner.Err())
+			for _, event := range serviceInfo.Service.GetEvents().GetEvents() {
+				if event.GetTs() != nil && event.GetTs().AsTime().After(since) {
+					actualEvents = append(actualEvents, event.GetState())
+				}
+			}
+		}
 
-	for module, moduleDep := range expectedModules {
-		apiSuite.Require().Contains(loadedModules, module, "expected %s to be loaded", module)
-		apiSuite.Require().Contains(modulesDep, moduleDep, "expected %s to be in modules.dep", moduleDep)
+		actualEvents = slices.Compact(actualEvents)
+
+		assert.True(collect, healthy, "expected service %s to be healthy", serviceName)
+
+		if !assert.GreaterOrEqual(
+			collect,
+			len(actualEvents),
+			len(expectedEvents),
+			"expected service %s to emit at least %d states after %s, but got %v",
+			serviceName,
+			len(expectedEvents),
+			since,
+			actualEvents,
+		) {
+			return
+		}
+
+		assert.Equal(collect, expectedEvents, actualEvents[len(actualEvents)-len(expectedEvents):], "unexpected service %s event sequence after %s", serviceName, since)
+	}, time.Minute, time.Second, "expected service %s to become healthy with events %v after %s", serviceName, expectedEvents, since)
+}
+
+// AssertExpectedModules verifies that expected kernel modules are loaded on the node as dynamic type and live state.
+func (apiSuite *APISuite) AssertExpectedModules(ctx context.Context, node string, expectedModules []string) {
+	nodeCtx := client.WithNode(ctx, node)
+
+	for _, moduleName := range expectedModules {
+		status, getErr := safe.StateGetByID[*runtimeres.KernelModuleStatus](nodeCtx, apiSuite.Client.COSI, moduleName)
+		apiSuite.Require().NoError(getErr, "expected kernel module %q to be present", moduleName)
+
+		apiSuite.Assert().Equal(runtimeres.KernelModuleTypeDynamic, status.TypedSpec().Type,
+			"expected kernel module %q to be of dynamic type", moduleName)
+		apiSuite.Assert().Equal(runtimeres.KernelModuleStateLive, status.TypedSpec().State,
+			"expected kernel module %q to be in live state", moduleName)
 	}
 }
 
@@ -662,7 +678,7 @@ func (apiSuite *APISuite) PatchV1Alpha1Config(provider config.Provider, patch fu
 
 // ResetNode wraps the reset node sequence with checks, waiting for the reset to finish and verifying the result.
 //
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (apiSuite *APISuite) ResetNode(ctx context.Context, node string, resetSpec *machineapi.ResetRequest, runHealthChecks bool) {
 	apiSuite.T().Logf("resetting node %q with graceful %v mode %s, system %v, user %v", node, resetSpec.Graceful, resetSpec.Mode, resetSpec.SystemPartitionsToWipe, resetSpec.UserDisksToWipe)
 
@@ -675,15 +691,26 @@ func (apiSuite *APISuite) ResetNode(ctx context.Context, node string, resetSpec 
 	bootIDBefore, err := apiSuite.ReadBootID(nodeCtx)
 	apiSuite.Require().NoError(err)
 
-	// figure out if EPHEMERAL is going to be reset
-	ephemeralIsGoingToBeReset := false
+	// Figure out whether the KUBELET volume's backing storage is going to be wiped, which
+	// regenerates the kubelet PKI (and thus its serving cert). This happens on a full reset (the
+	// whole system disk is wiped), when the KUBELET partition is wiped directly, or when KUBELET is
+	// directory-backed (under EPHEMERAL) and EPHEMERAL is wiped. A dedicated KUBELET partition is
+	// independent of EPHEMERAL and survives an EPHEMERAL-only wipe, preserving the cert.
+	kubeletIsGoingToBeReset := false
 
 	if len(resetSpec.SystemPartitionsToWipe) == 0 && len(resetSpec.UserDisksToWipe) == 0 {
-		ephemeralIsGoingToBeReset = true
+		// full reset wipes the entire system disk, including the KUBELET volume
+		kubeletIsGoingToBeReset = true
 	} else {
 		for _, part := range resetSpec.SystemPartitionsToWipe {
-			if part.Label == constants.EphemeralPartitionLabel {
-				ephemeralIsGoingToBeReset = true
+			if part.Label == constants.KubeletDataVolumeID {
+				kubeletIsGoingToBeReset = true
+
+				break
+			}
+
+			if part.Label == constants.EphemeralPartitionLabel && apiSuite.KubeletVolumeIsDirectory(ctx, node) {
+				kubeletIsGoingToBeReset = true
 
 				break
 			}
@@ -751,12 +778,28 @@ waitLoop:
 		postReset, err := apiSuite.HashKubeletCert(ctx, node)
 		apiSuite.Require().NoError(err)
 
-		if ephemeralIsGoingToBeReset {
+		switch {
+		case preReset == "":
+			// the KUBELET volume was not mounted when the reset was requested (e.g. the node was still
+			// booting), so there is nothing to compare the cert against
+			apiSuite.T().Log("skipping the kubelet cert check: the cert was not readable before the reset")
+		case kubeletIsGoingToBeReset:
 			apiSuite.Assert().NotEqual(preReset, postReset, "reset should lead to new kubelet cert being generated")
-		} else {
-			apiSuite.Assert().Equal(preReset, postReset, "ephemeral partition was not reset")
+		default:
+			apiSuite.Assert().Equal(preReset, postReset, "kubelet cert should be unchanged (KUBELET volume was not wiped)")
 		}
 	}
+}
+
+// KubeletVolumeIsDirectory reports whether the KUBELET system volume is backed by a directory under
+// EPHEMERAL (vs. a dedicated partition) on the node.
+func (apiSuite *APISuite) KubeletVolumeIsDirectory(ctx context.Context, node string) bool {
+	nodeCtx := client.WithNode(ctx, node)
+
+	volumeStatus, err := safe.StateGetByID[*block.VolumeStatus](nodeCtx, apiSuite.Client.COSI, constants.KubeletDataVolumeID)
+	apiSuite.Require().NoError(err)
+
+	return volumeStatus.TypedSpec().Type == block.VolumeTypeDirectory
 }
 
 // DumpLogs dumps a set of logs from the node.
@@ -785,6 +828,10 @@ func (apiSuite *APISuite) DumpLogs(ctx context.Context, node string, service, pa
 			apiSuite.T().Logf("%s (%s): %s", node, service, scanner.Text())
 		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		apiSuite.T().Logf("error reading logs from %s (%s): %v", node, service, err)
+	}
 }
 
 // ReadFile reads file from the node.
@@ -810,6 +857,15 @@ func (apiSuite *APISuite) ReadFile(nodeCtx context.Context, path string) string 
 // ReadCmdline reads cmdline from the node.
 func (apiSuite *APISuite) ReadCmdline(nodeCtx context.Context) string {
 	return apiSuite.ReadFile(nodeCtx, "/proc/cmdline")
+}
+
+// ReadMachineArch reads machine architecture from the node.
+func (apiSuite *APISuite) ReadMachineArch(nodeCtx context.Context) string {
+	versionResp, err := apiSuite.Client.Version(nodeCtx)
+	apiSuite.Require().NoError(err)
+	apiSuite.Require().Len(versionResp.GetMessages(), 1)
+
+	return versionResp.GetMessages()[0].GetVersion().GetArch()
 }
 
 // TearDownSuite closes Talos API client.

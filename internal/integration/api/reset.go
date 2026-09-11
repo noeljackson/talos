@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource/rtestutils"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/stretchr/testify/assert"
 
@@ -20,6 +21,7 @@ import (
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/api/storage"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
@@ -109,20 +111,122 @@ func (suite *ResetSuite) TestResetNoGracefulControlplane() {
 	suite.testResetNoGraceful(machine.TypeControlPlane)
 }
 
-// TestResetWithSpecEphemeral resets only ephemeral partition on the node.
-func (suite *ResetSuite) TestResetWithSpecEphemeral() {
+// ephemeralWithSystemVolumesToWipe is the wipe spec resetting EPHEMERAL together with every
+// promotable system volume, whatever the backing of each of them happens to be.
+func ephemeralWithSystemVolumesToWipe() []*machineapi.ResetPartitionSpec {
+	resetPartitionSpecs := make([]*machineapi.ResetPartitionSpec, 0, 1+len(config.PromotableSystemVolumeNames))
+	resetPartitionSpecs = append(resetPartitionSpecs, &machineapi.ResetPartitionSpec{
+		Label: constants.EphemeralPartitionLabel,
+		Wipe:  true,
+	})
+
+	for _, volumeID := range config.PromotableSystemVolumeNames {
+		resetPartitionSpecs = append(resetPartitionSpecs, &machineapi.ResetPartitionSpec{
+			Label: volumeID,
+			Wipe:  true,
+		})
+	}
+
+	return resetPartitionSpecs
+}
+
+// assertSystemVolumeTypes asserts the backing of each promotable system volume on the node.
+func (suite *ResetSuite) assertSystemVolumeTypes(node string, expected map[string]block.VolumeType) {
+	nodeCtx := client.WithNode(suite.ctx, node)
+
+	for _, volumeID := range config.PromotableSystemVolumeNames {
+		volumeStatus, err := safe.StateGetByID[*block.VolumeStatus](nodeCtx, suite.Client.COSI, volumeID)
+		suite.Require().NoError(err)
+
+		suite.Require().Equalf(
+			expected[volumeID],
+			volumeStatus.TypedSpec().Type,
+			"unexpected backing of volume %q on node %s. Expected %q, got %q",
+			volumeID,
+			node,
+			expected[volumeID],
+			volumeStatus.TypedSpec().Type,
+		)
+	}
+}
+
+// TestResetEphemeralWithSystemVolumes resets the ephemeral partition together with the system
+// volumes nested under it.
+//
+// This covers the default layout where every promotable system volume is a directory under
+// EPHEMERAL: none of them has a wipe target of its own, and they are only wiped as a side effect of
+// wiping EPHEMERAL.
+func (suite *ResetSuite) TestResetEphemeralWithSystemVolumes() {
+	if suite.DedicatedSystemVolumes {
+		suite.T().Skip("cluster is running with dedicated system volumes")
+	}
+
 	node := suite.RandomDiscoveredNodeInternalIP()
 
+	suite.assertSystemVolumeTypes(node, map[string]block.VolumeType{
+		constants.EtcdDataVolumeID:      block.VolumeTypeDirectory,
+		constants.CRIContainerdVolumeID: block.VolumeTypeDirectory,
+		constants.KubeletDataVolumeID:   block.VolumeTypeDirectory,
+		constants.LogVolumeID:           block.VolumeTypeDirectory,
+	})
+
 	suite.ResetNode(suite.ctx, node, &machineapi.ResetRequest{
-		Reboot:   true,
-		Graceful: true,
-		SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
-			{
-				Label: constants.EphemeralPartitionLabel,
-				Wipe:  true,
+		Reboot:                 true,
+		Graceful:               true,
+		SystemPartitionsToWipe: ephemeralWithSystemVolumesToWipe(),
+	}, true)
+}
+
+// TestResetDedicatedSystemVolumes resets the ephemeral partition together with the system volumes
+// promoted onto dedicated partitions.
+//
+// The worker subtest also covers the mixed case: ETCD and CRI stay directories there, so they are
+// only accepted in the request because EPHEMERAL, the volume they reside on, is wiped as well.
+func (suite *ResetSuite) TestResetDedicatedSystemVolumes() {
+	if !suite.DedicatedSystemVolumes {
+		suite.T().Skip("cluster is not running with dedicated system volumes")
+	}
+
+	// these mirror hack/test/patches/dedicated-system-volumes-controlplane.yaml and
+	// hack/test/patches/dedicated-system-volumes-worker.yaml, and must be kept in sync with them
+	for _, test := range []struct {
+		name     string
+		nodeType machine.Type
+		expected map[string]block.VolumeType
+	}{
+		{
+			name:     "controlplane",
+			nodeType: machine.TypeControlPlane,
+			expected: map[string]block.VolumeType{
+				constants.EtcdDataVolumeID:      block.VolumeTypePartition,
+				constants.CRIContainerdVolumeID: block.VolumeTypePartition,
+				constants.KubeletDataVolumeID:   block.VolumeTypePartition,
+				constants.LogVolumeID:           block.VolumeTypePartition,
 			},
 		},
-	}, true)
+		{
+			name:     "worker",
+			nodeType: machine.TypeWorker,
+			expected: map[string]block.VolumeType{
+				constants.EtcdDataVolumeID:      block.VolumeTypeDirectory,
+				constants.CRIContainerdVolumeID: block.VolumeTypeDirectory,
+				constants.KubeletDataVolumeID:   block.VolumeTypePartition,
+				constants.LogVolumeID:           block.VolumeTypePartition,
+			},
+		},
+	} {
+		suite.Run(test.name, func() {
+			node := suite.RandomDiscoveredNodeInternalIP(test.nodeType)
+
+			suite.assertSystemVolumeTypes(node, test.expected)
+
+			suite.ResetNode(suite.ctx, node, &machineapi.ResetRequest{
+				Reboot:                 true,
+				Graceful:               true,
+				SystemPartitionsToWipe: ephemeralWithSystemVolumesToWipe(),
+			}, true)
+		})
+	}
 }
 
 // TestResetWithSpecStateAndUserDisks resets state partition and user disks on the node.
@@ -212,7 +316,8 @@ func (suite *ResetSuite) TestResetWithSpecStateAndUserDisks() {
 	}, false)
 
 	// wait for EPHEMERAL failure
-	rtestutils.AssertResources(nodeCtx, suite.T(), suite.Client.COSI,
+	rtestutils.AssertResources(
+		nodeCtx, suite.T(), suite.Client.COSI,
 		[]string{constants.EphemeralPartitionLabel},
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equal(block.VolumePhaseFailed, vs.TypedSpec().Phase)
@@ -236,7 +341,18 @@ func (suite *ResetSuite) TestResetWithSpecStateAndUserDisks() {
 // TestResetDuringBoot resets the node while it is in boot sequence.
 func (suite *ResetSuite) TestResetDuringBoot() {
 	node := suite.RandomDiscoveredNodeInternalIP()
-	nodeCtx := client.WithNodes(suite.ctx, node)
+	nodeCtx := client.WithNode(suite.ctx, node)
+
+	// The reset below is requested while the node is still booting, and the KUBELET volume is only
+	// mounted once the kubelet service starts, so ResetNode can't read the cert at that point.
+	// Capture it here instead, while the node is fully booted: the reboot doesn't touch the volume.
+	kubeletCertBefore, err := suite.HashKubeletCert(suite.ctx, node)
+	suite.Require().NoError(err)
+	suite.Require().NotEmpty(kubeletCertBefore, "kubelet cert should be readable on a booted node")
+
+	// EPHEMERAL is the only volume wiped below, so the kubelet PKI only survives the reset if
+	// KUBELET has a partition of its own.
+	kubeletSurvivesReset := !suite.KubeletVolumeIsDirectory(suite.ctx, node)
 
 	suite.T().Log("rebooting node", node)
 
@@ -250,7 +366,8 @@ func (suite *ResetSuite) TestResetDuringBoot() {
 	suite.ClearConnectionRefused(suite.ctx, node)
 
 	// make sure EPHEMERAL is ready
-	rtestutils.AssertResources(client.WithNode(suite.ctx, node), suite.T(), suite.Client.COSI,
+	rtestutils.AssertResources(
+		client.WithNode(suite.ctx, node), suite.T(), suite.Client.COSI,
 		[]string{constants.EphemeralPartitionLabel},
 		func(vs *block.VolumeStatus, asrt *assert.Assertions) {
 			asrt.Equal(block.VolumePhaseReady, vs.TypedSpec().Phase)
@@ -267,6 +384,15 @@ func (suite *ResetSuite) TestResetDuringBoot() {
 			},
 		},
 	}, true)
+
+	kubeletCertAfter, err := suite.HashKubeletCert(suite.ctx, node)
+	suite.Require().NoError(err)
+
+	if kubeletSurvivesReset {
+		suite.Assert().Equal(kubeletCertBefore, kubeletCertAfter, "kubelet cert should be unchanged (KUBELET volume was not wiped)")
+	} else {
+		suite.Assert().NotEqual(kubeletCertBefore, kubeletCertAfter, "reset should lead to new kubelet cert being generated")
+	}
 }
 
 func init() {

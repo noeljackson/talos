@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/siderolabs/go-retry/retry"
@@ -21,6 +22,21 @@ import (
 // ApplyConfigSuite verifies dmesg command.
 type ApplyConfigSuite struct {
 	base.CLISuite
+}
+
+func (suite *ApplyConfigSuite) waitForLink(node, linkName string, present bool) {
+	suite.Require().NoError(
+		retry.Constant(15*time.Second, retry.WithUnits(time.Second)).Retry(
+			func() error {
+				stdout, _ := suite.RunCLI([]string{"get", "--nodes", node, "links"})
+				if strings.Contains(stdout, linkName) == present {
+					return nil
+				}
+
+				return retry.ExpectedErrorf("link %q present=%t", linkName, present)
+			},
+		),
+	)
 }
 
 // SuiteName ...
@@ -52,18 +68,14 @@ func (suite *ApplyConfigSuite) TestApplyWithPatch() {
 	patchPath := filepath.Join(tmpDir, "patch.yaml")
 	suite.Require().NoError(os.WriteFile(patchPath, dummyAPPatch, 0o777))
 
-	suite.RunCLI([]string{"apply-config", "--nodes", node, "--config-patch", patchPath, "-f", configPath},
+	suite.RunCLI(
+		[]string{"apply-config", "--nodes", node, "--config-patch", patchPath, "-f", configPath},
 		base.StdoutEmpty(),
 		base.StderrNotEmpty(),
 		base.StderrShouldMatch(regexp.MustCompile("Applied configuration without a reboot")),
 	)
 
-	// sleep a bit to let the config propagate
-	time.Sleep(1 * time.Second)
-
-	suite.RunCLI([]string{"get", "--nodes", node, "links"},
-		base.StdoutShouldMatch(regexp.MustCompile("dummy-ap-patch")),
-	)
+	suite.waitForLink(node, "dummy-ap-patch", true)
 
 	// now delete the dummy-ap-patch
 	data, _ = suite.RunCLI([]string{"get", "--nodes", node, "mc", "v1alpha1", "-o", "jsonpath={.spec}"})
@@ -71,19 +83,14 @@ func (suite *ApplyConfigSuite) TestApplyWithPatch() {
 
 	suite.Require().NoError(os.WriteFile(patchPath, deleteDummyAPPatch, 0o777))
 
-	suite.RunCLI([]string{"apply-config", "--nodes", node, "--config-patch", patchPath, "-f", configPath},
+	suite.RunCLI(
+		[]string{"apply-config", "--nodes", node, "--config-patch", patchPath, "-f", configPath},
 		base.StdoutEmpty(),
 		base.StderrNotEmpty(),
 		base.StderrShouldMatch(regexp.MustCompile("Applied configuration without a reboot")),
 	)
 
-	// sleep a bit to let the config propagate
-	time.Sleep(1 * time.Second)
-
-	suite.RunCLI([]string{"get", "--nodes", node, "links"},
-		base.StdoutShouldNotMatch(regexp.MustCompile("dummy-ap-patch")),
-		base.WithRetry(retry.Constant(15*time.Second, retry.WithUnits(time.Second))),
-	)
+	suite.waitForLink(node, "dummy-ap-patch", false)
 }
 
 func init() {

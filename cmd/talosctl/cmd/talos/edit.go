@@ -23,11 +23,11 @@ import (
 	"k8s.io/kubectl/pkg/cmd/util/editor/crlf"
 
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/yamlstrip"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
-	"github.com/siderolabs/talos/pkg/machinery/resources/config"
 )
 
 var editCmdFlags struct {
@@ -39,7 +39,7 @@ var editCmdFlags struct {
 }
 
 //nolint:gocyclo
-func editFn(c *client.Client) func(context.Context, string, resource.Resource, error) error {
+func editFn() func(ctx context.Context, c *client.Client, node string, mc resource.Resource) error {
 	var (
 		path      string
 		lastError string
@@ -50,21 +50,7 @@ func editFn(c *client.Client) func(context.Context, string, resource.Resource, e
 		"EDITOR",
 	})
 
-	return func(ctx context.Context, node string, mc resource.Resource, callError error) error {
-		if callError != nil {
-			return fmt.Errorf("%s: %w", node, callError)
-		}
-
-		if mc.Metadata().Type() != config.MachineConfigType {
-			return errors.New("only the machineconfig resource can be edited")
-		}
-
-		id := mc.Metadata().ID()
-
-		if id != config.ActiveID {
-			return nil
-		}
-
+	return func(ctx context.Context, c *client.Client, node string, mc resource.Resource) error {
 		body, err := extractMachineConfigBody(mc)
 		if err != nil {
 			return err
@@ -82,8 +68,9 @@ func editFn(c *client.Client) func(context.Context, string, resource.Resource, e
 				w = crlf.NewCRLFWriter(w)
 			}
 
-			_, err := fmt.Fprintf(w,
-				"# Editing %s/%s at node %s\n", mc.Metadata().Type(), id, node,
+			_, err := fmt.Fprintf(
+				w,
+				"# Editing %s/%s at node %s\n", mc.Metadata().Type(), mc.Metadata().ID(), node,
 			)
 			if err != nil {
 				return err
@@ -103,7 +90,7 @@ func editFn(c *client.Client) func(context.Context, string, resource.Resource, e
 
 			editedDiff := edited
 
-			edited, path, err = edit.LaunchTempFile(fmt.Sprintf("%s-%s-edit-", mc.Metadata().Type(), id), ".yaml", &buf)
+			edited, path, err = edit.LaunchTempFile(fmt.Sprintf("%s-%s-edit-", mc.Metadata().Type(), mc.Metadata().ID()), ".yaml", &buf)
 			if err != nil {
 				return err
 			}
@@ -123,13 +110,13 @@ func editFn(c *client.Client) func(context.Context, string, resource.Resource, e
 			}
 
 			if len(bytes.TrimSpace(bytes.TrimSpace(yamlstrip.Comments(edited)))) == 0 {
-				fmt.Fprintln(os.Stderr, "Apply was skipped: empty file.")
+				fmt.Fprintln(safeout.Stderr(), "Apply was skipped: empty file.")
 
 				break
 			}
 
 			if bytes.Equal(edited, body) {
-				fmt.Fprintln(os.Stderr, "Apply was skipped: no changes detected.")
+				fmt.Fprintln(safeout.Stderr(), "Apply was skipped: no changes detected.")
 
 				break
 			}
@@ -195,20 +182,20 @@ It will open the editor defined by your TALOS_EDITOR,
 or EDITOR environment variables, or fall back to 'vi' for Linux
 or 'notepad' for Windows.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			if err := helpers.ClientVersionCheck(ctx, c); err != nil {
-				return err
-			}
+		ctx := cmd.Context()
 
-			for _, node := range GlobalArgs.Nodes {
-				nodeCtx := client.WithNodes(ctx, node)
-				if err := helpers.ForEachResource(nodeCtx, c, nil, editFn(c), editCmdFlags.namespace, args...); err != nil {
-					return err
-				}
-			}
+		clientFactory, err := NewClientFactory(ctx, &editCmdFlags)
+		if err != nil {
+			return err
+		}
 
-			return nil
-		})
+		defer clientFactory.Close() //nolint:errcheck
+
+		if err := helpers.ClientVersionCheck(ctx, clientFactory); err != nil {
+			return err
+		}
+
+		return helpers.MachineConfigUpdater(ctx, clientFactory, editFn(), args)
 	},
 }
 

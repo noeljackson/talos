@@ -2,20 +2,12 @@
 
 set -eou pipefail
 
-# Support archives can contain machine configuration and other sensitive
-# diagnostics. Keep every artifact private from the moment it is created.
-umask 077
-
 # shellcheck source=/dev/null
 source ./hack/test/e2e.sh
-# shellcheck source=/dev/null
-source ./hack/test/qemu-network-preflight.sh
 
 PROVISIONER=qemu
 CLUSTER_NAME="e2e-${PROVISIONER}"
 LOG_ARCHIVE_SUFFIX="${GITHUB_STEP_NAME:-e2e-${PROVISIONER}}"
-E2E_ARTIFACT_DIR="${E2E_ARTIFACT_DIR:-/tmp}"
-mkdir -p "${E2E_ARTIFACT_DIR}"
 
 QEMU_FLAGS=()
 
@@ -24,16 +16,6 @@ case "${CI:-false}" in
     QEMU_FLAGS+=("--with-bootloader=false")
     ;;
   *)
-    ;;
-esac
-
-case "${KATA_RUNTIME_TEST:-false}" in
-  true)
-    # The composed production image intentionally includes Tailscale, whose
-    # service waits for node-specific credentials in this credential-free
-    # test cluster. Do not let that unrelated service decide the Kata claim;
-    # the Kata gate below waits for and verifies its own exact prerequisites.
-    QEMU_FLAGS+=("--wait=false")
     ;;
 esac
 
@@ -50,6 +32,12 @@ case "${WITH_UEFI:-none}" in
     ;;
   *)
     QEMU_FLAGS+=("--with-uefi=${WITH_UEFI}")
+    ;;
+esac
+
+case "${WITH_BAD_RTC:-none}" in
+  true)
+    QEMU_FLAGS+=("--bad-rtc")
     ;;
 esac
 
@@ -76,6 +64,18 @@ esac
 case "${WITH_KUBESPAN:-false}" in
   true)
     QEMU_FLAGS+=("--with-kubespan")
+    ;;
+esac
+
+case "${WITH_BGP:-false}" in
+  true)
+    QEMU_FLAGS+=("--with-bgp")
+    ;;
+esac
+
+case "${WITH_BGP_CLOS:-false}" in
+  true)
+    QEMU_FLAGS+=("--with-bgp-clos")
     ;;
 esac
 
@@ -124,7 +124,7 @@ case "${USE_DISK_IMAGE:-false}" in
   false)
     ;;
   *)
-    QEMU_FLAGS+=("--disk-image-path=_out/metal-amd64.raw.zst")
+    QEMU_FLAGS+=("--disk-image-path=_out/metal-amd64.raw.zst" "--skip-unattended-install-config")
     ;;
 esac
 
@@ -197,6 +197,15 @@ case "${WITH_TRUSTED_BOOT_ISO:-false}" in
     ;;
 esac
 
+case "${WITH_TRUSTED_BOOT_DISK_IMAGE:-false}" in
+  false)
+    ;;
+  *)
+    INSTALLER_IMAGE=${INSTALLER_IMAGE}-amd64-secureboot
+    QEMU_FLAGS+=("--disk-image-path=_out/metal-amd64-secureboot.raw.zst" "--with-tpm2" "--encrypt-ephemeral" "--encrypt-state" "--encrypt-user-volumes" "--disk-encryption-key-types=tpm")
+    ;;
+esac
+
 case "${WITH_TPM1_2:-false}" in
   false)
     ;;
@@ -248,17 +257,22 @@ case "${WITH_4K_DISK:-false}" in
     ;;
 esac
 
+case "${WITH_4K_DISK_IMAGE:-false}" in
+  false)
+    ;;
+  *)
+    # build a disk image with 4K sector size
+    make image-metal-4k PLATFORM=linux/amd64
+
+    QEMU_FLAGS+=("--disk-image-path=_out/metal-amd64.raw.zst" "--skip-injecting-config" "--with-apply-config")
+    ;;
+esac
+
 case "${WITH_UKI_BOOT:-false}" in
   false)
     ;;
   *)
-    if [[ -z "${E2E_UKI_PATH:-}" || ! -r "${E2E_UKI_PATH}" ]]; then
-      echo "WITH_UKI_BOOT requires a readable E2E_UKI_PATH" >&2
-
-      exit 1
-    fi
-
-    QEMU_FLAGS+=("--uki-path=${E2E_UKI_PATH}")
+    QEMU_FLAGS+=("--uki-path=_out/metal-amd64-uki.efi")
     ;;
 esac
 
@@ -268,6 +282,14 @@ case "${WITH_USER_DISK:-false}" in
   *)
     QEMU_FLAGS+=("--user-volumes=extra:350MB")
     QEMU_FLAGS+=("--user-volumes=p1:350MB:p2:350MB")
+    ;;
+esac
+
+case "${WITH_TALOS_VERSION:-none}" in
+  none)
+    ;;
+  *)
+    QEMU_FLAGS+=("--talos-version=${WITH_TALOS_VERSION}")
     ;;
 esac
 
@@ -281,7 +303,7 @@ esac
 
 case "${WITH_AIRGAPPED:-false}" in
   no-proxy)
-    INSTALLER_IMAGE="${INSTALLER_IMAGE/registry.dev.siderolabs.io/${QEMU_GATEWAY}:5000}"
+    INSTALLER_IMAGE="${INSTALLER_IMAGE/registry.dev.siderolabs.io/172.20.1.1:5000}"
 
     QEMU_FLAGS+=("--config-patch=@hack/test/patches/airgapped-timesync.yaml")
     QEMU_FLAGS+=("--config-patch=@${TMP}/image-cache-patch.yaml")
@@ -291,7 +313,7 @@ case "${WITH_AIRGAPPED:-false}" in
     QEMU_FLAGS+=("--image-cache-tls-key-file=${TMP}/image-cache-tls.key")
     ;;
   http-proxy)
-    "${TALOSCTL}" debug-tool air-gapped --advertised-address "${QEMU_GATEWAY}" > /tmp/airgapped.log 2>&1 &
+    "${TALOSCTL}" debug-tool air-gapped --advertised-address 172.20.1.1 > /tmp/airgapped.log 2>&1 &
     sleep 5 # wait for the air-gapped server to start
     cat air-gapped-patch.yaml
     mv air-gapped-patch.yaml "${TMP}/air-gapped-patch.yaml"
@@ -299,7 +321,7 @@ case "${WITH_AIRGAPPED:-false}" in
     QEMU_FLAGS+=("--config-patch=@${TMP}/air-gapped-patch.yaml")
     ;;
   secure-http-proxy)
-    "${TALOSCTL}" debug-tool air-gapped --advertised-address "${QEMU_GATEWAY}" --use-secure-proxy > /tmp/airgapped-secure.log 2>&1 &
+    "${TALOSCTL}" debug-tool air-gapped --advertised-address 172.20.1.1 --use-secure-proxy > /tmp/airgapped-secure.log 2>&1 &
     sleep 5 # wait for the air-gapped server to start
     cat air-gapped-patch.yaml
     mv air-gapped-patch.yaml "${TMP}/air-gapped-patch.yaml"
@@ -307,7 +329,7 @@ case "${WITH_AIRGAPPED:-false}" in
     QEMU_FLAGS+=("--config-patch=@${TMP}/air-gapped-patch.yaml")
     ;;
   https-reverse-proxy)
-    "${TALOSCTL}" debug-tool air-gapped --advertised-address "${QEMU_GATEWAY}" --inject-http-proxy=false --https-reverse-proxy-target=https://registry.dev.siderolabs.io > /tmp/airgapped-reverse-proxy.log 2>&1 &
+    "${TALOSCTL}" debug-tool air-gapped --advertised-address 172.20.1.1 --inject-http-proxy=false --https-reverse-proxy-target=https://registry.dev.siderolabs.io > /tmp/airgapped-reverse-proxy.log 2>&1 &
     sleep 5 # wait for the air-gapped server to start
     cat air-gapped-patch.yaml
     mv air-gapped-patch.yaml "${TMP}/air-gapped-patch.yaml"
@@ -321,102 +343,32 @@ esac
 function create_cluster {
   build_registry_mirrors
 
-  local cluster_create=(
-    "${TALOSCTL}" cluster create
+  "${TALOSCTL}" cluster create \
     --provisioner="${PROVISIONER}" \
     --name="${CLUSTER_NAME}" \
     --kubernetes-version="${KUBERNETES_VERSION}" \
     --controlplanes="${QEMU_CONTROLPLANES:-3}" \
     --workers="${QEMU_WORKERS:-2}" \
     --disk="${QEMU_SYSTEM_DISK_SIZE:-15360}" \
+    --primary-disks="${QEMU_SYSTEM_DISKS:-1}" \
     --extra-disks="${QEMU_EXTRA_DISKS:-0}" \
     --extra-disks-size="${QEMU_EXTRA_DISKS_SIZE:-6144}" \
     --extra-disks-drivers="${QEMU_EXTRA_DISKS_DRIVERS:-}" \
     --extra-disks-serials="${QEMU_EXTRA_DISKS_SERIALS:-}" \
     --extra-disks-tags="${QEMU_EXTRA_DISKS_TAGS:-}" \
     --mtu=1430 \
-    --memory="${QEMU_MEMORY_CONTROLPLANES:-2048}" \
+    --memory="${QEMU_MEMORY_CONTROLPLANES:-4096}" \
     --memory-workers="${QEMU_MEMORY_WORKERS:-2048}" \
-    --cpus="${QEMU_CPUS:-2}" \
+    --cpus="${QEMU_CPUS:-4}" \
     --cpus-workers="${QEMU_CPUS_WORKERS:-2}" \
-    --cidr="${QEMU_CIDR}" \
+    --cidr=172.20.1.0/24 \
     --install-image="${INSTALLER_IMAGE}" \
     --with-init-node=false \
     --cni-bundle-url="${ARTIFACTS}/talosctl-cni-bundle-\${ARCH}.tar.gz" \
     "${REGISTRY_MIRROR_FLAGS[@]}" \
     "${QEMU_FLAGS[@]}"
-  )
 
-  if [[ "${KATA_RUNTIME_TEST:-false}" != "true" ]]; then
-    "${cluster_create[@]}"
-
-    "${TALOSCTL}" config node "${QEMU_CONTROLPLANE_IP}"
-
-    return
-  fi
-
-  local bootstrap_timeout_seconds="${QEMU_BOOTSTRAP_TIMEOUT_SECONDS:-90}"
-
-  if [[ ! ${bootstrap_timeout_seconds} =~ ^[1-9][0-9]*$ ]]; then
-    echo "QEMU_BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer" >&2
-
-    return 1
-  fi
-
-  "${cluster_create[@]}" &
-
-  local cluster_create_pid=$!
-  local deadline=$((SECONDS + bootstrap_timeout_seconds))
-
-  while kill -0 "${cluster_create_pid}" 2>/dev/null; do
-    if (( SECONDS >= deadline )); then
-      echo "QEMU bootstrap did not complete within ${bootstrap_timeout_seconds}s" >&2
-      kill -TERM "${cluster_create_pid}" 2>/dev/null || true
-      wait "${cluster_create_pid}" || true
-      dump_qemu_dhcp_progress
-
-      return 1
-    fi
-
-    sleep 1
-  done
-
-  if ! wait "${cluster_create_pid}"; then
-    dump_qemu_dhcp_progress
-
-    return 1
-  fi
-
-  if ! "${TALOSCTL}" config node "${QEMU_CONTROLPLANE_IP}"; then
-    dump_qemu_dhcp_progress
-
-    return 1
-  fi
-}
-
-function dump_qemu_dhcp_progress {
-  local state_dir="${HOME}/.talos/clusters/${CLUSTER_NAME}"
-  local dhcp_log="${state_dir}/dhcpd.log"
-  local requests=0
-  local replies=0
-  local guest_no_offer=0
-
-  if [[ -r "${dhcp_log}" ]]; then
-    requests=$(grep -c 'DHCPv4: got ' "${dhcp_log}" || true)
-    replies=$(grep -c 'DHCPv4: sent response' "${dhcp_log}" || true)
-  fi
-
-  local node_logs=("${state_dir}/${CLUSTER_NAME}"-*.log)
-
-  if [[ -e "${node_logs[0]}" ]]; then
-    guest_no_offer=$(grep -E -h -c 'unable to receive an offer|DHCP request/renew failed' "${node_logs[@]}" | awk '{ total += $1 } END { print total + 0 }')
-  fi
-
-  echo "QEMU DHCP evidence: requests_received=${requests} replies_sent=${replies} guest_no_offer=${guest_no_offer}" >&2
-
-  if (( requests > 0 && replies > 0 && guest_no_offer > 0 )); then
-    echo "QEMU DHCP replies were generated but not delivered to a guest; inspect host packet filtering before changing Talos, SELinux, or Kata." >&2
-  fi
+  "${TALOSCTL}" config node 172.20.1.2
 }
 
 function destroy_cluster() {
@@ -425,62 +377,17 @@ function destroy_cluster() {
   "${TALOSCTL}" cluster destroy \
     --name "${CLUSTER_NAME}" \
     --provisioner "${PROVISIONER}" \
-    --save-cluster-logs-archive-path="${E2E_ARTIFACT_DIR}/logs-${LOG_ARCHIVE_SUFFIX}.tar.gz" \
-    --save-support-archive-path="${E2E_ARTIFACT_DIR}/support-${LOG_ARCHIVE_SUFFIX}.zip"
+    --save-cluster-logs-archive-path="/tmp/logs-${LOG_ARCHIVE_SUFFIX}.tar.gz" \
+    --save-support-archive-path="/tmp/support-${LOG_ARCHIVE_SUFFIX}.zip"
 }
 
 trap destroy_cluster SIGINT EXIT
-
-case "${WITH_CUSTOM_CNI:-none}:${CILIUM_TEST_MODE:-integration}" in
-  cilium:readiness|cilium:full|cilium:integration)
-    if [[ -n "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
-      echo "CILIUM_CONNECTIVITY_TEST is only valid with CILIUM_TEST_MODE=focused" >&2
-
-      exit 1
-    fi
-    ;;
-  cilium:focused)
-    if [[ -z "${CILIUM_CONNECTIVITY_TEST:-}" ]]; then
-      echo "CILIUM_TEST_MODE=focused requires CILIUM_CONNECTIVITY_TEST" >&2
-
-      exit 1
-    fi
-    ;;
-  cilium:*)
-    echo "unknown CILIUM_TEST_MODE: ${CILIUM_TEST_MODE:-}" >&2
-
-    exit 1
-    ;;
-esac
-
-case "${INSTALLER_IMAGE}" in
-  127.0.0.1:*|localhost:*)
-    echo "INSTALLER_IMAGE must use a registry address reachable from the QEMU guests, not host loopback: ${INSTALLER_IMAGE}" >&2
-
-    exit 1
-    ;;
-esac
 
 create_cluster
 
 case "${WITH_CUSTOM_CNI:-none}" in
   cilium)
-    case "${CILIUM_TEST_MODE:-integration}" in
-      readiness)
-        CILIUM_SKIP_CONNECTIVITY_TEST=true
-        ;;
-      focused|full|integration) ;;
-    esac
-
     install_and_run_cilium_cni_tests
-
-    if [[ "${KATA_RUNTIME_TEST:-false}" == "true" ]]; then
-      run_kata_runtime_test
-    fi
-
-    if [[ "${CILIUM_TEST_MODE:-integration}" != "integration" ]]; then
-      exit 0
-    fi
     ;;
   *)
     ;;

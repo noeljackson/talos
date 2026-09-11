@@ -11,12 +11,13 @@ import (
 	"github.com/siderolabs/gen/xslices"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 )
 
 // APIServerDefaultAuditPolicy is the default kube-apiserver audit policy.
-var APIServerDefaultAuditPolicy = Unstructured{
+var APIServerDefaultAuditPolicy = meta.Unstructured{
 	Object: map[string]any{
 		"apiVersion": "audit.k8s.io/v1",
 		"kind":       "Policy",
@@ -66,11 +67,6 @@ func (a *APIServerConfig) Env() Env {
 	return a.EnvConfig
 }
 
-// AdmissionControl implements the config.APIServer interface.
-func (a *APIServerConfig) AdmissionControl() []config.AdmissionPlugin {
-	return xslices.Map(a.AdmissionControlConfig, func(c *AdmissionPluginConfig) config.AdmissionPlugin { return c })
-}
-
 // AuditPolicy implements the config.APIServer interface.
 func (a *APIServerConfig) AuditPolicy() map[string]any {
 	if len(a.AuditPolicyConfig.Object) == 0 {
@@ -83,11 +79,6 @@ func (a *APIServerConfig) AuditPolicy() map[string]any {
 // Resources implements the config.Resources interface.
 func (a *APIServerConfig) Resources() config.Resources {
 	return a.ResourcesConfig
-}
-
-// AuthorizationConfig implements the config.APIServer interface.
-func (a *APIServerConfig) AuthorizationConfig() []config.AuthorizationConfigAuthorizer {
-	return xslices.Map(a.AuthorizationConfigConfig, func(c *AuthorizationConfigAuthorizerConfig) config.AuthorizationConfigAuthorizer { return c })
 }
 
 // Validate performs config validation.

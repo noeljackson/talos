@@ -23,6 +23,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/fipsmode"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
+	"github.com/siderolabs/talos/pkg/machinery/resources/containers"
 )
 
 type systemDirectory struct {
@@ -38,8 +39,7 @@ var systemDirectories = []systemDirectory{
 	{constants.SystemRunPath, 0o751, "system_u:object_r:system_run_t:s0"},
 	{"/system/run/containerd", 0o711, "system_u:object_r:sys_containerd_run_t:s0"},
 	{"/run/containerd", 0o711, "system_u:object_r:pod_containerd_run_t:s0"},
-	// Cilium's hostPath must be created before CRI. Otherwise CRI assigns its
-	// pod-containerd runtime label and the Cilium pod cannot safely own state.
+	// Create this hostPath before CRI can assign a generic runtime label.
 	{constants.CiliumRuntimePath, 0o755, constants.CiliumRuntimeSelinuxLabel},
 }
 
@@ -77,6 +77,15 @@ func InitVolumeLifecycle(ctx context.Context, log *zap.Logger, rt runtime.Runtim
 	return next()(ctx, log, rt, next)
 }
 
+// InitContainerLifecycle initializes the container shutdown barrier resource.
+func InitContainerLifecycle(ctx context.Context, log *zap.Logger, rt runtime.Runtime, next NextTaskFunc) error {
+	if err := rt.State().V1Alpha2().Resources().Create(ctx, containers.NewContainerLifecycle(containers.NamespaceName, containers.ContainerLifecycleID)); err != nil {
+		return fmt.Errorf("initContainerLifecycle: %w", err)
+	}
+
+	return next()(ctx, log, rt, next)
+}
+
 // MountCgroups represents mounts the cgroupfs (only in !container).
 func MountCgroups(ctx context.Context, log *zap.Logger, rt runtime.Runtime, next NextTaskFunc) error {
 	if rt.State().Platform().Mode().InContainer() {
@@ -84,7 +93,7 @@ func MountCgroups(ctx context.Context, log *zap.Logger, rt runtime.Runtime, next
 	}
 
 	if pointer.SafeDeref(procfs.ProcCmdline().Get(constants.KernelParamCGroups).First()) == "0" {
-		log.Warn(fmt.Sprintf("kernel argument %v is no longer supported", constants.KernelParamCGroups))
+		log.Warn("kernel argument is no longer supported", zap.String("argument", constants.KernelParamCGroups))
 	}
 
 	cgroup := mount.NewCgroup2()

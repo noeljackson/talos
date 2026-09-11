@@ -8,17 +8,17 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"slices"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/optional"
+	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-procfs/procfs"
 	"go.uber.org/zap"
 
-	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
+	talosconfig "github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
@@ -105,7 +105,7 @@ func (ctrl *ResolverConfigController) Run(ctx context.Context, r controller.Runt
 
 		// parse kernel cmdline for the default gateway
 		cmdlineServers := ctrl.parseCmdline(logger)
-		if cmdlineServers.DNSServers != nil {
+		if cmdlineServers.NameServers != nil {
 			specs = append(specs, cmdlineServers)
 		}
 
@@ -177,7 +177,10 @@ func (ctrl *ResolverConfigController) apply(ctx context.Context, r controller.Ru
 }
 
 func (ctrl *ResolverConfigController) getDefault(cfg talosconfig.Config, hostnameStatus *network.HostnameStatusSpec) (spec network.ResolverSpecSpec) {
-	spec.DNSServers = []netip.Addr{netip.MustParseAddr(constants.DefaultPrimaryResolver), netip.MustParseAddr(constants.DefaultSecondaryResolver)}
+	spec.NameServers = []network.NameServerSpec{
+		{Addr: netip.MustParseAddr(constants.DefaultPrimaryResolver)},
+		{Addr: netip.MustParseAddr(constants.DefaultSecondaryResolver)},
+	}
 	spec.ConfigLayer = network.ConfigDefault
 
 	if cfg == nil ||
@@ -209,7 +212,9 @@ func (ctrl *ResolverConfigController) parseCmdline(logger *zap.Logger) (spec net
 		return spec
 	}
 
-	spec.DNSServers = settings.DNSAddresses
+	spec.NameServers = xslices.Map(settings.DNSAddresses, func(addr netip.Addr) network.NameServerSpec {
+		return network.NameServerSpec{Addr: addr}
+	})
 	spec.ConfigLayer = network.ConfigCmdline
 
 	return spec
@@ -225,12 +230,25 @@ func (ctrl *ResolverConfigController) parseMachineConfiguration(cfgProvider talo
 	resolvers := cfgProvider.NetworkResolverConfig().Resolvers()
 	searchDomains := cfgProvider.NetworkResolverConfig().SearchDomains()
 
-	if len(resolvers) == 0 && len(searchDomains) == 0 {
+	if len(resolvers) == 0 && !searchDomains.IsPresent() {
 		return spec, false
 	}
 
-	spec.DNSServers = slices.Clone(resolvers)
-	spec.SearchDomains = slices.Clone(searchDomains)
+	spec.NameServers = xslices.Map(resolvers, func(r talosconfig.NetworkResolver) network.NameServerSpec {
+		return network.NameServerSpec{
+			Addr:          r.Addr,
+			Protocol:      r.Protocol,
+			TLSServerName: r.TLSServerName,
+		}
+	})
+
+	// when search domains are explicitly configured (present, possibly empty), mark them as an
+	// override so the merge controller replaces (rather than merges) DHCP/platform search domains
+	if domains, ok := searchDomains.Get(); ok {
+		spec.SearchDomains = domains
+		spec.SearchDomainsOverridden = true
+	}
+
 	spec.ConfigLayer = network.ConfigMachineConfiguration
 
 	return spec, true

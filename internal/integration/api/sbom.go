@@ -78,13 +78,15 @@ func (suite *SBOMSuite) TestCommon() {
 	)
 
 	// Assert on containerd/runc versions.
-	rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI,
+	rtestutils.AssertResource(
+		ctx, suite.T(), suite.Client.COSI,
 		"containerd",
 		func(item *runtime.SBOMItem, asrt *assert.Assertions) {
 			asrt.Equal("v"+constants.DefaultContainerdVersion, item.TypedSpec().Version)
 		},
 	)
-	rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI,
+	rtestutils.AssertResource(
+		ctx, suite.T(), suite.Client.COSI,
 		"runc",
 		func(item *runtime.SBOMItem, asrt *assert.Assertions) {
 			asrt.Equal("v"+constants.RuncVersion, item.TypedSpec().Version)
@@ -92,7 +94,8 @@ func (suite *SBOMSuite) TestCommon() {
 	)
 
 	// Assert on Go version.
-	rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI,
+	rtestutils.AssertResource(
+		ctx, suite.T(), suite.Client.COSI,
 		"golang",
 		func(item *runtime.SBOMItem, asrt *assert.Assertions) {
 			goVersion := strings.TrimPrefix(constants.GoVersion, "go")
@@ -103,7 +106,8 @@ func (suite *SBOMSuite) TestCommon() {
 
 	if suite.Capabilities().RunsTalosKernel {
 		// Assert on Talos kernel version.
-		rtestutils.AssertResource(ctx, suite.T(), suite.Client.COSI,
+		rtestutils.AssertResource(
+			ctx, suite.T(), suite.Client.COSI,
 			"kernel",
 			func(item *runtime.SBOMItem, asrt *assert.Assertions) {
 				// cut the suffix, first try removing .0 patch version for kernel releases like 6.17

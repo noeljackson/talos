@@ -10,13 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cosi-project/runtime/pkg/state"
-	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
 	"github.com/siderolabs/crypto/x509"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/siderolabs/talos/pkg/machinery/compatibility"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/config/validation"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -101,6 +100,29 @@ func TestValidate(t *testing.T) {
 			},
 			expectedWarnings: []string{
 				`use "worker" instead of "join" for machine type`,
+			},
+		},
+		{
+			name: "MachineFilesDeprecated",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "worker",
+					MachineCA: &x509.PEMEncodedCertificateAndKey{
+						Crt: []byte("foo"),
+					},
+					MachineFiles: []*v1alpha1.MachineFile{ //nolint:staticcheck // test deprecation warning
+						{FilePath: "/var/example", FileOp: "create"},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{endpointURL},
+					},
+				},
+			},
+			expectedWarnings: []string{
+				`.machine.files is deprecated; use dedicated configuration documents instead`,
 			},
 		},
 		{
@@ -205,7 +227,9 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		{
-			name: "NoMachineInstallRequired",
+			// .machine.install is deprecated in favor of the UnattendedInstallConfig document and is no longer
+			// required, even in install mode.
+			name: "NoMachineInstallNotRequired",
 			config: &v1alpha1.Config{
 				ConfigVersion: "v1alpha1",
 				MachineConfig: &v1alpha1.MachineConfig{
@@ -223,7 +247,6 @@ func TestValidate(t *testing.T) {
 				},
 			},
 			requiresInstall: true,
-			expectedError:   "1 error occurred:\n\t* install instructions are required in \"runtimeMode(true)\" mode\n\n",
 		},
 		{
 			name: "MachineInstallDisk",
@@ -1186,34 +1209,6 @@ func TestValidate(t *testing.T) {
 				"\t* [networking.os.device.route[7]]: either network or gateway should be set\n\n",
 		},
 		{
-			name: "KubeSpanNoDiscovery",
-			config: &v1alpha1.Config{
-				ConfigVersion: "v1alpha1",
-				MachineConfig: &v1alpha1.MachineConfig{
-					MachineType: "controlplane",
-					MachineCA: &x509.PEMEncodedCertificateAndKey{
-						Crt: []byte("foo"),
-						Key: []byte("bar"),
-					},
-					MachineNetwork: &v1alpha1.NetworkConfig{
-						NetworkKubeSpan: &v1alpha1.NetworkKubeSpan{
-							KubeSpanEnabled: new(true),
-						},
-					},
-				},
-				ClusterConfig: &v1alpha1.ClusterConfig{
-					ControlPlane: &v1alpha1.ControlPlaneConfig{
-						Endpoint: &v1alpha1.Endpoint{
-							endpointURL,
-						},
-					},
-				},
-			},
-			expectedError: "3 errors occurred:\n\t* .cluster.discovery should be enabled when .machine.network.kubespan is enabled\n" +
-				"\t* .cluster.id should be set when .machine.network.kubespan is enabled\n" +
-				"\t* .cluster.secret should be set when .machine.network.kubespan is enabled\n\n",
-		},
-		{
 			name: "DiscoveryServiceEndpoint",
 			config: &v1alpha1.Config{
 				ConfigVersion: "v1alpha1",
@@ -1445,7 +1440,7 @@ func TestValidate(t *testing.T) {
 						},
 					},
 					MachineKubelet: &v1alpha1.KubeletConfig{
-						KubeletExtraConfig: v1alpha1.Unstructured{
+						KubeletExtraConfig: meta.Unstructured{
 							Object: map[string]any{
 								"port": 345,
 							},
@@ -1833,7 +1828,7 @@ func TestValidate(t *testing.T) {
 					},
 					APIServerConfig: &v1alpha1.APIServerConfig{
 						ResourcesConfig: &v1alpha1.ResourcesConfig{
-							Requests: v1alpha1.Unstructured{
+							Requests: meta.Unstructured{
 								Object: map[string]any{
 									"cpu":      "1m",
 									"invalid1": "23",
@@ -1843,7 +1838,7 @@ func TestValidate(t *testing.T) {
 					},
 					ControllerManagerConfig: &v1alpha1.ControllerManagerConfig{
 						ResourcesConfig: &v1alpha1.ResourcesConfig{
-							Limits: v1alpha1.Unstructured{
+							Limits: meta.Unstructured{
 								Object: map[string]any{
 									"memory":   "1m",
 									"invalid2": "23",
@@ -1853,12 +1848,12 @@ func TestValidate(t *testing.T) {
 					},
 					SchedulerConfig: &v1alpha1.SchedulerConfig{
 						ResourcesConfig: &v1alpha1.ResourcesConfig{
-							Requests: v1alpha1.Unstructured{
+							Requests: meta.Unstructured{
 								Object: map[string]any{
 									"cpu": "1m",
 								},
 							},
-							Limits: v1alpha1.Unstructured{
+							Limits: meta.Unstructured{
 								Object: map[string]any{
 									"invalid3": "23",
 								},
@@ -1916,8 +1911,8 @@ func TestValidate(t *testing.T) {
 					},
 					APIServerConfig: &v1alpha1.APIServerConfig{
 						AuthorizationConfigConfig: []*v1alpha1.AuthorizationConfigAuthorizerConfig{},
-						ExtraArgsConfig: v1alpha1.Args{
-							"authorization-mode": v1alpha1.NewArgValue("Node", nil),
+						ExtraArgsConfig: meta.Args{
+							"authorization-mode": meta.NewArgValue("Node", nil),
 						},
 					},
 				},
@@ -1943,8 +1938,8 @@ func TestValidate(t *testing.T) {
 					},
 					APIServerConfig: &v1alpha1.APIServerConfig{
 						AuthorizationConfigConfig: []*v1alpha1.AuthorizationConfigAuthorizerConfig{},
-						ExtraArgsConfig: v1alpha1.Args{
-							"authorization-webhook-version": v1alpha1.NewArgValue("v1", nil),
+						ExtraArgsConfig: meta.Args{
+							"authorization-webhook-version": meta.NewArgValue("v1", nil),
 						},
 					},
 				},
@@ -1961,7 +1956,7 @@ func TestValidate(t *testing.T) {
 						Crt: []byte("foo"),
 						Key: []byte("bar"),
 					},
-					MachineBaseRuntimeSpecOverrides: v1alpha1.Unstructured{
+					MachineBaseRuntimeSpecOverrides: meta.Unstructured{
 						Object: map[string]any{
 							"process": map[string]any{
 								"rlimits": []map[string]any{
@@ -1982,6 +1977,9 @@ func TestValidate(t *testing.T) {
 						},
 					},
 				},
+			},
+			expectedWarnings: []string{
+				`.machine.baseRuntimeSpecOverrides is deprecated; use a CRIBaseRuntimeSpecConfig document instead`,
 			},
 		},
 		{
@@ -2020,7 +2018,7 @@ func TestValidate(t *testing.T) {
 					},
 					MachineFeatures: &v1alpha1.FeaturesConfig{
 						HostDNSSupport: &v1alpha1.HostDNSConfig{
-							HostDNSEnabled:              new(false),
+							HostDNSConfigEnabled:        new(false),
 							HostDNSForwardKubeDNSToHost: new(true),
 						},
 					},
@@ -2236,47 +2234,16 @@ func TestValidateCNI(t *testing.T) {
 	}
 }
 
-func TestKubernetesVersionFromImageRef(t *testing.T) {
-	t.Parallel()
-
-	for _, test := range []struct {
-		imageRef string
-
-		expectedVersion string
-	}{
-		{
-			imageRef:        "ghcr.io/siderolabs/kubelet:v1.32.2",
-			expectedVersion: "1.32.2",
-		},
-		{
-			imageRef:        "ghcr.io/siderolabs/kubelet:v1.32.2@sha256:123456",
-			expectedVersion: "1.32.2",
-		},
-	} {
-		t.Run(test.imageRef, func(t *testing.T) {
-			t.Parallel()
-
-			version, err := v1alpha1.KubernetesVersionFromImageRef(test.imageRef)
-			require.NoError(t, err)
-
-			assert.Equal(t, test.expectedVersion, version.String())
-		})
-	}
-}
-
-func TestRuntimeValidate(t *testing.T) {
+func TestValidateKubernetesVersions(t *testing.T) {
 	t.Parallel()
 
 	endpointURL, err := url.Parse("https://localhost:6443/")
 	require.NoError(t, err)
 
 	for _, test := range []struct {
-		name             string
-		config           *v1alpha1.Config
-		requiresInstall  bool
-		strict           bool
-		expectedWarnings []string
-		expectedError    string
+		name          string
+		config        *v1alpha1.Config
+		expectedError string
 	}{
 		{
 			name: "valid",
@@ -2366,16 +2333,7 @@ func TestRuntimeValidate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			var opts []validation.Option
-			if test.strict {
-				opts = append(opts, validation.WithStrict())
-			}
-
-			st := state.WrapCore(inmem.NewState(""))
-
-			warnings, errors := test.config.RuntimeValidate(t.Context(), st, runtimeMode{test.requiresInstall}, opts...)
-
-			assert.Equal(t, test.expectedWarnings, warnings)
+			errors := test.config.ValidateKubernetesVersions()
 
 			currentTalosVersion, err := compatibility.ParseTalosVersion(version.NewVersion())
 			require.NoError(t, err)

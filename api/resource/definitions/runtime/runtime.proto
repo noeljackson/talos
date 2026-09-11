@@ -17,6 +17,11 @@ message APIServiceConfigSpec {
   bool skip_verifying_client_cert = 4;
 }
 
+// BootIDSpec presents the kernel boot ID (contents of /proc/sys/kernel/random/boot_id).
+message BootIDSpec {
+  string boot_id = 1;
+}
+
 // BootedEntrySpec describes the booted entry resource properties.
 message BootedEntrySpec {
   string booted_entry = 1;
@@ -24,12 +29,15 @@ message BootedEntrySpec {
 
 // DevicesStatusSpec is the spec for devices status.
 message DevicesStatusSpec {
+  // Devices are settled down and ready to be used.
   bool ready = 1;
 }
 
 // DiagnosticSpec is the spec for devices status.
 message DiagnosticSpec {
+  // Short message describing the problem.
   string message = 1;
+  // Details about the problem.
   repeated string details = 2;
 }
 
@@ -60,6 +68,13 @@ message ExtensionServiceConfigStatusSpec {
   string spec_version = 1;
 }
 
+// ImageFactorySchematicSpec describes Image Factory schematic information.
+message ImageFactorySchematicSpec {
+  string schematic_id = 1;
+  string flavor = 2;
+  string apiurl = 3;
+}
+
 // KernelCmdlineSpec presents kernel command line (contents of /proc/cmdline).
 message KernelCmdlineSpec {
   string cmdline = 1;
@@ -69,6 +84,22 @@ message KernelCmdlineSpec {
 message KernelModuleSpecSpec {
   string name = 1;
   repeated string parameters = 2;
+}
+
+// KernelModuleStatusSpec represents the status of a Linux kernel module.
+message KernelModuleStatusSpec {
+  // Type indicates whether the kernel module is built-in or dynamically loaded.
+  talos.resource.definitions.enums.RuntimeKernelModuleType type = 1;
+  // Size is the size of the kernel module in bytes.
+  int64 size = 2;
+  // ReferenceCount is the number of references to this kernel module.
+  int64 reference_count = 3;
+  // Dependencies lists the names of kernel modules that this module depends on.
+  repeated string dependencies = 4;
+  // State is the operational state of the kernel module.
+  talos.resource.definitions.enums.RuntimeKernelModuleState state = 5;
+  // Address is the memory address where the kernel module is loaded (if applicable).
+  string address = 6;
 }
 
 // KernelParamSpecSpec describes status of the defined sysctls.
@@ -89,8 +120,11 @@ message KmsgLogConfigSpec {
   repeated common.URL destinations = 1;
 }
 
-// LoadedKernelModuleSpec describes Linux kernel module to load.
+// LoadedKernelModuleSpec describes loaded Linux kernel modules.
+//
+// Deprecated: use KernelModuleStatus instead.
 message LoadedKernelModuleSpec {
+  option deprecated = true;
   int64 size = 1;
   int64 reference_count = 2;
   repeated string dependencies = 3;
@@ -181,8 +215,17 @@ message SecurityStateSpec {
 
 // ServicePIDSpec is the spec for the service PID.
 message ServicePIDSpec {
+  // PID is the host PID of the service.
   int32 pid = 1;
+  // MountNamespace is the mount namespace of the service.
   string mount_namespace = 2;
+}
+
+// UnattendedInstallStatusSpec describes the unattended install status.
+message UnattendedInstallStatusSpec {
+  string image = 1;
+  talos.resource.definitions.enums.RuntimeUnattendedInstallPhase phase = 2;
+  string error = 3;
 }
 
 // UniqueMachineTokenSpec is the spec for the machine unique token. Token can be empty if machine wasn't assigned any.

@@ -33,10 +33,11 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/storage"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
-	networkcfg "github.com/siderolabs/talos/pkg/machinery/config/types/network"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
 
 // MaintenanceBasicSuite ...
@@ -71,7 +72,7 @@ func (suite *MaintenanceBasicSuite) TestAPI() {
 		SourceInstallerImage: fmt.Sprintf(
 			"%s/%s:%s",
 			DefaultSettings.TargetInstallImageRegistry,
-			images.DefaultInstallerImageName,
+			images.DefaultInstallerImageName, //nolint:staticcheck // legacy is only used in tests
 			DefaultSettings.CurrentVersion,
 		),
 		SourceVersion:    DefaultSettings.CurrentVersion,
@@ -87,8 +88,7 @@ func (suite *MaintenanceBasicSuite) TestAPI() {
 
 		maintenanceClients[i], err = client.New(
 			suite.ctx,
-			client.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}),
-			client.WithEndpoints(machine.IPs[0].String()),
+			client.WithMaintenanceMode(machine.IPs[0].String(), nil),
 		)
 		suite.Require().NoError(err)
 	}
@@ -119,11 +119,12 @@ func (suite *MaintenanceBasicSuite) TestAPI() {
 		// it doesn't matter which machine to use, as they are all same in maintenance mode right now
 		maintenanceClient := maintenanceClients[0]
 
-		hostnameConfig := networkcfg.NewHostnameConfigV1Alpha1()
-		hostnameConfig.ConfigHostname = "my-node"
-		hostnameConfig.ConfigAuto = new(nethelpers.AutoHostnameKindOff)
+		sysctlConfig := runtime.NewSysctlConfigV1Alpha1()
+		sysctlConfig.Params = map[string]string{
+			"fs.inotify.max_user_watches": "12288",
+		}
 
-		machineConfig, err := container.New(hostnameConfig)
+		machineConfig, err := container.New(sysctlConfig)
 		suite.Require().NoError(err)
 
 		machineConfigBytes, err := machineConfig.Bytes()
@@ -139,24 +140,19 @@ func (suite *MaintenanceBasicSuite) TestAPI() {
 		})
 		suite.Require().NoError(err)
 
-		// now hostname should be as we set
+		// now sysctl spec should be active
 		rtestutils.AssertResource(
-			suite.ctx, suite.T(), maintenanceClient.COSI, network.HostnameID,
-			func(hs *network.HostnameStatus, asrt *assert.Assertions) {
-				asrt.Equal("my-node", hs.TypedSpec().Hostname)
-			},
+			suite.ctx, suite.T(), maintenanceClient.COSI, "proc.sys.fs.inotify.max_user_watches",
+			func(*runtimeres.KernelParamSpec, *assert.Assertions) {},
 		)
 
 		// give the test twice the try mode timeout to ensure that the config is rolled back
 		waitCtx, cancel := context.WithTimeout(suite.ctx, 2*tryModeTimeout)
 		defer cancel()
 
-		// eventually, config should be rolled back, and hostname should change back
-		rtestutils.AssertResource(
-			waitCtx, suite.T(), maintenanceClient.COSI, network.HostnameID,
-			func(hs *network.HostnameStatus, asrt *assert.Assertions) {
-				asrt.NotEqual("my-node", hs.TypedSpec().Hostname)
-			},
+		// eventually, config should be rolled back, and sysctl spec should be removed
+		rtestutils.AssertNoResource[*runtimeres.KernelParamSpec](
+			waitCtx, suite.T(), maintenanceClient.COSI, "proc.sys.fs.inotify.max_user_watches",
 		)
 	})
 

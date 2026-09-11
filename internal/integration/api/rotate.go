@@ -8,10 +8,14 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/safe"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/siderolabs/talos/internal/integration/base"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
@@ -29,7 +33,7 @@ import (
 
 // RotateCASuite verifies rotation of Talos and Kubernetes CAs.
 type RotateCASuite struct {
-	base.APISuite
+	base.K8sSuite
 
 	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
@@ -51,6 +55,14 @@ func (suite *RotateCASuite) TearDownTest() {
 	if suite.ctxCancel != nil {
 		suite.ctxCancel()
 	}
+}
+
+func (suite *RotateCASuite) newRotationContext() context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+
+	suite.T().Cleanup(cancel)
+
+	return ctx
 }
 
 // TestTalos updates Talos CA in the cluster.
@@ -86,14 +98,16 @@ func (suite *RotateCASuite) TestTalos() {
 		Printf: suite.T().Logf,
 	}
 
-	newTalosconfig, err := talos.Rotate(suite.ctx, options)
+	rotationCtx := suite.newRotationContext()
+
+	newTalosconfig, err := talos.Rotate(rotationCtx, options)
 	suite.Require().NoError(err)
 
-	newClient, err := client.New(suite.ctx, client.WithConfig(newTalosconfig))
+	newClient, err := client.New(rotationCtx, client.WithConfig(newTalosconfig))
 	suite.Require().NoError(err)
 
 	if !testing.Short() {
-		suite.restartAPIServices(newClient)
+		suite.restartAPIServices(rotationCtx, newClient)
 	}
 
 	suite.T().Logf("rotating back new CA -> old CA")
@@ -112,12 +126,14 @@ func (suite *RotateCASuite) TestTalos() {
 		Printf: suite.T().Logf,
 	}
 
-	_, err = talos.Rotate(suite.ctx, options)
+	rotationCtx = suite.newRotationContext()
+
+	_, err = talos.Rotate(rotationCtx, options)
 	suite.Require().NoError(err)
 
-	suite.AssertClusterHealthy(suite.ctx)
+	suite.AssertClusterHealthy(rotationCtx)
 
-	suite.ClearConnectionRefused(suite.ctx, suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeWorker)...)
+	suite.ClearConnectionRefused(rotationCtx, suite.DiscoverNodeInternalIPsByType(rotationCtx, machine.TypeWorker)...)
 }
 
 // TestKubernetes updates Kubernetes CA in the cluster.
@@ -154,9 +170,11 @@ func (suite *RotateCASuite) TestKubernetes() {
 		Printf: suite.T().Logf,
 	}
 
-	suite.Require().NoError(kubernetes.Rotate(suite.ctx, options))
+	rotationCtx := suite.newRotationContext()
 
-	suite.AssertClusterHealthy(suite.ctx)
+	suite.Require().NoError(kubernetes.Rotate(rotationCtx, options))
+
+	suite.AssertClusterHealthy(rotationCtx)
 
 	suite.T().Logf("rotating back new CA -> old CA")
 
@@ -171,12 +189,51 @@ func (suite *RotateCASuite) TestKubernetes() {
 		Printf: suite.T().Logf,
 	}
 
-	suite.Require().NoError(kubernetes.Rotate(suite.ctx, options))
+	rotationCtx = suite.newRotationContext()
 
-	suite.AssertClusterHealthy(suite.ctx)
+	suite.Require().NoError(kubernetes.Rotate(rotationCtx, options))
+
+	suite.AssertClusterHealthy(rotationCtx)
+
+	suite.rollKubeProxy(suite.newRotationContext())
 }
 
-func (suite *RotateCASuite) restartAPIServices(c *client.Client) {
+// rollKubeProxy restarts kube-proxy once the Kubernetes CA rotation is over.
+//
+// kube-proxy talks to the API server with the in-cluster kubeconfig which trusts the service account
+// CA bundle, and client-go only re-reads that CA from disk every 5 minutes, so a kube-proxy which
+// happened to pick up the intermediate CA keeps failing to watch Services and EndpointSlices long
+// after the rotation is done: it silently stops programming rules for Services created in the
+// meantime.
+func (suite *RotateCASuite) rollKubeProxy(ctx context.Context) {
+	const (
+		namespace     = "kube-system"
+		daemonSetName = "kube-proxy"
+		labelSelector = "k8s-app=kube-proxy"
+	)
+
+	daemonSets := suite.Clientset.AppsV1().DaemonSets(namespace)
+
+	_, err := daemonSets.Get(ctx, daemonSetName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		suite.T().Logf("skipping kube-proxy restart: daemonset %s/%s is not found", namespace, daemonSetName)
+
+		return
+	}
+
+	suite.Require().NoError(err)
+
+	suite.T().Logf("restarting kube-proxy")
+
+	patch := fmt.Appendf(nil, `{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":%q}}}}}`, time.Now().Format(time.RFC3339Nano))
+
+	_, err = daemonSets.Patch(ctx, daemonSetName, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+	suite.Require().NoError(err)
+
+	suite.Require().NoError(suite.WaitForDaemonSetReady(ctx, 3*time.Minute, namespace, labelSelector))
+}
+
+func (suite *RotateCASuite) restartAPIServices(ctx context.Context, c *client.Client) {
 	suite.T().Logf("restarting API services")
 
 	var oldClient *client.Client
@@ -187,30 +244,30 @@ func (suite *RotateCASuite) restartAPIServices(c *client.Client) {
 		suite.Client = oldClient
 	}()
 
-	for _, node := range suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeControlPlane) {
+	for _, node := range suite.DiscoverNodeInternalIPsByType(ctx, machine.TypeControlPlane) {
 		suite.T().Logf("restarting API services on %s", node)
 
-		err := c.Restart(client.WithNode(suite.ctx, node), constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD, "trustd")
+		err := c.Restart(client.WithNode(ctx, node), constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD, "trustd")
 		suite.Require().NoError(err)
 
-		suite.ClearConnectionRefused(suite.ctx, node)
+		suite.ClearConnectionRefused(ctx, node)
 
-		err = c.Restart(client.WithNode(suite.ctx, node), constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD, "apid")
+		err = c.Restart(client.WithNode(ctx, node), constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD, "apid")
 		suite.Require().NoError(err)
 
-		suite.ClearConnectionRefused(suite.ctx, node)
+		suite.ClearConnectionRefused(ctx, node)
 	}
 
-	for _, node := range suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeWorker) {
+	for _, node := range suite.DiscoverNodeInternalIPsByType(ctx, machine.TypeWorker) {
 		suite.T().Logf("restarting API services on %s", node)
 
-		err := c.Restart(client.WithNode(suite.ctx, node), constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD, "apid")
+		err := c.Restart(client.WithNode(ctx, node), constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD, "apid")
 		suite.Require().NoError(err)
 
-		suite.ClearConnectionRefused(suite.ctx, node)
+		suite.ClearConnectionRefused(ctx, node)
 	}
 
-	suite.AssertClusterHealthy(suite.ctx)
+	suite.AssertClusterHealthy(ctx)
 }
 
 func init() {

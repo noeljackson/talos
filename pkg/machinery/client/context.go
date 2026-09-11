@@ -13,6 +13,8 @@ import (
 // WithNodes wraps the context with metadata to send request to a set of nodes.
 //
 // Responses from all nodes are aggregated by the `apid` service and sent back as a single response.
+//
+// Deprecated: Use WithNode and client-side multiplexing instead. This might be removed in a future release.
 func WithNodes(ctx context.Context, nodes ...string) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 

@@ -5,9 +5,11 @@
 package v1alpha1
 
 import (
+	"github.com/siderolabs/gen/optional"
 	"github.com/siderolabs/go-pointer"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 // Name implements the config.CNI interface.
@@ -21,24 +23,45 @@ func (c *CNIConfig) URLs() []string {
 }
 
 // Flannel implements the config.CNI interface.
-func (c *CNIConfig) Flannel() config.FlannelCNI {
+func (c *CNIConfig) Flannel() config.K8sFlannelCNIConfig {
+	if c.CNIFlannel == nil {
+		return &FlannelCNIConfig{}
+	}
+
 	return c.CNIFlannel
 }
 
-// ExtraArgs implements the config.FlannelCNI interface.
-func (c *FlannelCNIConfig) ExtraArgs() []string {
-	if c == nil {
-		return nil
-	}
+// BackendType implements the config.K8sFlannelCNIConfig interface.
+func (c *FlannelCNIConfig) BackendType() string {
+	return constants.FlannelDefaultBackend
+}
 
+// BackendPort implements the config.K8sFlannelCNIConfig interface.
+func (c *FlannelCNIConfig) BackendPort() optional.Optional[uint16] {
+	return optional.Some[uint16](constants.FlannelDefaultBackendPort)
+}
+
+// BackendMTU implements the config.K8sFlannelCNIConfig interface.
+func (c *FlannelCNIConfig) BackendMTU() optional.Optional[uint32] {
+	return optional.None[uint32]()
+}
+
+// BackendExtraConfig implements the config.K8sFlannelCNIConfig interface.
+func (c *FlannelCNIConfig) BackendExtraConfig() map[string]any {
+	return nil
+}
+
+// Resources implements the config.K8sFlannelCNIConfig interface.
+func (c *FlannelCNIConfig) Resources() config.Resources {
+	return &ResourcesConfig{}
+}
+
+// ExtraArgs implements the config.K8sFlannelCNIConfig interface.
+func (c *FlannelCNIConfig) ExtraArgs() []string {
 	return c.FlanneldExtraArgs
 }
 
-// KubeNetworkPoliciesEnabled implements the config.FlannelCNI interface.
+// KubeNetworkPoliciesEnabled implements the config.K8sFlannelCNIConfig interface.
 func (c *FlannelCNIConfig) KubeNetworkPoliciesEnabled() bool {
-	if c == nil {
-		return false
-	}
-
 	return pointer.SafeDeref(c.FlannelKubeNetworkPoliciesEnabled)
 }

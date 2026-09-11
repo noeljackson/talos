@@ -25,6 +25,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	networkadapter "github.com/siderolabs/talos/internal/app/machined/pkg/adapters/network"
+	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/internal/trigger"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/network/watch"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/runtime"
 	"github.com/siderolabs/talos/internal/pkg/pci"
@@ -60,7 +61,8 @@ func (ctrl *LinkStatusController) Outputs() []controller.Output {
 //nolint:gocyclo
 func (ctrl *LinkStatusController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	// wait for udevd to be healthy, which implies that all link renames are done
-	if err := runtime.WaitForDevicesReady(ctx, r,
+	if err := runtime.WaitForDevicesReady(
+		ctx, r,
 		[]controller.Input{
 			{
 				Namespace: network.NamespaceName,
@@ -75,14 +77,14 @@ func (ctrl *LinkStatusController) Run(ctx context.Context, r controller.Runtime,
 	// create watch connections to rtnetlink and ethtool via genetlink
 	// these connections are used only to join multicast groups and receive notifications on changes
 	// other connections are used to send requests and receive responses, as we can't mix the notifications and request/responses
-	rtnetlinkWatcher, err := watch.NewRtNetlink(watch.NewDefaultRateLimitedTrigger(ctx, r), unix.RTMGRP_LINK)
+	rtnetlinkWatcher, err := watch.NewRtNetlink(trigger.NewDefaultRateLimitedTrigger(ctx, r), unix.RTMGRP_LINK)
 	if err != nil {
 		return err
 	}
 
 	defer rtnetlinkWatcher.Done()
 
-	ethtoolWatcher, err := watch.NewEthtool(watch.NewDefaultRateLimitedTrigger(ctx, r))
+	ethtoolWatcher, err := watch.NewEthtool(trigger.NewDefaultRateLimitedTrigger(ctx, r))
 	if err != nil {
 		logger.Warn("ethtool watcher failed to start", zap.Error(err))
 	} else {
@@ -227,6 +229,8 @@ func (ctrl *LinkStatusController) reconcile(
 		if err = safe.WriterModify(ctx, r, network.NewLinkStatus(network.NamespaceName, link.Attributes.Name), func(r *network.LinkStatus) error {
 			status := r.TypedSpec()
 
+			prevUp := status.LinkState
+
 			status.Alias = pointer.SafeDeref(link.Attributes.Alias)
 			status.AltNames = slices.Clone(link.Attributes.AltNames)
 			status.Index = link.Index
@@ -239,6 +243,8 @@ func (ctrl *LinkStatusController) reconcile(
 			status.QueueDisc = link.Attributes.QueueDisc
 
 			status.MTU = link.Attributes.MTU
+
+			status.Veth = network.VethSpec{}
 			if link.Attributes.Master != nil {
 				status.MasterIndex = *link.Attributes.Master
 			} else {
@@ -258,6 +264,10 @@ func (ctrl *LinkStatusController) reconcile(
 				status.LinkState = ethState.Link
 			} else {
 				status.LinkState = false
+			}
+
+			if prevUp != status.LinkState && status.Physical() {
+				logger.Info("link state changed", zap.String("link", link.Attributes.Name), zap.Bool("up", status.LinkState))
 			}
 
 			if ethInfo != nil {
@@ -325,6 +335,8 @@ func (ctrl *LinkStatusController) reconcile(
 			}
 
 			switch status.Kind {
+			case network.LinkKindVeth:
+				status.Veth.PeerName = vethPeerName(links, link)
 			case network.LinkKindVLAN:
 				if rawLinkData == nil {
 					logger.Warn("VLAN link data is nil", zap.String("link", link.Attributes.Name))
@@ -379,4 +391,20 @@ func (ctrl *LinkStatusController) reconcile(
 	}
 
 	return nil
+}
+
+func vethPeerName(links []rtnetlink.LinkMessage, current rtnetlink.LinkMessage) string {
+	for _, candidate := range links {
+		if candidate.Index != current.Attributes.Type {
+			continue
+		}
+
+		if candidate.Attributes.Info == nil || candidate.Attributes.Info.Kind != network.LinkKindVeth || candidate.Attributes.Type != current.Index {
+			return ""
+		}
+
+		return candidate.Attributes.Name
+	}
+
+	return ""
 }

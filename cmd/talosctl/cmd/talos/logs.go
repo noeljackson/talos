@@ -5,30 +5,33 @@
 package talos
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"io"
-	"os"
-	"sync"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/siderolabs/gen/xslices"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
 
-	"github.com/siderolabs/talos/pkg/cli"
-	"github.com/siderolabs/talos/pkg/machinery/api/common"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/global"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
-var (
-	follow    bool
-	tailLines int32
-)
+var logsCmdFlags struct {
+	global.InsecureFlags
+	containerNamespaceFlag
+
+	follow bool
+	tail   int32
+}
 
 var logsCmd = &cobra.Command{
 	Use:   "logs <service name>",
@@ -40,203 +43,163 @@ var logsCmd = &cobra.Command{
 			return nil, cobra.ShellCompDirectiveError | cobra.ShellCompDirectiveNoFileComp
 		}
 
-		if kubernetesFlag {
-			return getContainersFromNode(kubernetesFlag), cobra.ShellCompDirectiveNoFileComp
+		if logsCmdFlags.namespace == constants.TalosContainersContainerdNamespace {
+			return getTalosContainerLogs(cmd.Context(), &logsCmdFlags), cobra.ShellCompDirectiveNoFileComp
 		}
 
-		return mergeSuggestions(getServiceFromNode(), getContainersFromNode(kubernetesFlag), getLogsContainers()), cobra.ShellCompDirectiveNoFileComp
+		if logsCmdFlags.kubernetes {
+			return getContainersFromNode(cmd.Context(), &logsCmdFlags), cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return mergeSuggestions(
+			getServiceFromNode(cmd.Context(), &logsCmdFlags),
+			getContainersFromNode(cmd.Context(), &logsCmdFlags),
+			getLogsContainers(cmd.Context(), &logsCmdFlags),
+		), cobra.ShellCompDirectiveNoFileComp
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			var (
-				namespace string
-				driver    common.ContainerDriver
-			)
+		ctx := cmd.Context()
 
-			if kubernetesFlag {
-				namespace = constants.K8sContainerdNamespace
-				driver = common.ContainerDriver_CRI
-			} else {
-				namespace = constants.SystemContainerdNamespace
-				driver = common.ContainerDriver_CONTAINERD
-			}
+		clientFactory, err := NewClientFactory(ctx, &logsCmdFlags)
+		if err != nil {
+			return err
+		}
 
-			stream, err := c.Logs(ctx, namespace, driver, args[0], follow, tailLines)
-			if err != nil {
-				return fmt.Errorf("error fetching logs: %s", err)
-			}
+		defer clientFactory.Close() //nolint:errcheck
 
-			defaultNode := client.RemotePeer(stream.Context())
+		namespace, driver, err := logsCmdFlags.resolveContainerNamespace()
+		if err != nil {
+			return err
+		}
 
-			respCh, errCh := newLineSlicer(stream)
+		responseChan := multiplex.StreamingViaFactory(
+			ctx, clientFactory,
+			func(ctx context.Context, c *client.Client) (machine.MachineService_LogsClient, error) {
+				return c.Logs(ctx, namespace, driver, args[0], logsCmdFlags.follow, logsCmdFlags.tail)
+			},
+		)
 
-			var gotErrors bool
+		// logs arrive as arbitrary byte chunks per node, so buffer each node's bytes
+		// until a newline is seen and emit complete lines: this keeps the output
+		// line-aligned even when interleaving logs from multiple nodes.
+		lineBuffers := map[string][]byte{}
 
-			for data := range respCh {
-				if data.Metadata != nil && data.Metadata.Error != "" {
-					_, err = fmt.Fprintf(os.Stderr, "ERROR: %s\n", data.Metadata.Error)
-					if err != nil {
-						return err
-					}
+		emit := func(node string, line []byte) error {
+			_, err := safeout.Printf("%s: %s\n", node, line)
 
-					gotErrors = true
+			return err
+		}
 
+		var errs error
+
+		for resp := range responseChan {
+			if resp.Err != nil {
+				// the stream is canceled on Ctrl-C (or context cancellation), which is a normal termination
+				if client.StatusCode(resp.Err) == codes.Canceled {
 					continue
 				}
 
-				node := defaultNode
-				if data.Metadata != nil && data.Metadata.Hostname != "" {
-					node = data.Metadata.Hostname
+				errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
+
+				continue
+			}
+
+			buf := append(lineBuffers[resp.Node], resp.Payload.Bytes...)
+
+			for {
+				idx := bytes.IndexByte(buf, '\n')
+				if idx < 0 {
+					break
 				}
 
-				_, err = fmt.Printf("%s: %s\n", node, data.Bytes)
-				if err != nil {
+				if err := emit(resp.Node, buf[:idx]); err != nil {
+					return err
+				}
+
+				buf = buf[idx+1:]
+			}
+
+			lineBuffers[resp.Node] = buf
+		}
+
+		// flush trailing bytes which were not terminated by a newline
+		for _, node := range slices.Sorted(maps.Keys(lineBuffers)) {
+			if buf := lineBuffers[node]; len(buf) > 0 {
+				if err := emit(node, buf); err != nil {
 					return err
 				}
 			}
+		}
 
-			if err = <-errCh; err != nil {
-				return fmt.Errorf("error getting logs: %v", err)
-			}
-
-			if gotErrors {
-				os.Exit(1)
-			}
-
-			return nil
-		})
+		return errs
 	},
 }
 
-// lineSlicer splits random chunks of bytes coming from nodes into a stream
-// of lines aggregated per node.
-type lineSlicer struct {
-	respCh chan *common.Data
-	errCh  chan error
-	pipes  map[string]*io.PipeWriter
-	wg     sync.WaitGroup
-}
+func getLogsContainers(ctx context.Context, flags any) []string {
+	clientFactory, err := NewClientFactory(ctx, flags)
+	if err != nil {
+		cobra.CompError(fmt.Sprintf("error creating client factory: %v", err))
 
-func newLineSlicer(stream machine.MachineService_LogsClient) (chan *common.Data, chan error) {
-	slicer := &lineSlicer{
-		respCh: make(chan *common.Data),
-		errCh:  make(chan error, 1),
-		pipes:  map[string]*io.PipeWriter{},
+		return nil
 	}
 
-	go slicer.run(stream)
+	defer clientFactory.Close() //nolint:errcheck
 
-	return slicer.respCh, slicer.errCh
-}
+	responseChan := multiplex.UnaryViaFactory(
+		ctx, clientFactory,
+		func(ctx context.Context, c *client.Client) (*machine.LogsContainersResponse, error) {
+			return c.LogsContainers(ctx)
+		},
+	)
 
-func (slicer *lineSlicer) chopper(r io.Reader, hostname string) {
-	defer slicer.wg.Done()
+	var result []string
 
-	scanner := bufio.NewScanner(r)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		line = xslices.CopyN(line, len(line))
-
-		slicer.respCh <- &common.Data{
-			Metadata: &common.Metadata{
-				Hostname: hostname,
-			},
-			Bytes: line,
-		}
-	}
-}
-
-func (slicer *lineSlicer) getPipe(node string) *io.PipeWriter {
-	pipe, ok := slicer.pipes[node]
-	if !ok {
-		var piper *io.PipeReader
-
-		piper, pipe = io.Pipe()
-
-		slicer.wg.Add(1)
-
-		go slicer.chopper(piper, node)
-
-		slicer.pipes[node] = pipe
-	}
-
-	return pipe
-}
-
-func (slicer *lineSlicer) cleanupChoppers() {
-	for _, p := range slicer.pipes {
-		_ = p.Close() //nolint:errcheck
-	}
-
-	slicer.wg.Wait()
-}
-
-func (slicer *lineSlicer) run(stream machine.MachineService_LogsClient) {
-	defer close(slicer.errCh)
-	defer close(slicer.respCh)
-
-	defer slicer.cleanupChoppers()
-
-	for {
-		data, err := stream.Recv()
-		if err != nil {
-			if err == io.EOF || client.StatusCode(err) == codes.Canceled {
-				return
-			}
-
-			slicer.errCh <- err
-
-			return
-		}
-
-		if data.Metadata != nil && data.Metadata.Error != "" {
-			// errors are delivered OOB
-			slicer.respCh <- data
+	for resp := range responseChan {
+		if resp.Err != nil {
+			cobra.CompError(fmt.Sprintf("error from node %s: %v", resp.Node, resp.Err))
 
 			continue
 		}
 
-		node := ""
-
-		if data.Metadata != nil {
-			node = data.Metadata.Hostname
-		}
-
-		_, err = slicer.getPipe(node).Write(data.Bytes)
-		cli.Should(err)
+		result = append(result, xslices.FlatMap(resp.Payload.Messages, func(lc *machine.LogsContainer) []string { return lc.Ids })...)
 	}
+
+	return result
 }
 
-func getLogsContainers() []string {
+// getTalosContainerLogs suggests the containers declared via ContainerConfig which have logs.
+//
+// A container that has never started has no buffer, and so does not appear.
+func getTalosContainerLogs(ctx context.Context, flags any) []string {
+	return stripTalosContainerLogPrefix(getLogsContainers(ctx, flags))
+}
+
+// stripTalosContainerLogPrefix keeps only the ids carrying the taloscontainers log prefix, with the
+// prefix removed.
+//
+// The registered identifiers carry the namespace prefix, but the command takes the container name, so
+// the prefix is stripped back off.
+func stripTalosContainerLogPrefix(ids []string) []string {
 	var result []string
 
-	//nolint:errcheck
-	WithClient(
-		func(ctx context.Context, c *client.Client) error {
-			var remotePeer peer.Peer
-
-			resp, err := c.LogsContainers(ctx, grpc.Peer(&remotePeer))
-			if err != nil {
-				return err
-			}
-
-			result = xslices.FlatMap(resp.Messages, func(lc *machine.LogsContainer) []string { return lc.Ids })
-
-			return nil
-		},
-	)
+	for _, id := range ids {
+		if name, ok := strings.CutPrefix(id, constants.TalosContainersLogPrefix); ok {
+			result = append(result, name)
+		}
+	}
 
 	return result
 }
 
 func init() {
-	logsCmd.Flags().BoolVarP(&kubernetesFlag, "kubernetes", "k", false, "use the k8s.io containerd namespace")
-	logsCmd.Flags().BoolVarP(&follow, "follow", "f", false, "specify if the logs should be streamed")
-	logsCmd.Flags().Int32VarP(&tailLines, "tail", "", -1, "lines of log file to display (default is to show from the beginning)")
+	addContainerNamespaceFlags(logsCmd, &logsCmdFlags.containerNamespaceFlag)
+	logsCmd.Flags().BoolVarP(&logsCmdFlags.follow, "follow", "f", false, "specify if the logs should be streamed")
+	logsCmd.Flags().Int32VarP(&logsCmdFlags.tail, "tail", "", -1, "lines of log file to display (default is to show from the beginning)")
 
 	logsCmd.Flags().Bool("use-cri", false, "use the CRI driver")
 	logsCmd.Flags().MarkHidden("use-cri") //nolint:errcheck
+
+	logsCmdFlags.InsecureFlags.AddFlags(logsCmd)
 
 	addCommand(logsCmd)
 }

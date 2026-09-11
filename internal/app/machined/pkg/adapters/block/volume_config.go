@@ -13,7 +13,7 @@ import (
 
 // VolumeConfigSpec adapter provides conversion from MountStatus.
 //
-//nolint:revive,golint
+//nolint:revive
 func VolumeConfigSpec(r *block.VolumeConfigSpec) volumeConfigSpec {
 	return volumeConfigSpec{
 		volumeConfigSpec: r,
@@ -39,6 +39,7 @@ func (a volumeConfigSpec) ApplyEncryptionConfig(in config.EncryptionConfig) erro
 	out.Encryption.KeySize = in.KeySize()
 	out.Encryption.BlockSize = in.BlockSize()
 	out.Encryption.PerfOptions = in.Options()
+	out.Encryption.AllowDiscards = in.AllowDiscards()
 
 	out.Encryption.Keys = make([]block.EncryptionKey, len(in.Keys()))
 

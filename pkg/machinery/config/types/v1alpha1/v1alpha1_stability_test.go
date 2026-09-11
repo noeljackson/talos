@@ -5,6 +5,7 @@
 package v1alpha1_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,7 +23,6 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
-	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/gendata"
 )
 
@@ -30,8 +30,8 @@ import (
 func TestConfigEncodingStability(t *testing.T) {
 	t.Parallel()
 
-	// flip this to generate missing configs
-	const generateMode = false
+	// flip this to generate missing configs/record changes
+	const recordMode = false
 
 	secretsBundle, err := secrets.LoadBundle("testdata/stability/secrets.yaml")
 	require.NoError(t, err)
@@ -48,6 +48,7 @@ func TestConfigEncodingStability(t *testing.T) {
 		config.TalosVersion1_11,
 		config.TalosVersion1_12,
 		config.TalosVersion1_13,
+		config.TalosVersion1_14,
 	}
 
 	currentVersion := ensure.Value(semver.ParseTolerant(gendata.VersionTag))
@@ -69,7 +70,7 @@ func TestConfigEncodingStability(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				testConfigStability(t, in, versionContract, "base", generateMode)
+				testConfigStability(t, in, versionContract, "base", recordMode)
 			})
 
 			t.Run("with overrides", func(t *testing.T) {
@@ -86,24 +87,33 @@ func TestConfigEncodingStability(t *testing.T) {
 					generate.WithInstallExtraKernelArgs([]string{"foo=bar", "bar=baz"}),
 					generate.WithLocalAPIServerPort(5443),
 					generate.WithSysctls(map[string]string{"foo": "bar"}),
-					generate.WithClusterCNIConfig(&v1alpha1.CNIConfig{
-						CNIName: "custom",
-						CNIUrls: []string{"https://example.com/cni.yaml"},
-					}),
+					generate.WithCustomCNIUrl("https://example.com/cni.yaml"),
 					generate.WithRegistryMirror("ghcr.io", "https://ghcr.io.my-mirror.com"),
 				)
 				require.NoError(t, err)
 
-				patches, err := configpatcher.LoadPatches([]string{"@testdata/stability/patch.yaml"})
-				require.NoError(t, err)
+				var patches []configpatcher.Patch
 
-				testConfigStability(t, in, versionContract, "overrides", generateMode, patches...)
+				if !versionContract.MultidocKernelModuleConfigSupported() {
+					patches, err = configpatcher.LoadPatches([]string{"@testdata/stability/patch-pre14.yaml"})
+					require.NoError(t, err)
+				} else {
+					patches, err = configpatcher.LoadPatches([]string{"@testdata/stability/patch.yaml"})
+					require.NoError(t, err)
+				}
+
+				testConfigStability(t, in, versionContract, "overrides", recordMode, patches...)
 			})
 		})
 	}
+
+	if recordMode {
+		t.Log("record mode enabled, will generate missing configs and update existing ones")
+		t.Fail()
+	}
 }
 
-func testConfigStability(t *testing.T, in *generate.Input, versionContract *config.VersionContract, flavor string, generateMode bool, patches ...configpatcher.Patch) {
+func testConfigStability(t *testing.T, in *generate.Input, versionContract *config.VersionContract, flavor string, recordMode bool, patches ...configpatcher.Patch) {
 	t.Helper()
 
 	for _, machineType := range []machine.Type{
@@ -125,15 +135,19 @@ func testConfigStability(t *testing.T, in *generate.Input, versionContract *conf
 		expectedPath := fmt.Sprintf("testdata/stability/%s/%s-%s.yaml", versionContract, flavor, machineType)
 
 		expectedBytes, err := os.ReadFile(expectedPath)
-		if errors.Is(err, fs.ErrNotExist) && generateMode {
-			require.NoError(t, os.WriteFile(expectedPath, cfgBytes, 0o644))
-
-			t.Logf("generated %s", expectedPath)
-
-			continue
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			require.NoError(t, err)
 		}
 
-		require.NoError(t, err)
+		if !recordMode {
+			require.NoError(t, err, "expected config file %s does not exist, run with recordMode=true to generate it", expectedPath)
+		}
+
+		if !bytes.Equal(expectedBytes, cfgBytes) && recordMode {
+			require.NoError(t, os.WriteFile(expectedPath, cfgBytes, 0o644))
+
+			return
+		}
 
 		assert.Equal(t, string(expectedBytes), string(cfgBytes), "config encoding mismatch for %s", expectedPath)
 	}

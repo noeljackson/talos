@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/provision"
 	"github.com/siderolabs/talos/pkg/provision/providers"
@@ -27,11 +28,15 @@ var destroyCmd = &cobra.Command{
 	Short: "Destroys a local Talos kubernetes cluster",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.WithContext(context.Background(), destroy)
+		return destroy(cmd.Context())
 	},
 }
 
 func destroy(ctx context.Context) error {
+	if PersistentFlags.RemoteEndpoint != "" {
+		return destroyRemote(ctx)
+	}
+
 	state, err := provision.ReadState(ctx, PersistentFlags.ClusterName, PersistentFlags.StateDir)
 	if err != nil {
 		return fmt.Errorf("failed to read cluster state: %w", err)
@@ -58,12 +63,31 @@ func destroy(ctx context.Context) error {
 	)
 }
 
+// destroyRemote drives the destroy through the remote-provision server. State
+// lives on the server, so there's no local state.yaml to read — we just
+// Reflect by name and Destroy.
+func destroyRemote(ctx context.Context) error {
+	provisioner, err := providers.Factory(ctx, providers.RemoteProviderName, providers.WithRemoteEndpoint(PersistentFlags.RemoteEndpoint))
+	if err != nil {
+		return err
+	}
+
+	defer provisioner.Close() //nolint:errcheck
+
+	cluster, err := provisioner.Reflect(ctx, PersistentFlags.ClusterName, PersistentFlags.StateDir)
+	if err != nil {
+		return err
+	}
+
+	return provisioner.Destroy(ctx, cluster)
+}
+
 func init() {
 	destroyCmd.PersistentFlags().BoolVarP(&destroyCmdFlags.forceDelete, "force", "f", false, "force deletion of cluster directory if there were errors")
 	destroyCmd.PersistentFlags().StringVarP(&destroyCmdFlags.saveSupportArchivePath, "save-support-archive-path", "", "", "save support archive to the specified file on destroy")
 	destroyCmd.PersistentFlags().StringVarP(&destroyCmdFlags.saveClusterLogsArchivePath, "save-cluster-logs-archive-path", "", "", "save cluster logs archive to the specified file on destroy")
 	AddProvisionerFlag(destroyCmd)
-	cli.Should(destroyCmd.Flags().MarkDeprecated(ProvisionerFlagName, "the provisioner is inferred automatically"))
+	cli.Should(helpers.MarkFlagDeprecated(destroyCmd.Flags(), ProvisionerFlagName, "the provisioner is inferred automatically"))
 
 	Cmd.AddCommand(destroyCmd)
 }

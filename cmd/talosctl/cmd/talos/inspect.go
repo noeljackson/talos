@@ -5,15 +5,11 @@
 package talos
 
 import (
-	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
-	"github.com/siderolabs/talos/pkg/cli"
-	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/pkg/machinery/formatters"
 )
 
@@ -41,22 +37,30 @@ to render the graph:
 `,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			if err := helpers.FailIfMultiNodes(ctx, "inspect dependencies"); err != nil {
-				return err
+		ctx := cmd.Context()
+
+		clientFactory, err := NewClientFactory(ctx, &inspectDependenciesCmdFlags)
+		if err != nil {
+			return err
+		}
+
+		defer clientFactory.Close() //nolint:errcheck
+
+		ctx, c, _, err := clientFactory.BuildClientEnforceSingleNode(ctx, "inspect dependencies")
+		if err != nil {
+			return err
+		}
+
+		resp, err := c.Inspect.ControllerRuntimeDependencies(ctx)
+		if err != nil {
+			if resp == nil {
+				return fmt.Errorf("error getting controller runtime dependencies: %s", err)
 			}
 
-			resp, err := c.Inspect.ControllerRuntimeDependencies(ctx)
-			if err != nil {
-				if resp == nil {
-					return fmt.Errorf("error getting controller runtime dependencies: %s", err)
-				}
+			safeout.Warningf("%s", err)
+		}
 
-				cli.Warning("%s", err)
-			}
-
-			return formatters.RenderGraph(ctx, c, resp, os.Stdout, inspectDependenciesCmdFlags.withResources)
-		})
+		return formatters.RenderGraph(ctx, c, resp, safeout.Stdout(), inspectDependenciesCmdFlags.withResources)
 	},
 }
 

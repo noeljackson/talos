@@ -31,11 +31,12 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/siderolabs/talos/cmd/talosctl/cmd/talos/multiplex"
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/talos/pull"
 	mgmthelpers "github.com/siderolabs/talos/cmd/talosctl/pkg/mgmt/helpers"
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/artifacts"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/global"
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/safeout"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services/registry"
 	"github.com/siderolabs/talos/pkg/flags"
 	"github.com/siderolabs/talos/pkg/imager/cache"
@@ -43,6 +44,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
@@ -67,6 +69,8 @@ func (flags imageCmdFlagsType) apiNamespace() (common.ContainerdNamespace, error
 		return common.ContainerdNamespace_NS_CRI, nil
 	case "system":
 		return common.ContainerdNamespace_NS_SYSTEM, nil
+	case constants.TalosContainersContainerdNamespace:
+		return common.ContainerdNamespace_NS_TALOSCONTAINERS, nil
 	default:
 		return 0, fmt.Errorf("unsupported namespace %q", flags.namespace)
 	}
@@ -89,8 +93,29 @@ func (flags imageCmdFlagsType) containerdInstance() (*common.ContainerdInstance,
 			Driver:    common.ContainerDriver_CONTAINERD,
 			Namespace: common.ContainerdNamespace_NS_SYSTEM,
 		}, nil
+	case constants.TalosContainersContainerdNamespace:
+		return &common.ContainerdInstance{
+			Driver:    common.ContainerDriver_CONTAINERD,
+			Namespace: common.ContainerdNamespace_NS_TALOSCONTAINERS,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported namespace %q", flags.namespace)
+	}
+}
+
+// containerNamespace resolves the raw containerd namespace and driver used by the container-listing
+// RPCs (containers, logs, stats, restart), which take the namespace as a string directly rather than
+// through the ContainerdNamespace enum used by the image and debug commands.
+func (flags imageCmdFlagsType) containerNamespace() (string, common.ContainerDriver, error) {
+	switch flags.namespace {
+	case "cri":
+		return constants.K8sContainerdNamespace, common.ContainerDriver_CRI, nil
+	case "system":
+		return constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD, nil
+	case constants.TalosContainersContainerdNamespace:
+		return constants.TalosContainersContainerdNamespace, common.ContainerDriver_CONTAINERD, nil
+	default:
+		return "", 0, fmt.Errorf("namespace %q is not supported by this command", flags.namespace)
 	}
 }
 
@@ -111,99 +136,111 @@ var imageListCmd = &cobra.Command{
 	Long:    ``,
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return imageList()
+		return imageList(cmd.Context())
 	},
 }
 
-func imageList() error {
-	return WithClientAndNodes(func(ctx context.Context, c *client.Client, nodes []string) error {
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
+func imageList(ctx context.Context) error {
+	clientFactory, err := NewClientFactory(ctx, nil)
+	if err != nil {
+		return err
+	}
 
-		containerdInstance, err := imageCmdFlags.containerdInstance()
-		if err != nil {
-			return err
+	defer clientFactory.Close() //nolint:errcheck
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	containerdInstance, err := imageCmdFlags.containerdInstance()
+	if err != nil {
+		return err
+	}
+
+	responseChan := multiplex.StreamingViaFactory(
+		ctx, clientFactory,
+		func(ctx context.Context, c *client.Client) (grpc.ServerStreamingClient[machine.ImageServiceListResponse], error) {
+			return c.ImageClient.List(ctx, &machine.ImageServiceListRequest{
+				Containerd: containerdInstance,
+			})
+		},
+	)
+
+	w := tabwriter.NewWriter(safeout.Stdout(), 0, 0, 3, ' ', 0)
+	headerWritten := false
+
+	var errs error
+
+	for resp := range responseChan {
+		if resp.Err != nil {
+			if status.Code(resp.Err) == codes.Unimplemented {
+				// fallback to legacy API for older Talos
+				return imageListLegacy(ctx, clientFactory)
+			}
+
+			errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
+
+			continue
 		}
 
-		responseChan := multiplex.Streaming(ctx, nodes,
-			func(ctx context.Context) (grpc.ServerStreamingClient[machine.ImageServiceListResponse], error) {
-				return c.ImageClient.List(ctx, &machine.ImageServiceListRequest{
-					Containerd: containerdInstance,
-				})
-			},
+		if !headerWritten {
+			headerWritten = true
+
+			fmt.Fprintln(w, "NODE\tIMAGE\tDIGEST\tSIZE\tLABELS\tCREATED")
+		}
+
+		safeout.Fprintf(
+			w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			resp.Node,
+			resp.Payload.GetName(),
+			resp.Payload.GetDigest(),
+			humanize.Bytes(uint64(resp.Payload.GetSize())),
+			helpers.FormatLabels(resp.Payload.GetLabels()),
+			resp.Payload.GetCreatedAt().AsTime().Format(time.RFC3339),
 		)
+	}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		headerWritten := false
-
-		var errs error
-
-		for resp := range responseChan {
-			if resp.Err != nil {
-				if status.Code(resp.Err) == codes.Unimplemented {
-					// fallback to legacy API for older Talos
-					return imageListLegacy()
-				}
-
-				errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
-
-				continue
-			}
-
-			if !headerWritten {
-				headerWritten = true
-
-				fmt.Fprintln(w, "NODE\tIMAGE\tDIGEST\tSIZE\tLABELS\tCREATED")
-			}
-
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				resp.Node,
-				resp.Payload.GetName(),
-				resp.Payload.GetDigest(),
-				humanize.Bytes(uint64(resp.Payload.GetSize())),
-				helpers.FormatLabels(resp.Payload.GetLabels()),
-				resp.Payload.GetCreatedAt().AsTime().Format(time.RFC3339),
-			)
-		}
-
-		return errors.Join(errs, w.Flush())
-	})
+	return errors.Join(errs, w.Flush())
 }
 
 // imageListLegacy lists images using the legacy ImageList API.
 //
 // Note: remove me in Talos 1.15.
-func imageListLegacy() error {
-	return WithClient(func(ctx context.Context, c *client.Client) error {
-		ns, err := imageCmdFlags.apiNamespace()
-		if err != nil {
-			return err
+func imageListLegacy(ctx context.Context, clientFactory *global.ClientFactory) error {
+	ns, err := imageCmdFlags.apiNamespace()
+	if err != nil {
+		return err
+	}
+
+	responseChan := multiplex.StreamingViaFactory(
+		ctx, clientFactory,
+		func(ctx context.Context, c *client.Client) (machine.MachineService_ImageListClient, error) {
+			return c.ImageList(ctx, ns) //nolint:staticcheck // legacy talosctl methods, to be removed in Talos 1.15
+		},
+	)
+
+	w := tabwriter.NewWriter(safeout.Stdout(), 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "NODE\tIMAGE\tDIGEST\tSIZE\tCREATED")
+
+	var errs error
+
+	for resp := range responseChan {
+		if resp.Err != nil {
+			errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
+
+			continue
 		}
 
-		rcv, err := c.ImageList(ctx, ns) //nolint:staticcheck // legacy talosctl methods, to be removed in Talos 1.15
-		if err != nil {
-			return fmt.Errorf("error listing images: %w", err)
-		}
+		safeout.Fprintf(
+			w, "%s\t%s\t%s\t%s\t%s\n",
+			resp.Node,
+			resp.Payload.Name,
+			resp.Payload.Digest,
+			humanize.Bytes(uint64(resp.Payload.Size)),
+			resp.Payload.CreatedAt.AsTime().Format(time.RFC3339),
+		)
+	}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "NODE\tIMAGE\tDIGEST\tSIZE\tCREATED")
-
-		if err = helpers.ReadGRPCStream(rcv, func(msg *machine.ImageListResponse, node string, multipleNodes bool) error {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-				node,
-				msg.Name,
-				msg.Digest,
-				humanize.Bytes(uint64(msg.Size)),
-				msg.CreatedAt.AsTime().Format(time.RFC3339),
-			)
-
-			return nil
-		}); err != nil {
-			return err
-		}
-
-		return w.Flush()
-	})
+	return errors.Join(errs, w.Flush())
 }
 
 // imagePullCmd represents the image pull command.
@@ -214,39 +251,44 @@ var imagePullCmd = &cobra.Command{
 	Long:    ``,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return imagePull(args[0])
+		return imagePull(cmd.Context(), args[0])
 	},
 }
 
 // imagePull pulls an image using modern API and showing progress.
-func imagePull(imageRef string) error {
-	return WithClientAndNodes(func(ctx context.Context, c *client.Client, nodes []string) error {
-		rep := reporter.New()
-
-		containerdInstance, err := imageCmdFlags.containerdInstance()
-		if err != nil {
-			return err
-		}
-
-		_, err = imagePullInternal(ctx, c, containerdInstance, nodes, imageRef, rep)
-
+func imagePull(ctx context.Context, imageRef string) error {
+	clientFactory, err := NewClientFactory(ctx, nil)
+	if err != nil {
 		return err
-	})
+	}
+
+	defer clientFactory.Close() //nolint:errcheck
+
+	rep := reporter.New(reporter.WithLineFilter(safeout.String))
+
+	containerdInstance, err := imageCmdFlags.containerdInstance()
+	if err != nil {
+		return err
+	}
+
+	_, err = imagePullInternal(ctx, clientFactory, containerdInstance, imageRef, rep)
+
+	return err
 }
 
 func imagePullInternal(
 	ctx context.Context,
-	c *client.Client,
+	clientFactory *global.ClientFactory,
 	containerdInstance *common.ContainerdInstance,
-	nodes []string,
 	imageRef string,
 	rep *reporter.Reporter,
 ) (map[string]string, error) {
-	ctx, cancel := context.WithCancel(ctx)
+	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	responseChan := multiplex.Streaming(ctx, nodes,
-		func(ctx context.Context) (grpc.ServerStreamingClient[machine.ImageServicePullResponse], error) {
+	responseChan := multiplex.StreamingViaFactory(
+		streamCtx, clientFactory,
+		func(ctx context.Context, c *client.Client) (grpc.ServerStreamingClient[machine.ImageServicePullResponse], error) {
 			return c.ImageClient.Pull(ctx, &machine.ImageServicePullRequest{
 				Containerd: containerdInstance,
 				ImageRef:   imageRef,
@@ -267,7 +309,7 @@ func imagePullInternal(
 				cancel()
 
 				// fallback to legacy API for older Talos
-				return nil, imagePullLegacy(imageRef)
+				return nil, imagePullLegacy(ctx, imageRef)
 			}
 
 			errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
@@ -294,7 +336,7 @@ func imagePullInternal(
 		var sb strings.Builder
 
 		for node, imageName := range finishedPulls {
-			fmt.Fprintf(&sb, "%s: pulled image %s\n", node, imageName)
+			fmt.Fprintf(&sb, "%s: pulled image %s\n", node, safeout.String(imageName))
 		}
 
 		rep.Report(reporter.Update{
@@ -309,20 +351,35 @@ func imagePullInternal(
 // imagePullLegacy pulls an image using the legacy ImagePull API.
 //
 // Note: remove me in Talos 1.15.
-func imagePullLegacy(imageRef string) error {
-	return WithClient(func(ctx context.Context, c *client.Client) error {
-		ns, err := imageCmdFlags.apiNamespace()
-		if err != nil {
-			return err
-		}
+func imagePullLegacy(ctx context.Context, imageRef string) error {
+	clientFactory, err := NewClientFactory(ctx, &imageCmdFlags)
+	if err != nil {
+		return err
+	}
 
-		err = c.ImagePull(ctx, ns, imageRef) //nolint:staticcheck // legacy talosctl methods, to be removed in Talos 1.15
-		if err != nil {
-			return fmt.Errorf("error pulling image: %w", err)
-		}
+	defer clientFactory.Close() //nolint:errcheck
 
-		return nil
-	})
+	ns, err := imageCmdFlags.apiNamespace()
+	if err != nil {
+		return err
+	}
+
+	responseChan := multiplex.UnaryViaFactory(
+		ctx, clientFactory,
+		func(ctx context.Context, c *client.Client) (struct{}, error) {
+			return struct{}{}, c.ImagePull(ctx, ns, imageRef) //nolint:staticcheck // legacy talosctl methods, to be removed in Talos 1.15
+		},
+	)
+
+	var errs error
+
+	for resp := range responseChan {
+		if resp.Err != nil {
+			errs = errors.Join(errs, fmt.Errorf("error pulling image on node %s: %w", resp.Node, resp.Err))
+		}
+	}
+
+	return errs
 }
 
 // imageImportInternal imports an image from a tarball.
@@ -344,8 +401,6 @@ func imageImportInternal(
 	}
 
 	defer in.Close() //nolint:errcheck
-
-	ctx = client.WithNode(ctx, node)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -422,40 +477,46 @@ var imageRemoveCmd = &cobra.Command{
 	Long:    ``,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return imageRemove(args[0])
+		return imageRemove(cmd.Context(), args[0])
 	},
 }
 
 // imageRemove removes an image using modern API.
-func imageRemove(imageRef string) error {
-	return WithClientAndNodes(func(ctx context.Context, c *client.Client, nodes []string) error {
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
+func imageRemove(ctx context.Context, imageRef string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-		containerdInstance, err := imageCmdFlags.containerdInstance()
-		if err != nil {
-			return err
+	clientFactory, err := NewClientFactory(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	defer clientFactory.Close() //nolint:errcheck
+
+	containerdInstance, err := imageCmdFlags.containerdInstance()
+	if err != nil {
+		return err
+	}
+
+	responseChan := multiplex.UnaryViaFactory(
+		ctx, clientFactory,
+		func(ctx context.Context, c *client.Client) (*emptypb.Empty, error) {
+			return c.ImageClient.Remove(ctx, &machine.ImageServiceRemoveRequest{
+				Containerd: containerdInstance,
+				ImageRef:   imageRef,
+			})
+		},
+	)
+
+	var errs error
+
+	for resp := range responseChan {
+		if resp.Err != nil {
+			errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
 		}
+	}
 
-		responseChan := multiplex.Unary(ctx, nodes,
-			func(ctx context.Context) (*emptypb.Empty, error) {
-				return c.ImageClient.Remove(ctx, &machine.ImageServiceRemoveRequest{
-					Containerd: containerdInstance,
-					ImageRef:   imageRef,
-				})
-			},
-		)
-
-		var errs error
-
-		for resp := range responseChan {
-			if resp.Err != nil {
-				errs = errors.Join(errs, fmt.Errorf("error from node %s: %w", resp.Node, resp.Err))
-			}
-		}
-
-		return errs
-	})
+	return errs
 }
 
 var imageK8sBundleCmdFlags = struct {
@@ -479,20 +540,22 @@ var imageK8sBundleCmd = &cobra.Command{
 	Short:   "List the default Kubernetes images used by Talos",
 	Long:    ``,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		images := images.ListWithOptions(container.NewV1Alpha1(
-			&v1alpha1.Config{
-				MachineConfig: &v1alpha1.MachineConfig{
-					MachineKubelet: &v1alpha1.KubeletConfig{},
+		images := images.ListWithOptions(
+			container.NewV1Alpha1(
+				&v1alpha1.Config{
+					MachineConfig: &v1alpha1.MachineConfig{
+						MachineKubelet: &v1alpha1.KubeletConfig{}, //nolint:staticcheck // legacy config
+					},
+					ClusterConfig: &v1alpha1.ClusterConfig{
+						EtcdConfig:              &v1alpha1.EtcdConfig{},
+						APIServerConfig:         &v1alpha1.APIServerConfig{},
+						ControllerManagerConfig: &v1alpha1.ControllerManagerConfig{}, //nolint:staticcheck // legacy config
+						SchedulerConfig:         &v1alpha1.SchedulerConfig{},         //nolint:staticcheck // legacy config
+						CoreDNSConfig:           &v1alpha1.CoreDNS{},
+						ProxyConfig:             &v1alpha1.ProxyConfig{}, //nolint:staticcheck // legacy configuration
+					},
 				},
-				ClusterConfig: &v1alpha1.ClusterConfig{
-					EtcdConfig:              &v1alpha1.EtcdConfig{},
-					APIServerConfig:         &v1alpha1.APIServerConfig{},
-					ControllerManagerConfig: &v1alpha1.ControllerManagerConfig{},
-					SchedulerConfig:         &v1alpha1.SchedulerConfig{},
-					CoreDNSConfig:           &v1alpha1.CoreDNS{},
-					ProxyConfig:             &v1alpha1.ProxyConfig{},
-				},
-			}),
+			),
 			images.VersionsListOptions{
 				KubernetesVersion:          imageK8sBundleCmdFlags.k8sVersion.String(),
 				EtcdVersion:                imageK8sBundleCmdFlags.etcdVersion.String(),
@@ -502,16 +565,16 @@ var imageK8sBundleCmd = &cobra.Command{
 			},
 		)
 
-		fmt.Printf("%s\n", images.Flannel)
-		fmt.Printf("%s\n", images.CoreDNS)
-		fmt.Printf("%s\n", images.Etcd)
-		fmt.Printf("%s\n", images.Pause)
-		fmt.Printf("%s\n", images.KubeAPIServer)
-		fmt.Printf("%s\n", images.KubeControllerManager)
-		fmt.Printf("%s\n", images.KubeScheduler)
-		fmt.Printf("%s\n", images.KubeProxy)
-		fmt.Printf("%s\n", images.Kubelet)
-		fmt.Printf("%s\n", images.KubeNetworkPolicies)
+		safeout.Printf("%s\n", images.Flannel)
+		safeout.Printf("%s\n", images.CoreDNS)
+		safeout.Printf("%s\n", images.Etcd)
+		safeout.Printf("%s\n", images.Pause)
+		safeout.Printf("%s\n", images.KubeAPIServer)
+		safeout.Printf("%s\n", images.KubeControllerManager)
+		safeout.Printf("%s\n", images.KubeScheduler)
+		safeout.Printf("%s\n", images.KubeProxy)
+		safeout.Printf("%s\n", images.Kubelet)
+		safeout.Printf("%s\n", images.KubeNetworkPolicies)
 
 		return nil
 	},
@@ -582,20 +645,28 @@ var imageTalosBundleCmd = &cobra.Command{
 			tag = args[0]
 		}
 
+		semTag, err := semver.ParseTolerant(tag)
+		if err != nil {
+			return fmt.Errorf("invalid tag %q: %w", tag, err)
+		}
+
 		sources := images.ListSourcesFor(tag)
 
-		fmt.Printf("%s\n", sources.Installer)
-		fmt.Printf("%s\n", sources.InstallerBase)
-		fmt.Printf("%s\n", sources.Imager)
-		fmt.Printf("%s\n", sources.Talos)
-		fmt.Printf("%s\n", sources.TalosctlAll)
-		fmt.Printf("%s\n", sources.Overlays)
-		fmt.Printf("%s\n", sources.Extensions)
+		if semTag.LT(talosLegacyInstallerMaximumVersion) {
+			safeout.Printf("%s\n", sources.Installer)
+		}
+
+		safeout.Printf("%s\n", sources.InstallerBase)
+		safeout.Printf("%s\n", sources.Imager)
+		safeout.Printf("%s\n", sources.Talos)
+		safeout.Printf("%s\n", sources.TalosctlAll)
+		safeout.Printf("%s\n", sources.Overlays)
+		safeout.Printf("%s\n", sources.Extensions)
 
 		digestedReferences := []string{}
 
 		if imageTalosBundleCmdFlags.extensions {
-			extensions, err = artifacts.FetchOfficialExtensions(tag)
+			extensions, err = artifacts.FetchOfficialExtensions(cmd.Context(), tag)
 			if err != nil {
 				return fmt.Errorf("error fetching official extensions for %s: %w", tag, err)
 			}
@@ -606,7 +677,7 @@ var imageTalosBundleCmd = &cobra.Command{
 		}
 
 		if imageTalosBundleCmdFlags.overlays {
-			overlays, err = artifacts.FetchOfficialOverlays(tag)
+			overlays, err = artifacts.FetchOfficialOverlays(cmd.Context(), tag)
 			if err != nil {
 				return fmt.Errorf("error fetching official overlays for %s: %w", tag, err)
 			}
@@ -619,14 +690,20 @@ var imageTalosBundleCmd = &cobra.Command{
 		slices.Sort(digestedReferences)
 
 		for _, ref := range slices.Compact(digestedReferences) {
-			fmt.Printf("%s\n", ref)
+			safeout.Printf("%s\n", ref)
 		}
 
 		return nil
 	},
 }
 
-var talosBundleMinimumVersion = semver.MustParse("1.11.0-alpha.0")
+var (
+	// talosBundleMinimumVersion is the minimum version for which the talos-bundle command is supported.
+	talosBundleMinimumVersion = semver.MustParse("1.11.0-alpha.0")
+
+	// talosLegacyInstallerMaximumVersion is the maximum version for which the legacy installer image is included in the talos-bundle output.
+	talosLegacyInstallerMaximumVersion = semver.MustParse("1.14.0-alpha.0")
+)
 
 // imageIntegrationCmd represents the integration image command.
 var imageIntegrationCmd = &cobra.Command{
@@ -649,15 +726,15 @@ var imageIntegrationCmd = &cobra.Command{
 
 		imgs := images.List(container.NewV1Alpha1(&v1alpha1.Config{
 			MachineConfig: &v1alpha1.MachineConfig{
-				MachineKubelet: &v1alpha1.KubeletConfig{},
+				MachineKubelet: &v1alpha1.KubeletConfig{}, //nolint:staticcheck // legacy config
 			},
 			ClusterConfig: &v1alpha1.ClusterConfig{
 				EtcdConfig:              &v1alpha1.EtcdConfig{},
 				APIServerConfig:         &v1alpha1.APIServerConfig{},
-				ControllerManagerConfig: &v1alpha1.ControllerManagerConfig{},
-				SchedulerConfig:         &v1alpha1.SchedulerConfig{},
+				ControllerManagerConfig: &v1alpha1.ControllerManagerConfig{}, //nolint:staticcheck
+				SchedulerConfig:         &v1alpha1.SchedulerConfig{},         //nolint:staticcheck
 				CoreDNSConfig:           &v1alpha1.CoreDNS{},
-				ProxyConfig:             &v1alpha1.ProxyConfig{},
+				ProxyConfig:             &v1alpha1.ProxyConfig{}, //nolint:staticcheck
 			},
 		}))
 
@@ -679,6 +756,7 @@ var imageIntegrationCmd = &cobra.Command{
 			"registry.k8s.io/kube-apiserver:v1.27.0",
 			"registry.k8s.io/kube-apiserver:v1.27.1",
 			"docker.io/library/alpine:3.23",
+			constants.DebugNixyBoxImage,
 			"docker.io/library/nginx:latest",
 			imageIntegrationCmdFlags.registryAndUser + "/installer:" +
 				imageIntegrationCmdFlags.installerTag,
@@ -708,7 +786,7 @@ var imageIntegrationCmd = &cobra.Command{
 		imageNames = slices.Compact(imageNames)
 
 		for _, img := range imageNames {
-			fmt.Println(img)
+			safeout.Println(img)
 		}
 
 		return nil
@@ -993,8 +1071,10 @@ var imageCacheCertGenCmdFlags struct {
 }
 
 func init() {
-	imageCmd.PersistentFlags().StringVar(&imageCmdFlags.namespace, "namespace", "cri",
-		"namespace to use: \"system\" (etcd and kubelet images), \"cri\" for all Kubernetes workloads, \"inmem\" for in-memory containerd instance",
+	imageCmd.PersistentFlags().StringVar(
+		&imageCmdFlags.namespace, "namespace", "cri",
+		"namespace to use: \"system\" (etcd and kubelet images), \"cri\" for all Kubernetes workloads, \"inmem\" for in-memory containerd instance, \""+
+			constants.TalosContainersContainerdNamespace+"\" for containers declared via ContainerConfig",
 	)
 	addCommand(imageCmd)
 

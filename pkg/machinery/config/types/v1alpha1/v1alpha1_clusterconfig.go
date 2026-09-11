@@ -5,7 +5,6 @@
 package v1alpha1
 
 import (
-	"fmt"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -14,7 +13,6 @@ import (
 	"github.com/siderolabs/crypto/x509"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-pointer"
-	sideronet "github.com/siderolabs/net"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -28,7 +26,7 @@ func (c *ClusterConfig) Name() string {
 }
 
 // APIServer implements the config.ClusterConfig interface.
-func (c *ClusterConfig) APIServer() config.APIServer {
+func (c *ClusterConfig) APIServer() *APIServerConfig {
 	if c.APIServerConfig == nil {
 		return &APIServerConfig{}
 	}
@@ -37,7 +35,7 @@ func (c *ClusterConfig) APIServer() config.APIServer {
 }
 
 // ControllerManager implements the config.ClusterConfig interface.
-func (c *ClusterConfig) ControllerManager() config.ControllerManager {
+func (c *ClusterConfig) ControllerManager() *ControllerManagerConfig {
 	if c.ControllerManagerConfig == nil {
 		return &ControllerManagerConfig{}
 	}
@@ -46,7 +44,7 @@ func (c *ClusterConfig) ControllerManager() config.ControllerManager {
 }
 
 // Proxy implements the config.ClusterConfig interface.
-func (c *ClusterConfig) Proxy() config.Proxy {
+func (c *ClusterConfig) Proxy() *ProxyConfig {
 	if c.ProxyConfig == nil {
 		return &ProxyConfig{}
 	}
@@ -55,7 +53,7 @@ func (c *ClusterConfig) Proxy() config.Proxy {
 }
 
 // Scheduler implements the config.ClusterConfig interface.
-func (c *ClusterConfig) Scheduler() config.Scheduler {
+func (c *ClusterConfig) Scheduler() *SchedulerConfig {
 	if c.SchedulerConfig == nil {
 		return &SchedulerConfig{}
 	}
@@ -79,22 +77,7 @@ func (c *ClusterConfig) CertSANs() []string {
 		return nil
 	}
 
-	return c.APIServerConfig.CertSANs
-}
-
-// IssuingCA implements the config.ClusterConfig interface.
-func (c *ClusterConfig) IssuingCA() *x509.PEMEncodedCertificateAndKey {
-	return c.ClusterCA
-}
-
-// AcceptedCAs implements the config.ClusterConfig interface.
-func (c *ClusterConfig) AcceptedCAs() []*x509.PEMEncodedCertificate {
-	return slices.Clone(c.ClusterAcceptedCAs)
-}
-
-// AggregatorCA implements the config.ClusterConfig interface.
-func (c *ClusterConfig) AggregatorCA() *x509.PEMEncodedCertificateAndKey {
-	return c.ClusterAggregatorCA
+	return c.APIServerConfig.ExtraCertSANs
 }
 
 // ServiceAccount implements the config.ClusterConfig interface.
@@ -121,11 +104,6 @@ func (c *ClusterConfig) Etcd() config.Etcd {
 	return c.EtcdConfig
 }
 
-// Network implements the config.ClusterConfig interface.
-func (c *ClusterConfig) Network() config.ClusterNetwork {
-	return c
-}
-
 // LocalAPIServerPort implements the config.ClusterConfig interface.
 func (c *ClusterConfig) LocalAPIServerPort() int {
 	if c.ControlPlane == nil || c.ControlPlane.LocalAPIServerPort == 0 {
@@ -136,7 +114,7 @@ func (c *ClusterConfig) LocalAPIServerPort() int {
 }
 
 // CoreDNS implements the config.ClusterConfig interface.
-func (c *ClusterConfig) CoreDNS() config.CoreDNS {
+func (c *ClusterConfig) CoreDNS() *CoreDNS {
 	if c.CoreDNSConfig == nil {
 		return &CoreDNS{}
 	}
@@ -155,17 +133,18 @@ func (c *ClusterConfig) ExternalCloudProvider() config.ExternalCloudProvider {
 
 // ExtraManifestURLs implements the config.ClusterConfig interface.
 func (c *ClusterConfig) ExtraManifestURLs() []string {
-	return c.ExtraManifests
+	result := slices.Clone(c.ExtraManifests)
+
+	if c.ClusterNetwork != nil && c.ClusterNetwork.CNI != nil {
+		result = slices.Concat(result, c.ClusterNetwork.CNI.CNIUrls)
+	}
+
+	return result
 }
 
 // ExtraManifestHeaderMap implements the config.ClusterConfig interface.
 func (c *ClusterConfig) ExtraManifestHeaderMap() map[string]string {
 	return c.ExtraManifestHeaders
-}
-
-// InlineManifests implements the config.ClusterConfig interface.
-func (c *ClusterConfig) InlineManifests() []config.InlineManifest {
-	return xslices.Map(c.ClusterInlineManifests, func(m ClusterInlineManifest) config.InlineManifest { return m })
 }
 
 // AdminKubeconfig implements the config.ClusterConfig interface.
@@ -188,16 +167,16 @@ func (c *ClusterConfig) ScheduleOnControlPlanes() bool {
 
 // ID returns the unique identifier for the cluster.
 func (c *ClusterConfig) ID() string {
-	return c.ClusterID
+	return c.ClusterID //nolint:staticcheck // legacy configuration
 }
 
 // Secret returns the cluster secret.
 func (c *ClusterConfig) Secret() string {
-	return c.ClusterSecret
+	return c.ClusterSecret //nolint:staticcheck // legacy configuration
 }
 
 // CNI implements the config.ClusterNetwork interface.
-func (c *ClusterConfig) CNI() config.CNI {
+func (c *ClusterConfig) CNI() *CNIConfig {
 	switch {
 	case c.ClusterNetwork == nil:
 		fallthrough
@@ -212,27 +191,43 @@ func (c *ClusterConfig) CNI() config.CNI {
 }
 
 // PodCIDRs implements the config.ClusterNetwork interface.
-func (c *ClusterConfig) PodCIDRs() []string {
+func (c *ClusterConfig) PodCIDRs() []netip.Prefix {
+	var subnets []string
+
 	switch {
 	case c.ClusterNetwork == nil:
 		fallthrough
 	case len(c.ClusterNetwork.PodSubnet) == 0:
-		return []string{constants.DefaultIPv4PodNet}
+		subnets = []string{constants.DefaultIPv4PodCIDR}
+	default:
+		subnets = c.ClusterNetwork.PodSubnet
 	}
 
-	return c.ClusterNetwork.PodSubnet
+	return xslices.Map(subnets, func(s string) netip.Prefix {
+		ip, _ := netip.ParsePrefix(s) //nolint:errcheck // the subnets are validated
+
+		return ip
+	})
 }
 
 // ServiceCIDRs implements the config.ClusterNetwork interface.
-func (c *ClusterConfig) ServiceCIDRs() []string {
+func (c *ClusterConfig) ServiceCIDRs() []netip.Prefix {
+	var subnets []string
+
 	switch {
 	case c.ClusterNetwork == nil:
 		fallthrough
 	case len(c.ClusterNetwork.ServiceSubnet) == 0:
-		return []string{constants.DefaultIPv4ServiceNet}
+		subnets = []string{constants.DefaultIPv4ServiceCIDR}
+	default:
+		subnets = c.ClusterNetwork.ServiceSubnet
 	}
 
-	return c.ClusterNetwork.ServiceSubnet
+	return xslices.Map(subnets, func(s string) netip.Prefix {
+		ip, _ := netip.ParsePrefix(s) //nolint:errcheck // the subnets are validated
+
+		return ip
+	})
 }
 
 // DNSDomain implements the config.ClusterNetwork interface.
@@ -244,24 +239,18 @@ func (c *ClusterConfig) DNSDomain() string {
 	return c.ClusterNetwork.DNSDomain
 }
 
-// APIServerIPs implements the config.ClusterNetwork interface.
-func (c *ClusterConfig) APIServerIPs() ([]netip.Addr, error) {
-	serviceCIDRs, err := sideronet.SplitCIDRs(strings.Join(c.ServiceCIDRs(), ","))
-	if err != nil {
-		return nil, fmt.Errorf("failed to process Service CIDRs: %w", err)
-	}
-
-	return sideronet.NthIPInCIDRSet(serviceCIDRs, 1)
+// NodeCIDRMaskSizeIPv4 implements the config.K8sNetworkConfig interface.
+//
+// The legacy v1alpha1 config has no per-node CIDR mask size setting, so the default is always used.
+func (c *ClusterConfig) NodeCIDRMaskSizeIPv4() int {
+	return constants.DefaultNodeCIDRMaskSizeIPv4
 }
 
-// DNSServiceIPs implements the config.ClusterNetwork interface.
-func (c *ClusterConfig) DNSServiceIPs() ([]netip.Addr, error) {
-	serviceCIDRs, err := sideronet.SplitCIDRs(strings.Join(c.ServiceCIDRs(), ","))
-	if err != nil {
-		return nil, fmt.Errorf("failed to process Service CIDRs: %w", err)
-	}
-
-	return sideronet.NthIPInCIDRSet(serviceCIDRs, 10)
+// NodeCIDRMaskSizeIPv6 implements the config.K8sNetworkConfig interface.
+//
+// The legacy v1alpha1 config has no per-node CIDR mask size setting, so the default is always used.
+func (c *ClusterConfig) NodeCIDRMaskSizeIPv6() int {
+	return constants.DefaultNodeCIDRMaskSizeIPv6
 }
 
 // Discovery implements the config.Cluster interface.

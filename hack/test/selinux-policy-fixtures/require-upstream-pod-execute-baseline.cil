@@ -1,0 +1,1 @@
+(neverallow pod_t bin_exec_t (file (execute_no_trans)))

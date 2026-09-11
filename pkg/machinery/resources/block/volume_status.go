@@ -5,6 +5,8 @@
 package block
 
 import (
+	"time"
+
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
 	"github.com/cosi-project/runtime/pkg/resource/protobuf"
@@ -49,7 +51,7 @@ type VolumeStatusSpec struct {
 
 	// EncryptionProvider is the provider of the encryption which was used to unlock the volume.
 	EncryptionProvider EncryptionProviderType `yaml:"encryptionProvider,omitempty" protobuf:"12"`
-	// EncryptionFailedSyncs is the list of failed syncs for the volume (per key/provider)/
+	// EncryptionFailedSyncs is the list of failed syncs for the volume (per key/provider).
 	EncryptionFailedSyncs []string `yaml:"encryptionFailedSyncs,omitempty" protobuf:"14"`
 	// ConfiguredEncryptionKeys is the list of configured encryption keys for the volume.
 	ConfiguredEncryptionKeys []string `yaml:"configuredEncryptionKeys,omitempty" protobuf:"17"`
@@ -59,6 +61,18 @@ type VolumeStatusSpec struct {
 	EncryptionSlot *int `yaml:"encryptionSlot,omitempty" protobuf:"21"`
 	// TPMEncryptionOptions is the options for TPM-based encryption.
 	TPMEncryptionOptions TPMEncryptionOptionsInfo `yaml:"tpmEncryptionOptions,omitempty" protobuf:"22"`
+	// EncryptionAllowDiscards indicates whether the encrypted volume passes discards to the underlying device.
+	EncryptionAllowDiscards bool `yaml:"encryptionAllowDiscards,omitempty" protobuf:"23"`
+
+	// TrimEnabled indicates whether the volume should be trimmed (fstrim) on a schedule.
+	TrimEnabled bool `yaml:"trimEnabled,omitempty" protobuf:"24"`
+	// TrimInterval is the resolved interval at which the volume should be trimmed.
+	TrimInterval time.Duration `yaml:"trimInterval,omitempty" protobuf:"25"`
+
+	// ScrubEnabled indicates whether the volume filesystem should be scrubbed on a schedule.
+	ScrubEnabled bool `yaml:"scrubEnabled,omitempty" protobuf:"26"`
+	// ScrubInterval is the resolved period at which the volume filesystem should be scrubbed.
+	ScrubInterval time.Duration `yaml:"scrubInterval,omitempty" protobuf:"27"`
 
 	// MountSpec is the mount specification.
 	MountSpec MountSpec `yaml:"mountSpec,omitempty" protobuf:"15"`

@@ -14,6 +14,7 @@ import (
 
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
+	"github.com/siderolabs/talos/pkg/machinery/config/container"
 )
 
 //go:embed testdata/apply/config.yaml
@@ -103,6 +104,7 @@ func TestApplyMultiDoc(t *testing.T) {
 	patches, err := configpatcher.LoadPatches([]string{
 		"@testdata/multidoc/strategic1.yaml",
 		"@testdata/multidoc/strategic2.yaml",
+		"@testdata/multidoc/strategic3.yaml",
 	})
 	require.NoError(t, err)
 
@@ -132,6 +134,24 @@ func TestApplyMultiDoc(t *testing.T) {
 			assert.Equal(t, expectedMultidoc, string(bytes))
 		})
 	}
+}
+
+func TestApplyToEmptyConfig(t *testing.T) {
+	patches, err := configpatcher.LoadPatches([]string{
+		"@testdata/multidoc/strategic2.yaml",
+	})
+	require.NoError(t, err)
+
+	cfg, err := container.New()
+	require.NoError(t, err)
+
+	out, err := configpatcher.Apply(configpatcher.WithConfig(cfg), patches)
+	require.NoError(t, err)
+
+	patched, err := out.Config()
+	require.NoError(t, err)
+
+	require.Len(t, patched.Documents(), 2)
 }
 
 //go:embed testdata/auditpolicy/config.yaml
@@ -363,6 +383,46 @@ func TestPatchLink(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.Equal(t, configPatchExpected, string(bytes))
+		})
+	}
+}
+
+//go:embed testdata/patchmixed/base.yaml
+var mixedBase []byte
+
+//go:embed testdata/patchmixed/expected.yaml
+var mixedExpected string
+
+func TestPatchMixed(t *testing.T) {
+	patches, err := configpatcher.LoadPatches([]string{
+		"@testdata/patchmixed/patch.yaml",
+	})
+	require.NoError(t, err)
+
+	cfg, err := configloader.NewFromBytes(mixedBase)
+	require.NoError(t, err)
+
+	for _, tt := range []struct {
+		name  string
+		input configpatcher.Input
+	}{
+		{
+			name:  "WithConfig",
+			input: configpatcher.WithConfig(cfg),
+		},
+		{
+			name:  "WithBytes",
+			input: configpatcher.WithBytes(mixedBase),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := configpatcher.Apply(tt.input, patches)
+			require.NoError(t, err)
+
+			bytes, err := out.Bytes()
+			require.NoError(t, err)
+
+			assert.Equal(t, mixedExpected, string(bytes))
 		})
 	}
 }

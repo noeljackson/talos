@@ -68,7 +68,10 @@
 ; iptables used by CNI
 (allow pod_containerd_t bin_exec_t (file (execute_no_trans execute)))
 (allow pod_containerd_t bin_exec_t (fs_classes (ro)))
-; (allow pod_p cni_conf_t (fs_classes (rw)))
+; /etc/cni is a context=cni_conf_t writable tmpfs managed by CRI.
+(allow pod_containerd_t cni_conf_t (fs_classes (rw)))
+; The /etc/kubernetes tmpfs keeps its own superblock context on read-only binds.
+(allow pod_containerd_t k8s_conf_t (filesystem (remount)))
 (allow pod_containerd_t cni_state_t (fs_classes (rw)))
 
 ; Logs
@@ -103,6 +106,7 @@
 (type cni_conf_t)
 (call filesystem_f (cni_conf_t))
 (filecon "/etc/cni(/.*)?" any (system_u object_r cni_conf_t (systemLow systemLow)))
+(allow cni_conf_t cni_conf_t (filesystem (associate)))
 
 (type cni_plugin_t)
 (call filesystem_f (cni_plugin_t))
@@ -284,8 +288,9 @@
 ; Kata's host-side hypervisor helpers are launched by the CRI shim after it
 ; requests the sandbox's pod_t process label. A privileged sandbox has no pod
 ; process label and the helpers instead inherit pod_containerd_t. Keep both
-; execution paths separate from generic bin_exec_t: sandboxes may execute only
-; these finite immutable extension binaries, not arbitrary host utilities.
+; entrypoint transitions separate from generic bin_exec_t. The shared pod_p
+; baseline still allows execute/execute_no_trans on any_f; this grants only the
+; finite host helper entrypoints and their required read access.
 (type kata_helper_exec_t)
 (call system_f (kata_helper_exec_t))
 (context kata_helper_exec_t (system_u object_r kata_helper_exec_t (systemLow systemLow)))
@@ -355,6 +360,10 @@
 ; The Cilium agent enumerates the standard host /run/netns directory to enter
 ; pod network namespaces. It does not need write access to generic /run.
 (allow cilium_t run_t (dir (getattr open read search)))
+; In Talos 1.14 the workload namespace PID 1 is sandboxd, not machined.
+; Preserve Cilium's namespace metadata lookup without giving ordinary pods
+; that host-observer edge or granting Cilium machine-management rights.
+(allow cilium_t sandboxd_t (fs_classes (ro)))
 (typeattribute not_containerd_exec_t)
 (typeattributeset not_containerd_exec_t (not containerd_exec_t))
 ; Keep the runc helper in pod_containerd_t. CRI's explicit process label moves

@@ -1,13 +1,16 @@
-go 1.26.6
+go 1.26.5
 
 use (
 	.
-	./hack/cloud-image-uploader
 	./pkg/machinery
 	./tools
+	./tools/cloud-image-uploader
 	./tools/docgen
 	./tools/gotagsrewrite
+	./tools/kubeimportlinter
 	./tools/labeled-squashfs
+	./tools/loglinter
 	./tools/redactgen
+	./tools/sbom-builder
 	./tools/structprotogen
 )

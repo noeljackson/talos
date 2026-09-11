@@ -8,7 +8,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,7 +26,7 @@ import (
 
 // WipeSuite ...
 type WipeSuite struct {
-	base.K8sSuite
+	base.APISuite
 
 	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
@@ -120,35 +119,18 @@ func (suite *WipeSuite) TestWipeFilesystem() {
 
 	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
 
-	k8sNode, err := suite.GetK8sNodeByInternalIP(suite.ctx, node)
-	suite.Require().NoError(err)
-
-	nodeName := k8sNode.Name
-
-	suite.T().Logf("creating filesystem on %s/%s", node, nodeName)
+	suite.T().Logf("creating filesystem on %s", node)
 
 	userDisks := suite.UserDisks(suite.ctx, node)
 
 	if len(userDisks) < 1 {
-		suite.T().Skipf("skipping test, not enough user disks available on node %s/%s: %q", node, nodeName, userDisks)
+		suite.T().Skipf("skipping test, not enough user disks available on node %s: %q", node, userDisks)
 	}
 
 	userDisk := userDisks[0]
 
-	podDef, err := suite.NewPrivilegedPod("fs-format")
-	suite.Require().NoError(err)
-
-	podDef = podDef.WithNodeName(nodeName)
-
-	suite.Require().NoError(podDef.Create(suite.ctx, 5*time.Minute))
-
-	defer podDef.Delete(suite.ctx) //nolint:errcheck
-
-	_, _, err = podDef.Exec(
-		suite.ctx,
-		fmt.Sprintf("nsenter --mount=/proc/1/ns/mnt -- mkfs.xfs %s", userDisk),
-	)
-	suite.Require().NoError(err)
+	stdout, exitCode := suite.RunDebugContainer(suite.ctx, node, "mkfs.xfs", userDisk)
+	suite.Require().EqualValues(0, exitCode, "mkfs.xfs failed: %s", stdout)
 
 	// now Talos should report the disk as xfs formatted
 	deviceName := filepath.Base(userDisk)
@@ -156,7 +138,8 @@ func (suite *WipeSuite) TestWipeFilesystem() {
 	nodeCtx := client.WithNode(suite.ctx, node)
 
 	// wait for Talos to discover xfs
-	_, err = suite.Client.COSI.WatchFor(nodeCtx,
+	_, err := suite.Client.COSI.WatchFor(
+		nodeCtx,
 		block.NewDiscoveredVolume(block.NamespaceName, deviceName).Metadata(),
 		state.WithEventTypes(state.Created, state.Updated),
 		state.WithCondition(func(r resource.Resource) (bool, error) {
@@ -165,7 +148,7 @@ func (suite *WipeSuite) TestWipeFilesystem() {
 	)
 	suite.Require().NoError(err)
 
-	suite.T().Logf("xfs filesystem created on %s/%s", node, nodeName)
+	suite.T().Logf("xfs filesystem created on %s", node)
 
 	// wipe the filesystem
 	err = suite.Client.BlockDeviceWipe(nodeCtx, &storage.BlockDeviceWipeRequest{
@@ -178,7 +161,8 @@ func (suite *WipeSuite) TestWipeFilesystem() {
 	suite.Require().NoError(err)
 
 	// wait for Talos to discover that the disk is wiped
-	_, err = suite.Client.COSI.WatchFor(nodeCtx,
+	_, err = suite.Client.COSI.WatchFor(
+		nodeCtx,
 		block.NewDiscoveredVolume(block.NamespaceName, deviceName).Metadata(),
 		state.WithEventTypes(state.Created, state.Updated),
 		state.WithCondition(func(r resource.Resource) (bool, error) {

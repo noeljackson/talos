@@ -1,0 +1,1 @@
+(allow extension_service_p sysfs_t (file (write)))

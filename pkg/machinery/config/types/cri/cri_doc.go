@@ -10,6 +10,113 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
 )
 
+func (CRIBaseRuntimeSpecConfigV1Alpha1) Doc() *encoder.Doc {
+	doc := &encoder.Doc{
+		Type:        "CRIBaseRuntimeSpecConfig",
+		Comments:    [3]string{"" /* encoder.HeadComment */, "CRIBaseRuntimeSpecConfig configures the base OCI runtime specification for CRI containers." /* encoder.LineComment */, "" /* encoder.FootComment */},
+		Description: "CRIBaseRuntimeSpecConfig configures the base OCI runtime specification for CRI containers.",
+		Fields: []encoder.Doc{
+			{
+				Type:   "Meta",
+				Inline: true,
+			},
+			{
+				Name:        "overrides",
+				Type:        "Unstructured",
+				Note:        "",
+				Description: "Overrides for the default OCI runtime specification used by CRI containers.\n\nThis document is mutually exclusive with the deprecated\n`.machine.baseRuntimeSpecOverrides` field.\n\nStrategic merge patches replace this overrides object as a whole, so\nreapplying the same document is idempotent.\n\nApplying, updating, or removing these overrides restarts CRI automatically.\nA machine reboot is not required.",
+				Comments:    [3]string{"" /* encoder.HeadComment */, "Overrides for the default OCI runtime specification used by CRI containers." /* encoder.LineComment */, "" /* encoder.FootComment */},
+			},
+		},
+	}
+
+	doc.AddExample("", exampleCRIBaseRuntimeSpecConfigV1Alpha1())
+
+	return doc
+}
+
+func (CRICustomizationConfigV1Alpha1) Doc() *encoder.Doc {
+	doc := &encoder.Doc{
+		Type:        "CRICustomizationConfig",
+		Comments:    [3]string{"" /* encoder.HeadComment */, "CRICustomizationConfig configures the CRI containerd instance." /* encoder.LineComment */, "" /* encoder.FootComment */},
+		Description: "CRICustomizationConfig configures the CRI containerd instance.",
+		Fields: []encoder.Doc{
+			{
+				Type:   "Meta",
+				Inline: true,
+			},
+			{
+				Name:        "name",
+				Type:        "string",
+				Note:        "",
+				Description: "Name of the CRI customization.\n\nCustomizations are merged with physical CRI configuration parts in\nlexicographical order by name. The legacy\n`/etc/cri/conf.d/20-customization.part` machine file is included under\nthe reserved name `customization`.\n\nApplying, updating, or removing a customization restarts CRI automatically.",
+				Comments:    [3]string{"" /* encoder.HeadComment */, "Name of the CRI customization." /* encoder.LineComment */, "" /* encoder.FootComment */},
+			},
+			{
+				Name:        "content",
+				Type:        "string",
+				Note:        "",
+				Description: "CRI containerd configuration fragment in TOML format.",
+				Comments:    [3]string{"" /* encoder.HeadComment */, "CRI containerd configuration fragment in TOML format." /* encoder.LineComment */, "" /* encoder.FootComment */},
+			},
+		},
+	}
+
+	doc.AddExample("", exampleCRICustomizationConfigV1Alpha1())
+
+	return doc
+}
+
+func (ImageCacheConfigV1Alpha1) Doc() *encoder.Doc {
+	doc := &encoder.Doc{
+		Type:        "ImageCacheConfig",
+		Comments:    [3]string{"" /* encoder.HeadComment */, "ImageCacheConfig configures Image Cache feature." /* encoder.LineComment */, "" /* encoder.FootComment */},
+		Description: "ImageCacheConfig configures Image Cache feature.",
+		Fields: []encoder.Doc{
+			{
+				Type:   "Meta",
+				Inline: true,
+			},
+			{
+				Name:        "local",
+				Type:        "LocalImageCacheConfig",
+				Note:        "",
+				Description: "Local (to the machine) image cache configuration.",
+				Comments:    [3]string{"" /* encoder.HeadComment */, "Local (to the machine) image cache configuration." /* encoder.LineComment */, "" /* encoder.FootComment */},
+			},
+		},
+	}
+
+	doc.AddExample("", exampleImageCacheConfigVAlpha1())
+
+	return doc
+}
+
+func (LocalImageCacheConfig) Doc() *encoder.Doc {
+	doc := &encoder.Doc{
+		Type:        "LocalImageCacheConfig",
+		Comments:    [3]string{"" /* encoder.HeadComment */, "LocalImageCacheConfig configures local image cache." /* encoder.LineComment */, "" /* encoder.FootComment */},
+		Description: "LocalImageCacheConfig configures local image cache.",
+		AppearsIn: []encoder.Appearance{
+			{
+				TypeName:  "ImageCacheConfigV1Alpha1",
+				FieldName: "local",
+			},
+		},
+		Fields: []encoder.Doc{
+			{
+				Name:        "enabled",
+				Type:        "bool",
+				Note:        "",
+				Description: "Is the local image cache enabled.",
+				Comments:    [3]string{"" /* encoder.HeadComment */, "Is the local image cache enabled." /* encoder.LineComment */, "" /* encoder.FootComment */},
+			},
+		},
+	}
+
+	return doc
+}
+
 func (RegistryAuthConfigV1Alpha1) Doc() *encoder.Doc {
 	doc := &encoder.Doc{
 		Type:        "RegistryAuthConfig",
@@ -190,6 +297,10 @@ func GetFileDoc() *encoder.FileDoc {
 		Name:        "cri",
 		Description: "",
 		Structs: []*encoder.Doc{
+			CRIBaseRuntimeSpecConfigV1Alpha1{}.Doc(),
+			CRICustomizationConfigV1Alpha1{}.Doc(),
+			ImageCacheConfigV1Alpha1{}.Doc(),
+			LocalImageCacheConfig{}.Doc(),
 			RegistryAuthConfigV1Alpha1{}.Doc(),
 			RegistryMirrorConfigV1Alpha1{}.Doc(),
 			RegistryEndpoint{}.Doc(),

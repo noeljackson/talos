@@ -1,0 +1,1 @@
+(allow sandboxd_t init_t (unix_stream_socket (connectto)))

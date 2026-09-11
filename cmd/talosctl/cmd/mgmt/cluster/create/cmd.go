@@ -6,17 +6,21 @@
 package create
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	clustercmd "github.com/siderolabs/talos/cmd/talosctl/cmd/mgmt/cluster"
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/mgmt/cluster/create/clusterops"
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/mgmt/cluster/create/flags"
 	"github.com/siderolabs/talos/pkg/bytesize"
 	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/provision"
+	"github.com/siderolabs/talos/pkg/provision/providers"
 )
 
 var (
@@ -70,8 +74,10 @@ func getCommonUserFacingFlags(pointer *clusterops.Common) *pflag.FlagSet {
 // Common flags
 
 func addTalosconfigDestinationFlag(flagset *pflag.FlagSet, bind *string, flagName string) {
-	flagset.StringVar(bind, flagName, "",
-		fmt.Sprintf("The location to save the generated Talos configuration file to. Defaults to '%s' env variable if set, otherwise '%s' and '%s' in order.",
+	flagset.StringVar(
+		bind, flagName, "",
+		fmt.Sprintf(
+			"The location to save the generated Talos configuration file to. Defaults to '%s' env variable if set, otherwise '%s' and '%s' in order.",
 			constants.TalosConfigEnvVar,
 			filepath.Join("$HOME", constants.TalosDir, constants.TalosconfigFilename),
 			filepath.Join(constants.ServiceAccountMountPath, constants.TalosconfigFilename),
@@ -136,6 +142,16 @@ func addTalosVersionFlag(flagset *pflag.FlagSet, bind *string, description strin
 func addDisksFlag(flagset *pflag.FlagSet, bind *flags.Disks) {
 	flagset.Var(bind, disksFlagName,
 		`list of disks to create in format "<driver1>:<size1>" (disks after the first one are added only to worker machines)`)
+}
+
+// selectProvisioner returns the qemu provisioner by default, or the remote
+// provisioner if the parent cluster command's --remote-endpoint flag is set.
+func selectProvisioner(ctx context.Context, _ clusterops.Common) (provision.Provisioner, error) {
+	if ep := clustercmd.PersistentFlags.RemoteEndpoint; ep != "" {
+		return providers.Factory(ctx, providers.RemoteProviderName, providers.WithRemoteEndpoint(ep))
+	}
+
+	return providers.Factory(ctx, providers.QemuProviderName)
 }
 
 func addOmniJoinTokenFlag(cmd *cobra.Command, bindAPIEndpoint *string, cfgPatchAllFlagName, cfgPatchWorkersFlagName, cfgPatchCPsFlagName string) {

@@ -166,7 +166,7 @@ func retryRunAndWait(t *testing.T, cmdFunc func() *exec.Cmd, retryer retry.Retry
 	err = retryer.Retry(func() error {
 		stdoutBuf, stderrBuf, err = runAndWait(t, cmdFunc(), stdin)
 
-		if _, ok := errors.AsType[*exec.ExitError](err); ok { //nolint:errcheck
+		if _, ok := errors.AsType[*exec.ExitError](err); ok { //nolint:errcheck // wrong linter error
 			return retry.ExpectedErrorf("command failed, stderr %v: %w", stderrBuf.String(), err)
 		}
 

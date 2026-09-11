@@ -32,6 +32,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/runtime/emergency"
 	v1alpha1runtime "github.com/siderolabs/talos/internal/app/machined/pkg/runtime/v1alpha1"
+	"github.com/siderolabs/talos/internal/app/machined/pkg/sandboxd"
 	startuptasks "github.com/siderolabs/talos/internal/app/machined/pkg/startup"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/system/services"
@@ -333,6 +334,12 @@ func main() {
 		apid.Main()
 
 		return
+	case "sandboxd":
+		// PID 1 of the sandbox PID+mount namespace: forks the container-plane
+		// services (cri, kubelet, pods) and walls them off from machined.
+		sandboxd.Main()
+
+		return
 	case "trustd":
 		trustd.Main()
 
@@ -356,7 +363,17 @@ func main() {
 		dashboard.Main()
 
 		return
+	case "init", "machined":
+		// fall through to the main machined entrypoint
 	default:
+		// unknown name
+		if !containermode.InContainer() {
+			kmsg.SetupLogger(nil, "machined", nil) //nolint:errcheck // best effort logging to kmsg
+		}
+
+		log.Printf("unknown executable name %q (args %v)", os.Args[0], os.Args[1:])
+
+		os.Exit(1) //nolint:gocritic // we don't care about defering context cancellation in this case
 	}
 
 	// Setup panic handler.

@@ -69,7 +69,6 @@ func toHealthStatus(healthy bool) string {
 	return FormatStatus("Unhealthy")
 }
 
-// FormatStatus formats a status string with a checkmark or cross based on the status value.
 func FormatStatus(status any) string {
 	statusStr := tview.Escape(capitalizeFirst(fmt.Sprintf("%v", status)))
 
@@ -83,7 +82,6 @@ func FormatStatus(status any) string {
 	}
 }
 
-// FormatText formats a text with a checkmark or cross based on the boolean value.
 func FormatText(text string, ok bool) string {
 	if text == "" {
 		return ""

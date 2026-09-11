@@ -51,11 +51,13 @@ func (s *Service) ContainerRun(srv grpc.BidiStreamingServer[machine.DebugContain
 		return status.Errorf(codes.InvalidArgument, "expected debug container spec")
 	}
 
-	if spec.GetProfile() != machine.DebugContainerRunRequestSpec_PROFILE_PRIVILEGED {
+	switch spec.GetProfile() { //nolint:exhaustive
+	case machine.DebugContainerRunRequestSpec_PROFILE_PRIVILEGED, machine.DebugContainerRunRequestSpec_PROFILE_HOST_NS:
+	default:
 		return status.Errorf(codes.InvalidArgument, "unsupported debug container profile: %s", spec.GetProfile())
 	}
 
-	log.Printf("debug container request received: image=%s args=%v env=%v profile=%s", spec.GetImageName(), spec.GetArgs(), spec.GetEnv(), spec.GetProfile())
+	log.Printf("debug container request received: image=%s arg_count=%d env_count=%d profile=%s", spec.GetImageName(), len(spec.GetArgs()), len(spec.GetEnv()), spec.GetProfile())
 
 	// 2. connect to containerd with a lease
 	ctx, detachedContext, c8dClient, err := ctrhelper.ContainerdInstanceHelper(ctx, spec.GetContainerd())
@@ -64,7 +66,8 @@ func (s *Service) ContainerRun(srv grpc.BidiStreamingServer[machine.DebugContain
 	}
 	defer c8dClient.Close() //nolint:errcheck
 
-	l, err := c8dClient.LeasesService().Create(ctx,
+	l, err := c8dClient.LeasesService().Create(
+		ctx,
 		leases.WithRandomID(),
 	)
 	if err != nil {
@@ -109,26 +112,31 @@ func (s *Service) ContainerRun(srv grpc.BidiStreamingServer[machine.DebugContain
 	}
 
 	defer func() {
-		cg.Delete() // nolint: errcheck
+		cg.Delete() //nolint: errcheck
 	}()
 
+	// 4a. PROFILE_HOST_NS: namespace fork + overlay, no containerd task.
+	// Pass cgroupPath so the child is placed in the per-session cgroup rather than
+	// inheriting machined's /init cgroup with oom_score_adj=0.
+	if spec.GetProfile() == machine.DebugContainerRunRequestSpec_PROFILE_HOST_NS {
+		return runHostNsContainer(ctx, detachedContext, c8dClient, img, spec, srv, containerID, cgroupPath)
+	}
+
+	// 4b. PROFILE_PRIVILEGED: standard containerd container.
 	ctr, err := createDebugContainer(ctx, c8dClient, containerID, img, spec, cgroupPath)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("debug container: container %s created", ctr.ID())
+	log.Printf("debug: container %s created", ctr.ID())
 
 	defer func() {
 		cleanupErr := ctr.Delete(detachedContext, client.WithSnapshotCleanup)
 		if cleanupErr != nil {
-			log.Printf("debug container: failed to delete container %s: %s", ctr.ID(), cleanupErr.Error())
+			log.Printf("debug: failed to delete container %s: %s", ctr.ID(), cleanupErr.Error())
 		}
-
-		log.Printf("debug container: container %s deleted", ctr.ID())
 	}()
 
-	// 4. run and attach to the debug container
 	return runAndAttachContainer(ctx, detachedContext, spec, srv, ctr)
 }
 
@@ -170,7 +178,7 @@ func createDebugContainer(
 		oci.WithSelinuxLabel(""), // SELinux will automatically transition the debug container into the proper context
 		oci.WithApparmorProfile(""),
 		oci.WithSeccompUnconfined,
-		oci.WithImageConfig(image),
+		containerd.WithImageConfigStripped(image),
 		oci.WithCgroup(cgroupPath),
 	}
 
@@ -192,7 +200,8 @@ func createDebugContainer(
 		ociOpts = append(ociOpts, oci.WithEnv(envVars))
 	}
 
-	container, err := c8dClient.NewContainer(ctx, containerID,
+	container, err := c8dClient.NewContainer(
+		ctx, containerID,
 		client.WithImage(image),
 		client.WithNewSnapshot(containerID+"-snapshot", image),
 		client.WithNewSpec(ociOpts...),

@@ -25,12 +25,14 @@ func TestRegisterResource(t *testing.T) {
 
 	for _, resource := range []meta.ResourceWithRD{
 		&runtime.APIServiceConfig{},
+		&runtime.BootID{},
 		&runtime.BootedEntry{},
 		&runtime.DevicesStatus{},
 		&runtime.Diagnostic{},
 		&runtime.EventSinkConfig{},
 		&runtime.ExtensionStatus{},
 		&runtime.KernelCmdline{},
+		&runtime.KernelModuleStatus{},
 		&runtime.KernelModuleSpec{},
 		&runtime.KernelParamSpec{},
 		&runtime.KernelParamStatus{},

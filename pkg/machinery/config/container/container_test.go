@@ -6,9 +6,10 @@ package container_test
 
 import (
 	"net/url"
+	"path/filepath"
 	"testing"
 
-	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/gen/xtesting/must"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,13 +19,16 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	clustertypes "github.com/siderolabs/talos/pkg/machinery/config/types/cluster"
+	critypes "github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/hardware"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
+	runtimeconfig "github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime/extensions"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/siderolink"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
-	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
 )
 
 func TestNew(t *testing.T) {
@@ -63,7 +67,7 @@ func TestNew(t *testing.T) {
 	assert.False(t, cfg.Readonly())
 	assert.False(t, cfg.Debug())
 	assert.True(t, cfg.Machine().Features().DiskQuotaSupportEnabled())
-	assert.Equal(t, "topsecret", cfg.Cluster().Secret())
+	assert.Equal(t, "topsecret", cfg.DiscoveryIdentityConfig().ClusterSecret())
 	assert.Equal(t, "https://siderolink.api/join?jointoken=secret&user=alice", cfg.SideroLink().APIUrl().String())
 	assert.Equal(t, "test-extension", cfg.ExtensionServiceConfigs()[0].Name())
 	assert.Equal(t, "0000:04:00.00", cfg.PCIDriverRebindConfig().PCIDriverRebindConfigs()[0].PCIID())
@@ -80,8 +84,23 @@ func TestNew(t *testing.T) {
 	assert.NotEqual(t, v1alpha1Cfg, cfgBack.RawV1Alpha1())
 
 	cfgRedacted := cfg.RedactSecrets("REDACTED")
-	assert.Equal(t, "REDACTED", cfgRedacted.Cluster().Secret())
+	assert.Equal(t, "REDACTED", cfgRedacted.DiscoveryIdentityConfig().ClusterSecret())
 	assert.Equal(t, "https://siderolink.api/join?jointoken=REDACTED&user=alice", cfgRedacted.SideroLink().APIUrl().String())
+}
+
+func TestNetworkBGPConfigs(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := container.New()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.NetworkBGPInstanceConfigs())
+
+	instance1 := network.NewBGPInstanceConfigV1Alpha1("fabric")
+	instance2 := network.NewBGPInstanceConfigV1Alpha1("metallb")
+
+	cfg, err = container.New(instance1, instance2)
+	require.NoError(t, err)
+	assert.Equal(t, []config.NetworkBGPInstanceConfig{instance1, instance2}, cfg.NetworkBGPInstanceConfigs())
 }
 
 func TestNewDuplicate(t *testing.T) {
@@ -124,6 +143,123 @@ func TestNewConflict(t *testing.T) {
 	assert.EqualError(t, err, "conflicting documents: ExistingVolumeConfig/my-user-volume-1 and UserVolumeConfig/my-user-volume-1")
 }
 
+func TestCRICustomizationConfigs(t *testing.T) {
+	t.Parallel()
+
+	legacy := &v1alpha1.Config{
+		MachineConfig: &v1alpha1.MachineConfig{
+			MachineFiles: []*v1alpha1.MachineFile{ //nolint:staticcheck // test deprecated compatibility
+				{
+					FilePath:    filepath.Join("/etc", constants.CRICustomizationConfigPart),
+					FileContent: "legacy",
+				},
+			},
+		},
+	}
+
+	document := critypes.NewCRICustomizationConfigV1Alpha1("document")
+	document.CustomizationContent = "document"
+
+	cfg, err := container.New(legacy, document)
+	require.NoError(t, err)
+
+	customizations := cfg.CRICustomizationConfigs()
+	require.Len(t, customizations, 2)
+	assert.Equal(t, config.LegacyCRICustomizationConfigName, customizations[0].Name())
+	assert.Equal(t, "legacy", customizations[0].Content())
+	assert.Equal(t, "document", customizations[1].Name())
+	assert.Equal(t, "document", customizations[1].Content())
+}
+
+func TestCRIBaseRuntimeSpecConfig(t *testing.T) {
+	t.Parallel()
+
+	document := critypes.NewCRIBaseRuntimeSpecConfigV1Alpha1()
+	document.OverridesConfig.Object = map[string]any{
+		"process": map[string]any{"noNewPrivileges": true},
+	}
+
+	cfg, err := container.New(document)
+	require.NoError(t, err)
+
+	assert.Equal(t, document, cfg.CRIBaseRuntimeSpecConfig())
+
+	legacy := &v1alpha1.Config{
+		MachineConfig: &v1alpha1.MachineConfig{
+			MachineBaseRuntimeSpecOverrides: meta.Unstructured{ //nolint:staticcheck // test deprecated compatibility
+				Object: map[string]any{"process": map[string]any{"cwd": "/legacy"}},
+			},
+		},
+	}
+
+	cfg, err = container.New(legacy)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.CRIBaseRuntimeSpecConfig())
+	assert.Equal(t, legacy.MachineConfig.MachineBaseRuntimeSpecOverrides.Object, cfg.CRIBaseRuntimeSpecConfig().Overrides()) //nolint:staticcheck // test deprecated compatibility
+}
+
+func TestVethLinkConfigs(t *testing.T) {
+	t.Parallel()
+
+	veth := network.NewVethConfigV1Alpha1("veth-host", "veth-router")
+
+	cfg, err := container.New(veth)
+	require.NoError(t, err)
+
+	links := cfg.NetworkCommonLinkConfigs()
+	require.Len(t, links, 2)
+	assert.Equal(t, "veth-host", links[0].Name())
+	assert.Equal(t, "veth-router", links[1].Name())
+
+	second := network.NewVethConfigV1Alpha1("veth-host-2", "veth-router-2")
+	cfg, err = container.New(veth, second)
+	require.NoError(t, err)
+	assert.Len(t, cfg.NetworkCommonLinkConfigs(), 4)
+
+	reverse := network.NewVethConfigV1Alpha1("veth-router", "veth-host")
+	_, err = container.New(veth, reverse)
+	assert.EqualError(t, err, `conflicting link configurations: VethConfig/veth-host and VethConfig/veth-router both configure "veth-router"`)
+
+	physical := network.NewLinkConfigV1Alpha1("veth-router")
+	_, err = container.New(veth, physical)
+	assert.EqualError(t, err, `conflicting link configurations: VethConfig/veth-host and LinkConfig/veth-router both configure "veth-router"`)
+
+	_, err = container.New(physical, veth)
+	assert.EqualError(t, err, `conflicting link configurations: LinkConfig/veth-router and VethConfig/veth-host both configure "veth-router"`)
+
+	dummy := network.NewDummyLinkConfigV1Alpha1("veth-router")
+	_, err = container.New(veth, dummy)
+	assert.EqualError(t, err, `conflicting link configurations: VethConfig/veth-host and DummyLinkConfig/veth-router both configure "veth-router"`)
+}
+
+func TestUdevRulesConfig(t *testing.T) {
+	t.Parallel()
+
+	v1alpha1Cfg := &v1alpha1.Config{
+		MachineConfig: &v1alpha1.MachineConfig{
+			MachineUdev: &v1alpha1.UdevConfig{ //nolint:staticcheck // legacy config
+				UdevRules: []string{"legacy-rule"},
+			},
+		},
+	}
+
+	cfg, err := container.New(v1alpha1Cfg)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.UdevRulesConfig())
+	assert.Equal(t, []string{"legacy-rule"}, cfg.UdevRulesConfig().Rules())
+
+	udevRulesCfg := runtimeconfig.NewUdevRulesConfigV1Alpha1()
+	udevRulesCfg.UdevRules = []string{"document-rule"}
+
+	cfg, err = container.New(v1alpha1Cfg, udevRulesCfg)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.UdevRulesConfig())
+	assert.Equal(t, []string{"document-rule"}, cfg.UdevRulesConfig().Rules())
+}
+
 func TestPatchV1Alpha1(t *testing.T) {
 	t.Parallel()
 
@@ -153,176 +289,85 @@ func TestPatchV1Alpha1(t *testing.T) {
 	assert.Equal(t, "https://siderolink.api/?jointoken=secret&user=alice", patchedCfg.SideroLink().APIUrl().String())
 }
 
-func TestValidate(t *testing.T) {
+func TestDiscoveryServiceConfigs(t *testing.T) {
 	t.Parallel()
 
-	sideroLinkCfg := siderolink.NewConfigV1Alpha1()
-	sideroLinkCfg.APIUrlConfig.URL = must.Value(url.Parse("https://siderolink.api/?jointoken=secret&user=alice"))(t)
-
-	invalidSideroLinkCfg := siderolink.NewConfigV1Alpha1()
-
-	v1alpha1Cfg := &v1alpha1.Config{
+	// legacy v1alpha1 cluster discovery config, surfaces as a single config named "legacy"
+	legacyEnabled := &v1alpha1.Config{
 		ClusterConfig: &v1alpha1.ClusterConfig{
-			ControlPlane: &v1alpha1.ControlPlaneConfig{
-				Endpoint: &v1alpha1.Endpoint{
-					URL: must.Value(url.Parse("https://localhost:6443"))(t),
-				},
-			},
-		},
-		MachineConfig: &v1alpha1.MachineConfig{
-			MachineType: "worker",
-			MachineCA: &x509.PEMEncodedCertificateAndKey{
-				Crt: []byte("cert"),
-			},
-		},
-	}
-
-	invalidV1alpha1Config := &v1alpha1.Config{}
-
-	for _, tt := range []struct {
-		name      string
-		documents []config.Document
-
-		expectedError     string
-		expecetedWarnings []string
-	}{
-		{
-			name: "empty",
-		},
-		{
-			name:      "multi-doc",
-			documents: []config.Document{sideroLinkCfg, v1alpha1Cfg},
-		},
-		{
-			name:      "only siderolink",
-			documents: []config.Document{sideroLinkCfg},
-		},
-		{
-			name:      "only v1alpha1",
-			documents: []config.Document{v1alpha1Cfg},
-		},
-		{
-			name:          "invalid siderolink",
-			documents:     []config.Document{invalidSideroLinkCfg},
-			expectedError: "1 error occurred:\n\t* SideroLinkConfig: apiUrl is required\n\n",
-		},
-		{
-			name:          "invalid v1alpha1",
-			documents:     []config.Document{invalidV1alpha1Config},
-			expectedError: "1 error occurred:\n\t* v1alpha1.Config: 1 error occurred:\n\t* machine instructions are required\n\n\n\n",
-		},
-		{
-			name:          "invalid multi-doc",
-			documents:     []config.Document{invalidSideroLinkCfg, invalidV1alpha1Config},
-			expectedError: "2 errors occurred:\n\t* v1alpha1.Config: 1 error occurred:\n\t* machine instructions are required\n\n\n\t* SideroLinkConfig: apiUrl is required\n\n",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctr, err := container.New(tt.documents...)
-			require.NoError(t, err)
-
-			warnings, err := ctr.Validate(validationMode{})
-
-			if tt.expectedError == "" {
-				require.NoError(t, err)
-			} else {
-				require.EqualError(t, err, tt.expectedError)
-			}
-
-			require.Equal(t, tt.expecetedWarnings, warnings)
-		})
-	}
-}
-
-func TestCrossValidateEncryption(t *testing.T) {
-	t.Parallel()
-
-	v1alpha1Cfg := &v1alpha1.Config{
-		ClusterConfig: &v1alpha1.ClusterConfig{
-			ControlPlane: &v1alpha1.ControlPlaneConfig{
-				Endpoint: &v1alpha1.Endpoint{
-					URL: must.Value(url.Parse("https://localhost:6443"))(t),
-				},
-			},
-		},
-		MachineConfig: &v1alpha1.MachineConfig{
-			MachineType: "worker",
-			MachineCA: &x509.PEMEncodedCertificateAndKey{
-				Crt: []byte("cert"),
-			},
-			MachineSystemDiskEncryption: &v1alpha1.SystemDiskEncryptionConfig{
-				EphemeralPartition: &v1alpha1.EncryptionConfig{
-					EncryptionKeys: []*v1alpha1.EncryptionKey{
-						{
-							KeySlot: 1,
-							KeyStatic: &v1alpha1.EncryptionKeyStatic{
-								KeyData: "static-key",
-							},
-						},
+			ClusterDiscoveryConfig: &v1alpha1.ClusterDiscoveryConfig{ //nolint:staticcheck // legacy config
+				DiscoveryEnabled: new(true),
+				DiscoveryRegistries: v1alpha1.DiscoveryRegistriesConfig{ //nolint:staticcheck // legacy config
+					RegistryService: v1alpha1.RegistryServiceConfig{ //nolint:staticcheck // legacy config
+						RegistryEndpoint: "https://legacy.discovery.test/",
 					},
 				},
 			},
 		},
 	}
 
-	defaultEphemeral := block.NewVolumeConfigV1Alpha1()
-	defaultEphemeral.MetaName = constants.EphemeralPartitionLabel
-
-	encryptedEphemeral := block.NewVolumeConfigV1Alpha1()
-	encryptedEphemeral.MetaName = constants.EphemeralPartitionLabel
-	encryptedEphemeral.EncryptionSpec = block.EncryptionSpec{
-		EncryptionProvider: blockres.EncryptionProviderLUKS2,
-		EncryptionKeys: []block.EncryptionKey{
-			{
-				KeySlot: 2,
-				KeyStatic: &block.EncryptionKeyStatic{
-					KeyData: "encrypted-static-key",
-				},
+	// legacy cluster discovery disabled, surfaces no config
+	legacyDisabled := &v1alpha1.Config{
+		ClusterConfig: &v1alpha1.ClusterConfig{
+			ClusterDiscoveryConfig: &v1alpha1.ClusterDiscoveryConfig{ //nolint:staticcheck // legacy config
+				DiscoveryEnabled: new(false),
 			},
 		},
 	}
 
-	encryptedState := block.NewVolumeConfigV1Alpha1()
-	encryptedState.MetaName = constants.StatePartitionLabel
-	encryptedState.EncryptionSpec = block.EncryptionSpec{
-		EncryptionProvider: blockres.EncryptionProviderLUKS2,
-		EncryptionKeys: []block.EncryptionKey{
-			{
-				KeySlot: 3,
-				KeyTPM:  &block.EncryptionKeyTPM{},
-			},
-		},
-	}
+	primaryDoc := clustertypes.NewDiscoveryServiceConfigV1Alpha1("primary", must.Value(url.Parse("https://primary.discovery.test/"))(t))
+	secondaryDoc := clustertypes.NewDiscoveryServiceConfigV1Alpha1("secondary", must.Value(url.Parse("grpc://secondary.discovery.test/"))(t))
 
 	for _, tt := range []struct {
 		name      string
 		documents []config.Document
 
-		expectedError     string
-		expecetedWarnings []string
+		// expected (name -> endpoint) of the returned configs
+		expected map[string]string
 	}{
 		{
-			name:      "only v1alpha1",
-			documents: []config.Document{v1alpha1Cfg},
+			name:      "no configs at all",
+			documents: []config.Document{&v1alpha1.Config{}},
+			expected:  map[string]string{},
 		},
 		{
-			name:      "v1alpha1 with no-conflict volumes",
-			documents: []config.Document{v1alpha1Cfg, defaultEphemeral, encryptedState},
+			// v1alpha1 with a cluster config but no discovery block must not panic
+			name:      "v1alpha1 without discovery block",
+			documents: []config.Document{&v1alpha1.Config{ClusterConfig: &v1alpha1.ClusterConfig{}}},
+			expected:  map[string]string{},
 		},
 		{
-			name:      "v1alpha1 with no-conflict volumes",
-			documents: []config.Document{v1alpha1Cfg, encryptedState},
+			name:      "only legacy",
+			documents: []config.Document{legacyEnabled},
+			expected:  map[string]string{"legacy": "https://legacy.discovery.test/"},
 		},
 		{
-			name:      "no v1alpha1",
-			documents: []config.Document{encryptedEphemeral, encryptedState},
+			name:      "legacy disabled",
+			documents: []config.Document{legacyDisabled},
+			expected:  map[string]string{},
 		},
 		{
-			name:          "conflict on ephemeral encryption",
-			documents:     []config.Document{v1alpha1Cfg, encryptedEphemeral},
-			expectedError: "1 error occurred:\n\t* system disk encryption for \"EPHEMERAL\" is configured in both v1alpha1.Config and VolumeConfig\n\n",
+			name:      "only multi-doc, no v1alpha1 config present",
+			documents: []config.Document{primaryDoc, secondaryDoc},
+			expected: map[string]string{
+				"primary":   "https://primary.discovery.test/",
+				"secondary": "grpc://secondary.discovery.test/",
+			},
+		},
+		{
+			name:      "legacy disabled with multi-doc",
+			documents: []config.Document{legacyDisabled, primaryDoc},
+			expected: map[string]string{
+				"primary": "https://primary.discovery.test/",
+			},
+		},
+		{
+			// such a config is rejected by validation, but the accessor still prefers the v1alpha1 config
+			name:      "legacy takes precedence over documents",
+			documents: []config.Document{legacyEnabled, primaryDoc, secondaryDoc},
+			expected: map[string]string{
+				"legacy": "https://legacy.discovery.test/",
+			},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -331,15 +376,108 @@ func TestCrossValidateEncryption(t *testing.T) {
 			ctr, err := container.New(tt.documents...)
 			require.NoError(t, err)
 
-			warnings, err := ctr.Validate(validationMode{})
+			got := ctr.DiscoveryServiceConfigs()
 
-			if tt.expectedError == "" {
-				require.NoError(t, err)
-			} else {
-				require.EqualError(t, err, tt.expectedError)
+			// len check also guards against duplicate names collapsing in the map below
+			assert.Len(t, got, len(tt.expected), "returned configs should not contain duplicate names")
+
+			actual := xslices.ToMap(got, func(c config.DiscoveryServiceConfig) (string, string) {
+				return c.Name(), c.Endpoint().String()
+			})
+
+			for name, endpoint := range tt.expected {
+				assert.Equal(t, endpoint, actual[name], "discovery service config %q", name)
 			}
+		})
+	}
+}
 
-			require.Equal(t, tt.expecetedWarnings, warnings)
+func TestKernelModuleConfigsMixing(t *testing.T) {
+	t.Parallel()
+
+	legacy := &v1alpha1.Config{
+		MachineConfig: &v1alpha1.MachineConfig{
+			MachineKernel: &v1alpha1.KernelConfig{ //nolint:staticcheck // legacy configuration
+				KernelModules: []*v1alpha1.KernelModuleConfig{ //nolint:staticcheck // legacy configuration
+					{
+						ModuleName:       "btrfs",
+						ModuleParameters: []string{"legacy-param"},
+					},
+					{
+						ModuleName: "e1000",
+					},
+				},
+			},
+		},
+	}
+
+	overlappingDoc := runtimeconfig.NewKernelModuleConfigV1Alpha1("btrfs")
+	overlappingDoc.ModuleParameters = []string{"doc-param"}
+
+	standaloneDoc := runtimeconfig.NewKernelModuleConfigV1Alpha1("vrf")
+
+	for _, tt := range []struct {
+		name      string
+		documents []config.Document
+
+		// expected (name -> parameters) of the returned modules, in order
+		expected [][2]any
+	}{
+		{
+			name:      "no config at all",
+			documents: []config.Document{&v1alpha1.Config{}},
+			expected:  nil,
+		},
+		{
+			name:      "only legacy",
+			documents: []config.Document{legacy},
+			expected: [][2]any{
+				{"btrfs", []string{"legacy-param"}},
+				{"e1000", []string(nil)},
+			},
+		},
+		{
+			name:      "only multi-doc, no v1alpha1 config present",
+			documents: []config.Document{standaloneDoc},
+			expected: [][2]any{
+				{"vrf", []string(nil)},
+			},
+		},
+		{
+			name:      "legacy and non-overlapping multi-doc are merged",
+			documents: []config.Document{legacy, standaloneDoc},
+			expected: [][2]any{
+				{"btrfs", []string{"legacy-param"}},
+				{"e1000", []string(nil)},
+				{"vrf", []string(nil)},
+			},
+		},
+		{
+			// the document is ordered after the legacy entries, so downstream consumers processing
+			// the list in order and keying by module name (as KernelModuleConfigController does) see
+			// the document's parameters win on a name conflict.
+			name:      "multi-doc is appended after legacy on module name conflict",
+			documents: []config.Document{legacy, overlappingDoc},
+			expected: [][2]any{
+				{"btrfs", []string{"legacy-param"}},
+				{"e1000", []string(nil)},
+				{"btrfs", []string{"doc-param"}},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctr, err := container.New(tt.documents...)
+			require.NoError(t, err)
+
+			got := ctr.KernelModuleConfigs()
+
+			actual := xslices.Map(got, func(m config.KernelModuleConfig) [2]any {
+				return [2]any{m.Name(), m.Parameters()}
+			})
+
+			assert.Equal(t, tt.expected, actual)
 		})
 	}
 }
@@ -396,18 +534,4 @@ func TestRunDefaultDHCPOperators(t *testing.T) {
 			assert.Equal(t, tt.expected, ctr.RunDefaultDHCPOperators())
 		})
 	}
-}
-
-type validationMode struct{}
-
-func (validationMode) String() string {
-	return ""
-}
-
-func (validationMode) RequiresInstall() bool {
-	return false
-}
-
-func (validationMode) InContainer() bool {
-	return false
 }

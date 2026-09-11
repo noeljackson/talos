@@ -87,6 +87,22 @@ func TestUserVolumeConfigMarshalUnmarshal(t *testing.T) {
 				return c
 			},
 		},
+		{
+			name:     "xfs min allocation group size",
+			filename: "uservolumeconfig_xfs.yaml",
+			cfg: func(t *testing.T) *block.UserVolumeConfigV1Alpha1 {
+				c := block.NewUserVolumeConfigV1Alpha1()
+				c.MetaName = "build-cache"
+
+				require.NoError(t, c.ProvisioningSpec.DiskSelectorSpec.Match.UnmarshalText([]byte(`!system_disk`)))
+				c.ProvisioningSpec.ProvisioningMinSize = block.MustByteSize("10GiB")
+				c.FilesystemSpec.XFSSpec = &block.XFSSpec{
+					MinAllocationGroupSizeConfig: block.MustByteSize("128GiB"),
+				}
+
+				return c
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -302,6 +318,25 @@ func TestUserVolumeConfigValidate(t *testing.T) {
 			expectedErrors: "project quota support is only available for xfs filesystem",
 		},
 		{
+			name: "xfs options not supported",
+
+			cfg: func(t *testing.T) *block.UserVolumeConfigV1Alpha1 {
+				c := block.NewUserVolumeConfigV1Alpha1()
+				c.MetaName = constants.EphemeralPartitionLabel
+
+				require.NoError(t, c.ProvisioningSpec.DiskSelectorSpec.Match.UnmarshalText([]byte(`system_disk`)))
+				c.ProvisioningSpec.ProvisioningMinSize = block.MustByteSize("10GiB")
+				c.FilesystemSpec.FilesystemType = blockres.FilesystemTypeEXT4
+				c.FilesystemSpec.XFSSpec = &block.XFSSpec{
+					MinAllocationGroupSizeConfig: block.MustByteSize("128GiB"),
+				}
+
+				return c
+			},
+
+			expectedErrors: "xfs options are only available for xfs filesystem",
+		},
+		{
 			name: "provisioning spec for directory",
 
 			cfg: func(t *testing.T) *block.UserVolumeConfigV1Alpha1 {
@@ -371,6 +406,32 @@ func TestUserVolumeConfigValidate(t *testing.T) {
 			},
 
 			expectedErrors: "filesystem spec is invalid for volumeType directory",
+		},
+		{
+			name: "secure mount for directory",
+
+			cfg: func(t *testing.T) *block.UserVolumeConfigV1Alpha1 {
+				c := block.NewUserVolumeConfigV1Alpha1()
+				c.MetaName = constants.EphemeralPartitionLabel
+				c.VolumeType = new(blockres.VolumeTypeDirectory)
+				c.MountSpec.MountSecure = new(false)
+
+				return c
+			},
+		},
+		{
+			name: "disable access time for directory",
+
+			cfg: func(t *testing.T) *block.UserVolumeConfigV1Alpha1 {
+				c := block.NewUserVolumeConfigV1Alpha1()
+				c.MetaName = constants.EphemeralPartitionLabel
+				c.VolumeType = new(blockres.VolumeTypeDirectory)
+				c.MountSpec.MountDisableAccessTime = new(true)
+
+				return c
+			},
+
+			expectedErrors: "mount.disableAccessTime is invalid for volumeType directory",
 		},
 		{
 			name: "invalid volumeType",

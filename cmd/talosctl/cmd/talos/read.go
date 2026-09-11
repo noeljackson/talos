@@ -5,15 +5,11 @@
 package talos
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/spf13/cobra"
-
-	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
-	"github.com/siderolabs/talos/pkg/machinery/client"
 )
 
 // readCmd represents the read command.
@@ -28,28 +24,38 @@ var readCmd = &cobra.Command{
 			return nil, cobra.ShellCompDirectiveError | cobra.ShellCompDirectiveNoFileComp
 		}
 
-		return completePathFromNode(toComplete), cobra.ShellCompDirectiveNoFileComp
+		return completePathFromNode(cmd.Context(), nil, toComplete), cobra.ShellCompDirectiveNoFileComp
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			if err := helpers.FailIfMultiNodes(ctx, "read"); err != nil {
-				return err
-			}
+		ctx := cmd.Context()
 
-			r, err := c.Read(ctx, args[0])
-			if err != nil {
-				return fmt.Errorf("error reading file: %w", err)
-			}
+		clientFactory, err := NewClientFactory(ctx, nil)
+		if err != nil {
+			return err
+		}
 
-			defer r.Close() //nolint:errcheck
+		defer clientFactory.Close() //nolint:errcheck
 
-			_, err = io.Copy(os.Stdout, r)
-			if err != nil {
-				return fmt.Errorf("error reading: %w", err)
-			}
+		ctx, c, _, err := clientFactory.BuildClientEnforceSingleNode(ctx, "read")
+		if err != nil {
+			return err
+		}
 
-			return r.Close()
-		})
+		r, err := c.Read(ctx, args[0])
+		if err != nil {
+			return fmt.Errorf("error reading file: %w", err)
+		}
+
+		defer r.Close() //nolint:errcheck
+
+		// the file is arbitrary bytes, not text: it is routinely redirected to a
+		// file, so it is passed through unmodified.
+		_, err = io.Copy(os.Stdout, r) //nolint:forbidigo
+		if err != nil {
+			return fmt.Errorf("error reading: %w", err)
+		}
+
+		return r.Close()
 	},
 }
 

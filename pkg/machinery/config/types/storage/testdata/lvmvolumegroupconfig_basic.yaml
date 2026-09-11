@@ -1,0 +1,6 @@
+apiVersion: v1alpha1
+kind: LVMVolumeGroupConfig
+name: vg-pool
+provisioning:
+    volumeSelector:
+        match: disk.transport == "nvme"

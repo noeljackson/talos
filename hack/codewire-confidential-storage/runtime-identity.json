@@ -1,7 +1,7 @@
 {
   "schema": "codewire.talos-runtime-source-identity/v1",
   "upstreamRepository": "https://github.com/siderolabs/talos",
-  "release": "v1.13.10",
-  "releaseCommit": "00ca4c9870786e57690dda23b877025d22256953",
+  "release": "v1.14.0",
+  "releaseCommit": "9abd05af449ebf9cb1827648298291afce18d714",
   "commitAbbreviationLength": 9
 }

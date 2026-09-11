@@ -6,11 +6,11 @@ package install
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/siderolabs/gen/xerrors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -47,14 +47,15 @@ func readHostTalosVersion() (*compatibility.TalosVersion, error) {
 		return nil, nil
 	}
 
-	c, err := client.New(ctx,
+	c, err := client.New(
+		ctx,
 		client.WithUnixSocket(constants.MachineSocketPath),
 		client.WithGRPCDialOptions(
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to the machine service: %w", err)
+		return nil, xerrors.NewTaggedf[EnvironmentTag]("error connecting to the machine service: %w", err)
 	}
 
 	defer c.Close() //nolint:errcheck
@@ -64,14 +65,14 @@ func readHostTalosVersion() (*compatibility.TalosVersion, error) {
 
 	resp, err := c.Version(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("error getting Talos version: %w", err)
+		return nil, xerrors.NewTaggedf[EnvironmentTag]("error getting Talos version: %w", err)
 	}
 
 	hostVersion := unpack(resp.Messages)
 
 	talosVersion, err := compatibility.ParseTalosVersion(hostVersion.Version)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing Talos version: %w", err)
+		return nil, xerrors.NewTaggedf[EnvironmentTag]("error parsing Talos version: %w", err)
 	}
 
 	return talosVersion, nil

@@ -18,6 +18,10 @@ import (
 )
 
 // CompareVolumeConfigs compares two volume configs in the proposed order of provisioning.
+//
+// VolumeConfigs which are otherwise equivalent are ordered by their ID, so that
+// the provisioning order doesn't depend on the order the configs are fed in.
+// VolumeConfigController relies on this to publish volume configs in exactly this order.
 func CompareVolumeConfigs(a, b *block.VolumeConfig) int {
 	// first, sort volumes without provisioning instructions first, as they don't block provisioning of other volumes
 	if c := cmpBool(!value.IsZero(a.TypedSpec().Provisioning), !value.IsZero(b.TypedSpec().Provisioning)); c != 0 {
@@ -46,7 +50,12 @@ func CompareVolumeConfigs(a, b *block.VolumeConfig) int {
 	desiredSizeA := cmp.Or(a.TypedSpec().Provisioning.PartitionSpec.MaxSize, math.MaxUint64)
 	desiredSizeB := cmp.Or(b.TypedSpec().Provisioning.PartitionSpec.MaxSize, math.MaxUint64)
 
-	return cmp.Compare(desiredSizeA, desiredSizeB)
+	if c := cmp.Compare(desiredSizeA, desiredSizeB); c != 0 {
+		return c
+	}
+
+	// Break the tie on the volume ID to make the order independent of incoming order.
+	return cmp.Compare(a.Metadata().ID(), b.Metadata().ID())
 }
 
 func cmpBool(a, b bool) int {
@@ -96,4 +105,19 @@ type ManagerContext struct {
 	PreviousWaveProvisioned bool
 	EncryptionHelpers       encryption.Helpers
 	ShouldCloseVolume       bool
+}
+
+// FindDisk returns the disk with the given device path, or nil if it is not known.
+func (ctx ManagerContext) FindDisk(devPath string) *blockpb.DiskSpec {
+	if devPath == "" {
+		return nil
+	}
+
+	for _, diskCtx := range ctx.Disks {
+		if diskCtx.Disk.DevPath == devPath {
+			return diskCtx.Disk
+		}
+	}
+
+	return nil
 }

@@ -18,6 +18,8 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader/internal/decoder"
 	"github.com/siderolabs/talos/pkg/machinery/config/internal/registry"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 )
 
@@ -77,7 +79,7 @@ func (m *KubeletConfig) Clone() config.Document {
 type MockUnstructured struct {
 	Meta
 
-	Pods []v1alpha1.Unstructured `yaml:"pods,omitempty"`
+	Pods []meta.Unstructured `yaml:"pods,omitempty"`
 }
 
 func (m *MockUnstructured) Clone() config.Document {
@@ -304,6 +306,28 @@ pods:
 			expectedErr: "",
 		},
 		{
+			name: "kube apiserver extra args list value",
+			source: []byte(`---
+apiVersion: v1alpha1
+kind: KubeAPIServerConfig
+extraArgs:
+  service-account-issuer:
+    - https://OLD-ENDPOINT:6443
+    - https://NEW-ENDPOINT:6443
+`),
+			expected: []config.Document{
+				&k8s.KubeAPIServerConfigV1Alpha1{
+					Meta: meta.Meta{
+						MetaAPIVersion: "v1alpha1",
+						MetaKind:       "KubeAPIServerConfig",
+					},
+					PodArgs: meta.Args{
+						"service-account-issuer": meta.NewArgValue("", []string{"https://OLD-ENDPOINT:6443", "https://NEW-ENDPOINT:6443"}),
+					},
+				},
+			},
+		},
+		{
 			name: "omit empty test",
 			source: []byte(`---
 kind: mock
@@ -339,7 +363,7 @@ test: true
 			t.Parallel()
 
 			d := decoder.NewDecoder()
-			actual, err := d.Decode(bytes.NewReader(tt.source), false)
+			actual, err := d.Decode(bytes.NewReader(tt.source), false, false)
 
 			if tt.expected != nil {
 				assert.Equal(t, tt.expected, actual)
@@ -368,7 +392,7 @@ func TestDecoderV1Alpha1Config(t *testing.T) {
 			require.NoError(t, err)
 
 			d := decoder.NewDecoder()
-			_, err = d.Decode(bytes.NewReader(contents), false)
+			_, err = d.Decode(bytes.NewReader(contents), false, false)
 
 			assert.NoError(t, err)
 		})
@@ -382,9 +406,13 @@ func TestDoubleV1Alpha1(t *testing.T) {
 	contents := must.Value(files.ReadFile("v1alpha1.yaml"))(t)
 
 	d := decoder.NewDecoder()
-	_, err := d.Decode(bytes.NewReader(contents), false)
+	_, err := d.Decode(bytes.NewReader(contents), false, false)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "not allowed")
+
+	// now try with the allow duplicates
+	_, err = d.Decode(bytes.NewReader(contents), false, true)
+	require.NoError(t, err)
 }
 
 func BenchmarkDecoderV1Alpha1Config(b *testing.B) {
@@ -395,7 +423,7 @@ func BenchmarkDecoderV1Alpha1Config(b *testing.B) {
 
 	for b.Loop() {
 		d := decoder.NewDecoder()
-		_, err = d.Decode(bytes.NewReader(contents), false)
+		_, err = d.Decode(bytes.NewReader(contents), false, false)
 
 		assert.NoError(b, err)
 	}

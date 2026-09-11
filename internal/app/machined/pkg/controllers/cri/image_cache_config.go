@@ -112,7 +112,7 @@ func (ctrl *ImageCacheConfigController) Outputs() []controller.Output {
 
 // Volume configuration constants.
 const (
-	VolumeImageCacheISO  = "IMAGECACHE-ISO"
+	VolumeImageCacheISO  = constants.ImageCacheISOLabel
 	VolumeImageCacheDISK = constants.ImageCachePartitionLabel
 
 	MinImageCacheSize = 500 * 1024 * 1024      // 500MB
@@ -143,7 +143,7 @@ func (ctrl *ImageCacheConfigController) Run(ctx context.Context, r controller.Ru
 		}
 
 		// image cache is disabled
-		imageCacheDisabled := cfg == nil || cfg.Config().Machine() == nil || !cfg.Config().Machine().Features().ImageCache().LocalEnabled()
+		imageCacheDisabled := cfg == nil || cfg.Config().ImageCacheConfig() == nil || !cfg.Config().ImageCacheConfig().LocalEnabled()
 
 		var (
 			status     cri.ImageCacheStatus
@@ -432,11 +432,15 @@ func (ctrl *ImageCacheConfigController) analyzeImageCacheVolumes(ctx context.Con
 		// but we want them to be mounted whenever they are ready
 		mountID := ctrl.Name() + "-" + volumeID
 
-		if err := safe.WriterModify(ctx, r, block.NewVolumeMountRequest(block.NamespaceName, mountID),
+		if err := safe.WriterModify(
+			ctx, r, block.NewVolumeMountRequest(block.NamespaceName, mountID),
 			func(mountRequest *block.VolumeMountRequest) error {
 				mountRequest.TypedSpec().Requester = ctrl.Name()
 				mountRequest.TypedSpec().VolumeID = volumeID
 				mountRequest.TypedSpec().ReadOnly = !(volumeStatus.Metadata().ID() == VolumeImageCacheDISK && isoPresent)
+				// Image cache stores OCI image data only.
+				mountRequest.TypedSpec().Secure = true
+				mountRequest.TypedSpec().NoExec = true
 
 				return nil
 			},

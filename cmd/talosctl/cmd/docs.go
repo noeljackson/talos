@@ -20,13 +20,17 @@ import (
 
 	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/cluster"
+	containercfg "github.com/siderolabs/talos/pkg/machinery/config/types/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/cri"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/hardware"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/runtime/extensions"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/security"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/siderolink"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/storage"
 	v1alpha1 "github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 )
 
@@ -146,6 +150,22 @@ var docsCmd = &cobra.Command{
 					name:    "cri",
 					fileDoc: cri.GetFileDoc(),
 				},
+				{
+					name:    "kubernetes",
+					fileDoc: k8s.GetFileDoc(),
+				},
+				{
+					name:    "storage",
+					fileDoc: storage.GetFileDoc(),
+				},
+				{
+					name:    "cluster",
+					fileDoc: cluster.GetFileDoc(),
+				},
+				{
+					name:    "container",
+					fileDoc: containercfg.GetFileDoc(),
+				},
 			} {
 				path := filepath.Join(dir, pkg.name)
 
@@ -163,20 +183,91 @@ var docsCmd = &cobra.Command{
 	},
 }
 
-// GenMarkdownReference is the same as GenMarkdownTree, but
-// with custom filePrepender and linkHandler.
-//
-//nolint:gocyclo
-func GenMarkdownReference(cmd *cobra.Command, w io.Writer, linkHandler func(string) string) error {
-	for _, c := range cmd.Commands() {
-		// Generate docs for children of the cluster create command although the command itself is hidden.
-		if cmd.Name() == "cluster" && c.Name() == "create" {
-			if err := GenMarkdownReference(c, w, linkHandler); err != nil {
-				return err
-			}
+// isListMarker checks if a line starts with a markdown list marker.
+func isListMarker(line string) bool {
+	trimmed := strings.TrimSpace(line)
+
+	return strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ")
+}
+
+// processIndentedBlock handles a block of consecutive tab-indented lines.
+func processIndentedBlock(lines []string, i *int, result *[]string) {
+	var indentedLines []string
+	for *i < len(lines) && strings.HasPrefix(lines[*i], "\t") {
+		indentedLines = append(indentedLines, strings.TrimPrefix(lines[*i], "\t"))
+		*i++
+	}
+
+	if len(indentedLines) == 0 {
+		return
+	}
+
+	if isListMarker(indentedLines[0]) {
+		for _, l := range indentedLines {
+			*result = append(*result, "\t"+l)
+		}
+	} else {
+		*result = append(*result, "```")
+		*result = append(*result, indentedLines...)
+		*result = append(*result, "```")
+	}
+}
+
+// ConvertIndentedCodeBlocks converts tab-indented lines to fenced code blocks.
+// This handles Cobra's built-in completion commands which use tab-indented lines
+// in their Long descriptions instead of fenced code blocks.
+func ConvertIndentedCodeBlocks(s string) string {
+	lines := strings.Split(s, "\n")
+
+	var result []string
+
+	inCodeBlock := false
+	i := 0
+
+	for i < len(lines) {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+
+			result = append(result, line)
+			i++
+
+			continue
 		}
 
-		if !c.IsAvailableCommand() || c.IsAdditionalHelpTopicCommand() {
+		if inCodeBlock {
+			result = append(result, line)
+			i++
+
+			continue
+		}
+
+		if strings.HasPrefix(line, "\t") {
+			processIndentedBlock(lines, &i, &result)
+
+			continue
+		}
+
+		result = append(result, line)
+		i++
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// GenMarkdownReference is the same as GenMarkdownTree, but
+// with custom filePrepender and linkHandler.
+func GenMarkdownReference(cmd *cobra.Command, w io.Writer, linkHandler func(string) string) error {
+	// TODO: remove the "cluster create" special casing once it is completely migrated to "cluster create dev".
+	isClusterCreate := func(c *cobra.Command) bool {
+		return c.Name() == "create" && c.Parent() != nil && c.Parent().Name() == "cluster"
+	}
+
+	for _, c := range cmd.Commands() {
+		// Descend into the cluster create command even if it (or its flags) is hidden, as its children should be documented.
+		if !isClusterCreate(c) && (!c.IsAvailableCommand() || c.IsAdditionalHelpTopicCommand()) {
 			continue
 		}
 
@@ -186,10 +277,11 @@ func GenMarkdownReference(cmd *cobra.Command, w io.Writer, linkHandler func(stri
 	}
 
 	// Skip generating docs for the cluster create command itself and only generate docs for children.
-	// TODO: remove once "cluster create" is completely migrated to "cluster create dev".
-	if cmd.Name() == "create" && cmd.Parent() != nil && cmd.Parent().Name() == "cluster" {
+	if isClusterCreate(cmd) {
 		return nil
 	}
+
+	cmd.Long = ConvertIndentedCodeBlocks(cmd.Long)
 
 	return doc.GenMarkdownCustom(cmd, w, linkHandler)
 }

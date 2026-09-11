@@ -6,14 +6,18 @@ package talos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
-	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/client"
-	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/client/multiplex"
 )
+
+var restartCmdFlags struct {
+	containerNamespaceFlag
+}
 
 // restartCmd represents the restart command.
 var restartCmd = &cobra.Command{
@@ -26,34 +30,44 @@ var restartCmd = &cobra.Command{
 			return nil, cobra.ShellCompDirectiveError | cobra.ShellCompDirectiveNoFileComp
 		}
 
-		return getContainersFromNode(kubernetesFlag), cobra.ShellCompDirectiveNoFileComp
+		return getContainersFromNode(cmd.Context(), &restartCmdFlags), cobra.ShellCompDirectiveNoFileComp
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return WithClient(func(ctx context.Context, c *client.Client) error {
-			var (
-				namespace string
-				driver    common.ContainerDriver
-			)
+		ctx := cmd.Context()
 
-			if kubernetesFlag {
-				namespace = constants.K8sContainerdNamespace
-				driver = common.ContainerDriver_CRI
-			} else {
-				namespace = constants.SystemContainerdNamespace
-				driver = common.ContainerDriver_CONTAINERD
+		clientFactory, err := NewClientFactory(ctx, &restartCmdFlags)
+		if err != nil {
+			return err
+		}
+
+		defer clientFactory.Close() //nolint:errcheck
+
+		namespace, driver, err := restartCmdFlags.resolveContainerNamespace()
+		if err != nil {
+			return err
+		}
+
+		responseChan := multiplex.UnaryViaFactory(
+			ctx, clientFactory,
+			func(ctx context.Context, c *client.Client) (struct{}, error) {
+				return struct{}{}, c.Restart(ctx, namespace, driver, args[0])
+			},
+		)
+
+		var errs error
+
+		for resp := range responseChan {
+			if resp.Err != nil {
+				errs = errors.Join(errs, fmt.Errorf("error restarting process on node %s: %w", resp.Node, resp.Err))
 			}
+		}
 
-			if err := c.Restart(ctx, namespace, driver, args[0]); err != nil {
-				return fmt.Errorf("error restarting process: %s", err)
-			}
-
-			return nil
-		})
+		return errs
 	},
 }
 
 func init() {
-	restartCmd.Flags().BoolVarP(&kubernetesFlag, "kubernetes", "k", false, "use the k8s.io containerd namespace")
+	addContainerNamespaceFlags(restartCmd, &restartCmdFlags.containerNamespaceFlag)
 
 	restartCmd.Flags().Bool("use-cri", false, "use the CRI driver")
 	restartCmd.Flags().MarkHidden("use-cri") //nolint:errcheck

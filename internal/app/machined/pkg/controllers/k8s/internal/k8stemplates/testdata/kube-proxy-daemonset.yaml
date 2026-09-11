@@ -17,6 +17,20 @@ spec:
         k8s-app: kube-proxy
         tier: node
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
       containers:
       - command:
         - /usr/local/bin/kube-proxy
@@ -32,7 +46,10 @@ spec:
               fieldPath: status.podIP
         image: k8s.gcr.io/kube-proxy:v1.27.0
         name: kube-proxy
-        resources: {}
+        resources:
+          requests:
+            cpu: 100m
+            memory: 50Mi
         securityContext:
           privileged: true
         volumeMounts:

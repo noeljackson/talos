@@ -62,10 +62,15 @@ func NewHandler(encryptionConfig block.EncryptionSpec, volumeID string, helpers 
 		opts = append(opts, luks.WithPerfOptions(encryptionConfig.PerfOptions...))
 	}
 
+	if encryptionConfig.AllowDiscards {
+		opts = append(opts, luks.WithAllowDiscards())
+	}
+
 	keyHandlers := make([]keys.Handler, 0, len(encryptionConfig.Keys))
 
 	for _, cfg := range encryptionConfig.Keys {
-		handler, err := keys.NewHandler(cfg,
+		handler, err := keys.NewHandler(
+			cfg,
 			keys.WithVolumeID(volumeID),
 			keys.WithSystemInformationGetter(helpers.GetSystemInformation),
 			keys.WithTPMLocker(helpers.TPMLocker),
@@ -78,7 +83,6 @@ func NewHandler(encryptionConfig block.EncryptionSpec, volumeID string, helpers 
 		keyHandlers = append(keyHandlers, handler)
 	}
 
-	//nolint:scopelint
 	slices.SortFunc(keyHandlers, func(a, b keys.Handler) int { return cmp.Compare(a.Slot(), b.Slot()) })
 
 	provider := luks.New(

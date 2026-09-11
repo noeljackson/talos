@@ -7,10 +7,13 @@ package block
 //docgen:jsonschema
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 
+	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/optional"
 	"github.com/siderolabs/go-pointer"
 
@@ -45,6 +48,7 @@ var (
 	_ config.VolumeConfig                 = &VolumeConfigV1Alpha1{}
 	_ config.NamedDocument                = &VolumeConfigV1Alpha1{}
 	_ config.Validator                    = &VolumeConfigV1Alpha1{}
+	_ config.RuntimeValidator             = &VolumeConfigV1Alpha1{}
 	_ config.SecretDocument               = &VolumeConfigV1Alpha1{}
 	_ container.V1Alpha1ConflictValidator = &VolumeConfigV1Alpha1{}
 )
@@ -52,7 +56,11 @@ var (
 // VolumeConfigV1Alpha1 is a system volume configuration document.
 //
 //	description: |
-//	  Note: at the moment, only `STATE`, `EPHEMERAL` and `IMAGECACHE` system volumes are supported.
+//	  Note: at the moment, only `STATE`, `EPHEMERAL`, `IMAGECACHE`, `ETCD`, `CRI`, `KUBELET` and `LOG`
+//	  system volumes are supported. The `ETCD`, `CRI`, `KUBELET` and `LOG` volumes default to a
+//	  directory under `EPHEMERAL`, and can be placed on a dedicated partition by specifying
+//	  `provisioning`. The backing of these volumes (directory vs. dedicated partition) can only be
+//	  chosen at cluster creation time: changing it on an already-provisioned node is not supported.
 //	examples:
 //	  - value: exampleVolumeConfigEphemeralV1Alpha1()
 //	alias: VolumeConfig
@@ -68,11 +76,46 @@ type VolumeConfigV1Alpha1 struct {
 	//     The provisioning describes how the volume is provisioned.
 	ProvisioningSpec ProvisioningSpec `yaml:"provisioning,omitempty"`
 	//   description: |
+	//     The filesystem describes how the volume is formatted.
+	//
+	//     Note: this only takes effect at the time the volume is formatted.
+	FilesystemSpec SystemVolumeFilesystemSpec `yaml:"filesystem,omitempty"`
+	//   description: |
 	//     The encryption describes how the volume is encrypted.
 	EncryptionSpec EncryptionSpec `yaml:"encryption,omitempty"`
 	//   description: |
 	//     The mount describes additional mount options.
 	MountSpec MountSpec `yaml:"mount,omitempty"`
+	//   description: |
+	//     The trim describes the per-volume filesystem trim (fstrim) configuration.
+	TrimSpec *TrimConfig `yaml:"trim,omitempty"`
+	//   description: |
+	//     The scrub describes the per-volume filesystem scrub configuration.
+	ScrubSpec *ScrubConfig `yaml:"scrub,omitempty"`
+}
+
+// SystemVolumeFilesystemSpec describes how the system volume is formatted.
+//
+// The filesystem type is fixed for system volumes, and project quota support is configured via
+// machine features, so only the filesystem-specific tunables are exposed here.
+type SystemVolumeFilesystemSpec struct {
+	//   description: |
+	//     XFS-specific filesystem options.
+	XFSSpec *XFSSpec `yaml:"xfs,omitempty"`
+}
+
+// IsZero checks if the filesystem spec is zero.
+func (s SystemVolumeFilesystemSpec) IsZero() bool {
+	return s.XFSSpec == nil
+}
+
+// XFS implements config.SystemVolumeFilesystemConfig interface.
+func (s SystemVolumeFilesystemSpec) XFS() config.XFSFilesystemConfig {
+	if s.XFSSpec == nil {
+		return nil
+	}
+
+	return s.XFSSpec
 }
 
 // MountSpec describes how the volume is mounted.
@@ -80,8 +123,16 @@ type MountSpec struct {
 	//   description: |
 	//     Enable secure mount options (nosuid, nodev).
 	//
+	//     For dedicated ETCD and LOG volumes, this also enables noexec.
+	//
 	//     Defaults to true for better security.
+	//     Supported for EPHEMERAL and dedicated ETCD, CRI, KUBELET and LOG volumes.
 	MountSecure *bool `yaml:"secure,omitempty"`
+	//   description: |
+	//     If true, disable file access time updates.
+	//
+	//     Supported only for EPHEMERAL volume.
+	MountDisableAccessTime *bool `yaml:"disableAccessTime,omitempty"`
 }
 
 // ProvisioningSpec describes how the volume is provisioned.
@@ -190,6 +241,10 @@ func (s *VolumeConfigV1Alpha1) Validate(validation.RuntimeMode, ...validation.Op
 		constants.StatePartitionLabel,
 		constants.EphemeralPartitionLabel,
 		constants.ImageCachePartitionLabel,
+		constants.EtcdDataVolumeID,
+		constants.CRIContainerdVolumeID,
+		constants.KubeletDataVolumeID,
+		constants.LogVolumeID,
 	}
 
 	if slices.Index(allowedVolumes, s.MetaName) == -1 {
@@ -201,7 +256,42 @@ func (s *VolumeConfigV1Alpha1) Validate(validation.RuntimeMode, ...validation.Op
 		validationErrors error
 	)
 
-	if s.MetaName == constants.StatePartitionLabel {
+	validationErrors = errors.Join(validationErrors, s.validateVolumeConstraints())
+
+	extraWarnings, extraErrors := s.ProvisioningSpec.Validate(false, true)
+	warnings = append(warnings, extraWarnings...)
+	validationErrors = errors.Join(validationErrors, extraErrors)
+
+	extraWarnings, extraErrors = s.EncryptionSpec.Validate()
+	warnings = append(warnings, extraWarnings...)
+	validationErrors = errors.Join(validationErrors, extraErrors)
+
+	if err := s.TrimSpec.Validate(); err != nil {
+		validationErrors = errors.Join(validationErrors, err)
+	}
+
+	if err := s.ScrubSpec.Validate(); err != nil {
+		validationErrors = errors.Join(validationErrors, err)
+	}
+
+	return warnings, validationErrors
+}
+
+// mountNotAllowed returns an error if mount config is set for a volume that does not support it.
+func mountNotAllowed(name string, mount MountSpec) error {
+	if mount != (MountSpec{}) {
+		return fmt.Errorf("mount config is not allowed for the %q volume", name)
+	}
+
+	return nil
+}
+
+// validateVolumeConstraints validates the per-volume constraints on which config sections are allowed.
+func (s *VolumeConfigV1Alpha1) validateVolumeConstraints() error {
+	var validationErrors error
+
+	switch s.MetaName {
+	case constants.StatePartitionLabel:
 		// no provisioning config is allowed for the state partition.
 		if !s.ProvisioningSpec.IsZero() {
 			validationErrors = errors.Join(validationErrors, fmt.Errorf("provisioning config is not allowed for the %q volume", s.MetaName))
@@ -213,22 +303,96 @@ func (s *VolumeConfigV1Alpha1) Validate(validation.RuntimeMode, ...validation.Op
 				validationErrors = errors.Join(validationErrors, fmt.Errorf("state-locked key is not allowed for the %q volume", s.MetaName))
 			}
 		}
+
+		validationErrors = errors.Join(validationErrors, mountNotAllowed(s.MetaName, s.MountSpec))
+	case constants.ImageCachePartitionLabel:
+		validationErrors = errors.Join(validationErrors, mountNotAllowed(s.MetaName, s.MountSpec))
+
+		// the image cache is formatted as ext4, so the xfs options don't apply.
+		if !s.FilesystemSpec.IsZero() {
+			validationErrors = errors.Join(validationErrors, fmt.Errorf("filesystem config is not allowed for the %q volume", s.MetaName))
+		}
+	case constants.EtcdDataVolumeID, constants.CRIContainerdVolumeID, constants.KubeletDataVolumeID, constants.LogVolumeID:
+		// these volumes default to a directory under EPHEMERAL and can be placed on a dedicated
+		// partition via provisioning (optionally encrypted). Mount config only takes effect on the
+		// dedicated-partition backing (a directory-backed volume inherits the EPHEMERAL mount), so
+		// it is allowed only together with provisioning.
+		if s.MountSpec != (MountSpec{}) && !ProvisioningRequested(s.Provisioning()) {
+			validationErrors = errors.Join(validationErrors, fmt.Errorf("mount config for the %q volume is only supported when it is provisioned onto a dedicated partition", s.MetaName))
+		}
 	}
 
-	extraWarnings, extraErrors := s.ProvisioningSpec.Validate(false, true)
-	warnings = append(warnings, extraWarnings...)
-	validationErrors = errors.Join(validationErrors, extraErrors)
+	return validationErrors
+}
 
-	extraWarnings, extraErrors = s.EncryptionSpec.Validate()
-	warnings = append(warnings, extraWarnings...)
-	validationErrors = errors.Join(validationErrors, extraErrors)
+// ProvisioningRequested reports whether provisioning is explicitly configured for a volume.
+//
+// For the promotable system volumes (ETCD, CRI, KUBELET, LOG) this is the opt-in signal to place the
+// volume on a dedicated partition instead of a directory under EPHEMERAL. The volume controller and
+// config validation share this predicate so they agree on what counts as a dedicated partition.
+func ProvisioningRequested(p config.VolumeProvisioningConfig) bool {
+	return p.DiskSelector().IsPresent() ||
+		p.Grow().IsPresent() ||
+		p.MinSize().IsPresent() ||
+		p.MaxSize().IsPresent()
+}
 
-	return warnings, validationErrors
+// RuntimeValidate implements config.RuntimeValidator interface.
+//
+// For the promotable system volumes (ETCD, CRI, KUBELET, LOG) it enforces "create-only" semantics: the
+// backing of the volume — a directory under EPHEMERAL vs. a dedicated partition — is fixed at cluster
+// creation and cannot be changed on an already-provisioned node. Migrating an existing system volume
+// to or from a dedicated partition would orphan its on-disk state (and, for etcd, risk quorum), so it
+// is rejected here. Live migration may be supported later by a dedicated controller.
+//
+// The check compares the desired backing (partition if provisioning is requested, directory
+// otherwise) against the actual VolumeStatus. If the volume is not established yet (cluster creation
+// or boot, before the volume manager has processed it) there is nothing to conflict with, so it is
+// allowed.
+func (s *VolumeConfigV1Alpha1) RuntimeValidate(ctx context.Context, st state.State, _ validation.RuntimeMode, _ ...validation.Option) ([]string, error) {
+	if !slices.Contains(config.PromotableSystemVolumeNames, s.MetaName) {
+		return nil, nil
+	}
+
+	desiredType := block.VolumeTypeDirectory
+	if ProvisioningRequested(s.ProvisioningSpec) {
+		desiredType = block.VolumeTypePartition
+	}
+
+	volumeStatus, err := safe.StateGetByID[*block.VolumeStatus](ctx, st, s.MetaName)
+	if err != nil {
+		if state.IsNotFoundError(err) {
+			// the volume is not established yet (cluster creation / boot): nothing to conflict with.
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	// only compare against a settled volume; an in-flight volume is not yet established.
+	if volumeStatus.TypedSpec().Phase != block.VolumePhaseReady {
+		return nil, nil
+	}
+
+	if currentType := volumeStatus.TypedSpec().Type; currentType != desiredType {
+		return nil, fmt.Errorf(
+			"the backing of the %q system volume cannot be changed after creation (current: %s, requested: %s); "+
+				"migrating an existing system volume to or from a dedicated partition is not supported",
+			s.MetaName, currentType, desiredType,
+		)
+	}
+
+	return nil, nil
 }
 
 // Provisioning implements config.VolumeConfig interface.
 func (s *VolumeConfigV1Alpha1) Provisioning() config.VolumeProvisioningConfig {
 	return s.ProvisioningSpec
+}
+
+// Filesystem implements config.VolumeConfig interface.
+func (s *VolumeConfigV1Alpha1) Filesystem() config.SystemVolumeFilesystemConfig {
+	return s.FilesystemSpec
 }
 
 // Encryption implements config.VolumeConfig interface.
@@ -243,6 +407,24 @@ func (s *VolumeConfigV1Alpha1) Encryption() config.EncryptionConfig {
 // Mount implements config.VolumeConfig interface.
 func (s *VolumeConfigV1Alpha1) Mount() config.VolumeMountConfig {
 	return s.MountSpec
+}
+
+// Trim implements config.VolumeConfig interface.
+func (s *VolumeConfigV1Alpha1) Trim() config.VolumeTrimConfig {
+	if s.TrimSpec == nil {
+		return nil
+	}
+
+	return s.TrimSpec
+}
+
+// Scrub implements config.VolumeConfig interface.
+func (s *VolumeConfigV1Alpha1) Scrub() config.VolumeScrubConfig {
+	if s.ScrubSpec == nil {
+		return nil
+	}
+
+	return s.ScrubSpec
 }
 
 // Validate the provisioning spec.
@@ -360,4 +542,9 @@ func (s MountSpec) Secure() bool {
 	}
 
 	return *s.MountSecure
+}
+
+// DisableAccessTime implements config.VolumeMountConfig interface.
+func (s MountSpec) DisableAccessTime() bool {
+	return pointer.SafeDeref(s.MountDisableAccessTime)
 }

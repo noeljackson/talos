@@ -6,7 +6,9 @@ package v1alpha1
 
 import (
 	"net/netip"
+	"slices"
 
+	"github.com/siderolabs/gen/optional"
 	"github.com/siderolabs/go-pointer"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
@@ -48,16 +50,19 @@ func (c *Config) AutoHostname() nethelpers.AutoHostnameKind {
 }
 
 // Resolvers implements config.NetworkResolverConfig interface.
-func (c *Config) Resolvers() []netip.Addr {
+func (c *Config) Resolvers() []config.NetworkResolver {
 	if c.MachineConfig == nil || c.MachineConfig.MachineNetwork == nil {
 		return nil
 	}
 
-	var result []netip.Addr
+	var result []config.NetworkResolver
 
 	for _, r := range c.MachineConfig.MachineNetwork.NameServers {
 		if addr, err := netip.ParseAddr(r); err == nil {
-			result = append(result, addr)
+			result = append(result, config.NetworkResolver{
+				Addr:     addr,
+				Protocol: nethelpers.DNSProtocolDefault,
+			})
 		}
 	}
 
@@ -65,12 +70,12 @@ func (c *Config) Resolvers() []netip.Addr {
 }
 
 // SearchDomains implements config.NetworkResolverConfig interface.
-func (c *Config) SearchDomains() []string {
-	if c.MachineConfig == nil || c.MachineConfig.MachineNetwork == nil {
-		return nil
+func (c *Config) SearchDomains() optional.Optional[[]string] {
+	if c.MachineConfig == nil || c.MachineConfig.MachineNetwork == nil || c.MachineConfig.MachineNetwork.Searches == nil {
+		return optional.None[[]string]()
 	}
 
-	return c.MachineConfig.MachineNetwork.Searches
+	return optional.Some(slices.Clone(c.MachineConfig.MachineNetwork.Searches))
 }
 
 // DisableSearchDomain implements config.NetworkResolverConfig interface.
@@ -98,4 +103,22 @@ func (c *Config) NetworkKubeSpanConfig() config.NetworkKubeSpanConfig {
 	}
 
 	return c.MachineConfig.MachineNetwork.NetworkKubeSpan
+}
+
+// NetworkHostDNSConfig implements the config.NetworkHostDNSConfig interface.
+func (c *Config) NetworkHostDNSConfig() config.NetworkHostDNSConfig {
+	if c.MachineConfig == nil || c.MachineConfig.MachineFeatures == nil || c.MachineConfig.MachineFeatures.HostDNSSupport == nil {
+		return nil
+	}
+
+	return c.MachineConfig.MachineFeatures.HostDNSSupport
+}
+
+// ImageCacheConfig implements config.ImageCacheConfig interface.
+func (c *Config) ImageCacheConfig() config.ImageCacheConfig {
+	if c.MachineConfig == nil || c.MachineConfig.MachineFeatures == nil || c.MachineConfig.MachineFeatures.ImageCacheSupport == nil {
+		return nil
+	}
+
+	return c.MachineConfig.MachineFeatures.ImageCacheSupport
 }

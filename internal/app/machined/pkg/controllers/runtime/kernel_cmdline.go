@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//nolint:dupl
 package runtime
 
 import (
@@ -61,7 +62,8 @@ func (ctrl *KernelCmdlineController) Run(ctx context.Context, r controller.Runti
 		return fmt.Errorf("error reading /proc/cmdline: %w", err)
 	}
 
-	if err := safe.WriterModify(ctx, r,
+	if err := safe.WriterModify(
+		ctx, r,
 		runtime.NewKernelCmdline(),
 		func(res *runtime.KernelCmdline) error {
 			res.TypedSpec().Cmdline = strings.TrimSpace(string(contents))

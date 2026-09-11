@@ -19,6 +19,8 @@ import (
 )
 
 func TestLinkSpecMarshalYAML(t *testing.T) {
+	t.Parallel()
+
 	spec := network.LinkSpecSpec{
 		Name:       "eth0",
 		Logical:    true,
@@ -84,6 +86,9 @@ func TestLinkSpecMarshalYAML(t *testing.T) {
 				},
 			},
 		},
+		Veth: network.VethSpec{
+			PeerName: "eth2",
+		},
 		ConfigLayer: network.ConfigPlatform,
 	}
 
@@ -143,6 +148,8 @@ wireguard:
           persistentKeepaliveInterval: 30s
           allowedIPs:
             - 192.83.93.94/31
+veth:
+    peerName: eth2
 layer: platform
 `,
 		string(marshaled))

@@ -1,0 +1,1 @@
+(neverallow writeable_sysfs_container_t sysfs_t (file (write)))

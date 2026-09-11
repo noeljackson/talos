@@ -39,6 +39,8 @@ func CreateSystemCgroups(ctx context.Context, log *zap.Logger, rt runtime.Runtim
 		constants.CgroupInit,
 		constants.CgroupSystem,
 		constants.CgroupPodRuntimeRoot,
+		constants.CgroupPodRuntimeShim,
+		constants.CgroupTalosContainersRoot,
 	}
 
 	for _, c := range groups {
@@ -47,6 +49,22 @@ func CreateSystemCgroups(ctx context.Context, log *zap.Logger, rt runtime.Runtim
 			return err
 		}
 	}
+
+	defer func() {
+		// only cleaning up root cgroups, it's recursively deleted and killed
+		groupsToCleanup := []string{
+			constants.CgroupKubepods,
+			constants.CgroupPodRuntimeRoot,
+			constants.CgroupSystem,
+			constants.CgroupTalosContainersRoot,
+		}
+
+		for _, c := range groupsToCleanup {
+			if err := cgroup.KillCgroup(log, c); err != nil {
+				log.Error("failed to delete cgroup", zap.String("cgroup", c), zap.Error(err))
+			}
+		}
+	}()
 
 	return next()(ctx, log, rt, next)
 }

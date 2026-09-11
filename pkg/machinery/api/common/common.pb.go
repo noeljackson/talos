@@ -126,6 +126,8 @@ const (
 	ContainerdNamespace_NS_UNKNOWN ContainerdNamespace = 0
 	ContainerdNamespace_NS_SYSTEM  ContainerdNamespace = 1
 	ContainerdNamespace_NS_CRI     ContainerdNamespace = 2
+	// NS_TALOSCONTAINERS is the namespace for containers declared via a ContainerConfig document.
+	ContainerdNamespace_NS_TALOSCONTAINERS ContainerdNamespace = 3
 )
 
 // Enum value maps for ContainerdNamespace.
@@ -134,11 +136,13 @@ var (
 		0: "NS_UNKNOWN",
 		1: "NS_SYSTEM",
 		2: "NS_CRI",
+		3: "NS_TALOSCONTAINERS",
 	}
 	ContainerdNamespace_value = map[string]int32{
-		"NS_UNKNOWN": 0,
-		"NS_SYSTEM":  1,
-		"NS_CRI":     2,
+		"NS_UNKNOWN":         0,
+		"NS_SYSTEM":          1,
+		"NS_CRI":             2,
+		"NS_TALOSCONTAINERS": 3,
 	}
 )
 
@@ -230,14 +234,22 @@ func (x *Error) GetDetails() []*anypb.Any {
 }
 
 // Common metadata message nested in all reply message types
+//
+// Deprecated: Marked as deprecated in common/common.proto.
 type Metadata struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// hostname of the server response comes from (injected by proxy)
+	//
+	// Deprecated: Marked as deprecated in common/common.proto.
 	Hostname string `protobuf:"bytes,1,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	// error is set if request failed to the upstream (rest of response is
 	// undefined)
+	//
+	// Deprecated: Marked as deprecated in common/common.proto.
 	Error string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
 	// error as gRPC Status
+	//
+	// Deprecated: Marked as deprecated in common/common.proto.
 	Status        *status.Status `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -273,6 +285,7 @@ func (*Metadata) Descriptor() ([]byte, []int) {
 	return file_common_common_proto_rawDescGZIP(), []int{1}
 }
 
+// Deprecated: Marked as deprecated in common/common.proto.
 func (x *Metadata) GetHostname() string {
 	if x != nil {
 		return x.Hostname
@@ -280,6 +293,7 @@ func (x *Metadata) GetHostname() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in common/common.proto.
 func (x *Metadata) GetError() string {
 	if x != nil {
 		return x.Error
@@ -287,6 +301,7 @@ func (x *Metadata) GetError() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in common/common.proto.
 func (x *Metadata) GetStatus() *status.Status {
 	if x != nil {
 		return x.Status
@@ -971,11 +986,15 @@ const file_common_common_proto_rawDesc = "" +
 	"\x05Error\x12 \n" +
 	"\x04code\x18\x01 \x01(\x0e2\f.common.CodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12.\n" +
-	"\adetails\x18\x03 \x03(\v2\x14.google.protobuf.AnyR\adetails\"h\n" +
-	"\bMetadata\x12\x1a\n" +
-	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\x12*\n" +
-	"\x06status\x18\x03 \x01(\v2\x12.google.rpc.StatusR\x06status\"J\n" +
+	"\adetails\x18\x03 \x03(\v2\x14.google.protobuf.AnyR\adetails\"\x98\x01\n" +
+	"\bMetadata\x12&\n" +
+	"\bhostname\x18\x01 \x01(\tB\n" +
+	"\xea\xbb-\x04v2.0\x18\x01R\bhostname\x12 \n" +
+	"\x05error\x18\x02 \x01(\tB\n" +
+	"\xea\xbb-\x04v2.0\x18\x01R\x05error\x126\n" +
+	"\x06status\x18\x03 \x01(\v2\x12.google.rpc.StatusB\n" +
+	"\xea\xbb-\x04v2.0\x18\x01R\x06status:\n" +
+	"\xea\xbb-\x04v2.0\x18\x01\"J\n" +
 	"\x04Data\x12,\n" +
 	"\bmetadata\x18\x01 \x01(\v2\x10.common.MetadataR\bmetadata\x12\x14\n" +
 	"\x05bytes\x18\x02 \x01(\fR\x05bytes\"8\n" +
@@ -1013,13 +1032,14 @@ const file_common_common_proto_rawDesc = "" +
 	"\x0fContainerDriver\x12\x0e\n" +
 	"\n" +
 	"CONTAINERD\x10\x00\x12\a\n" +
-	"\x03CRI\x10\x01*@\n" +
+	"\x03CRI\x10\x01*X\n" +
 	"\x13ContainerdNamespace\x12\x0e\n" +
 	"\n" +
 	"NS_UNKNOWN\x10\x00\x12\r\n" +
 	"\tNS_SYSTEM\x10\x01\x12\n" +
 	"\n" +
-	"\x06NS_CRI\x10\x02:]\n" +
+	"\x06NS_CRI\x10\x02\x12\x16\n" +
+	"\x12NS_TALOSCONTAINERS\x10\x03:]\n" +
 	"\x19remove_deprecated_message\x12\x1f.google.protobuf.MessageOptions\x18\xbd\xd7\x05 \x01(\tR\x17removeDeprecatedMessage:W\n" +
 	"\x17remove_deprecated_field\x12\x1d.google.protobuf.FieldOptions\x18\xbd\xd7\x05 \x01(\tR\x15removeDeprecatedField:T\n" +
 	"\x16remove_deprecated_enum\x12\x1c.google.protobuf.EnumOptions\x18\xbd\xd7\x05 \x01(\tR\x14removeDeprecatedEnum:d\n" +

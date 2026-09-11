@@ -4,9 +4,25 @@
 
 package config
 
-import (
-	"github.com/siderolabs/crypto/x509"
-)
+import "github.com/siderolabs/crypto/x509"
+
+// LegacyCRICustomizationConfigName is the name assigned to the legacy
+// /etc/cri/conf.d/20-customization.part machine file.
+const LegacyCRICustomizationConfigName = "customization"
+
+// CRIBaseRuntimeSpecConfig configures the base OCI runtime specification for CRI containers.
+type CRIBaseRuntimeSpecConfig interface {
+	CRIBaseRuntimeSpecConfigSignal()
+	Overrides() map[string]any
+}
+
+// CRICustomizationConfig is a CRI configuration customization document.
+type CRICustomizationConfig interface {
+	NamedDocument
+
+	CRICustomizationConfigSignal()
+	Content() string
+}
 
 // RegistryMirrorConfigDocument is registry mirror configuration document.
 type RegistryMirrorConfigDocument interface {
@@ -51,4 +67,9 @@ type RegistryTLSConfig interface {
 	ClientIdentity() *x509.PEMEncodedCertificateAndKey
 	CA() []byte
 	InsecureSkipVerify() bool
+}
+
+// ImageCacheConfig describes the image cache configuration.
+type ImageCacheConfig interface {
+	LocalEnabled() bool
 }

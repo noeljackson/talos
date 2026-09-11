@@ -145,7 +145,7 @@ func filterMessages(resp any, err error) (any, error) {
 		}
 
 		if !statusField.IsZero() {
-			statusValue, ok := reflect.TypeAssert[*rpcstatus.Status](statusField)
+			statusValue, ok := statusField.Interface().(*rpcstatus.Status)
 			if !ok {
 				panic("metadata.Status should be of type *status.Status")
 			}

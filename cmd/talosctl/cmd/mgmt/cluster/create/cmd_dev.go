@@ -5,7 +5,6 @@
 package create
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"slices"
@@ -40,78 +39,82 @@ var (
 //nolint:gocyclo
 func getCreateCmd(cmdName string, hidden bool) *cobra.Command {
 	const (
-		networkIPv4Flag               = "ipv4"
-		networkIPv6Flag               = "ipv6"
-		networkNoMasqueradeCIDRsFlag  = "no-masquerade-cidrs"
-		nameserversFlag               = "nameservers"
-		preallocateDisksFlag          = "disk-preallocate"
-		clusterUserVolumesFlag        = "user-volumes"
-		clusterDiskSizeFlag           = "disk"
-		diskBlockSizeFlag             = "disk-block-size"
-		useVIPFlag                    = "use-vip"
-		bootloaderEnabledFlag         = "with-bootloader"
-		skipInjectingExtraCmdlineFlag = "skip-injecting-extra-cmdline"
-		controlPlanePortFlag          = "control-plane-port"
-		firewallFlag                  = "with-firewall"
-		tpmEnabledFlag                = "with-tpm1_2"
-		tpm2EnabledFlag               = "with-tpm2"
-		withDebugShellFlag            = "with-debug-shell"
-		withIOMMUFlag                 = "with-iommu"
-		talosconfigFlag               = "talosconfig"
-		applyConfigEnabledFlag        = "with-apply-config"
-		wireguardCIDRFlag             = "wireguard-cidr"
-		controlPlaneCpusFlag          = "cpus"
-		workersCpusFlag               = "cpus-workers"
-		controlPlaneMemoryFlag        = "memory"
-		workersMemoryFlag             = "memory-workers"
-		clusterWaitFlag               = "wait"
-		clusterWaitTimeoutFlag        = "wait-timeout"
-		forceInitNodeAsEndpointFlag   = "init-node-as-endpoint"
-		withInitNodeFlag              = "with-init-node"
-		skipKubeconfigFlag            = "skip-kubeconfig"
-		skipInjectingConfigFlag       = "skip-injecting-config"
-		configPatchFlag               = "config-patch"
-		configPatchControlPlaneFlag   = "config-patch-control-plane"
-		configPatchWorkerFlag         = "config-patch-worker"
-		skipK8sNodeReadinessCheckFlag = "skip-k8s-node-readiness-check"
-		withJSONLogsFlag              = "with-json-logs"
-		nodeVmlinuzPathFlag           = "vmlinuz-path"
-		nodeISOPathFlag               = "iso-path"
-		nodeUSBPathFlag               = "usb-path"
-		nodeUKIPathFlag               = "uki-path"
-		nodeInitramfsPathFlag         = "initrd-path"
-		nodeDiskImagePathFlag         = "disk-image-path"
-		nodeIPXEBootScriptFlag        = "ipxe-boot-script"
-		uefiEnabledFlag               = "with-uefi"
-		extraUEFISearchPathsFlag      = "extra-uefi-search-paths"
-		extraDisksFlag                = "extra-disks"
-		extraDisksDriversFlag         = "extra-disks-drivers"
-		extraDisksTagsFlag            = "extra-disks-tags"
-		extraDisksSerialsFlag         = "extra-disks-serials"
-		extraDiskSizeFlag             = "extra-disks-size"
-		targetArchFlag                = "arch"
-		cniBinPathFlag                = "cni-bin-path"
-		cniConfDirFlag                = "cni-conf-dir"
-		cniCacheDirFlag               = "cni-cache-dir"
-		cniBundleURLFlag              = "cni-bundle-url"
-		badRTCFlag                    = "bad-rtc"
-		extraBootKernelArgsFlag       = "extra-boot-kernel-args"
-		dhcpSkipHostnameFlag          = "disable-dhcp-hostname"
-		networkChaosFlag              = "with-network-chaos"
-		jitterFlag                    = "with-network-jitter"
-		latencyFlag                   = "with-network-latency"
-		packetLossFlag                = "with-network-packet-loss"
-		packetReorderFlag             = "with-network-packet-reorder"
-		packetCorruptFlag             = "with-network-packet-corrupt"
-		bandwidthFlag                 = "with-network-bandwidth"
-		withUUIDHostnamesFlag         = "with-uuid-hostnames"
-		withSiderolinkAgentFlag       = "with-siderolink"
-		configInjectionMethodFlag     = "config-injection-method"
-		airgappedFlag                 = "airgapped"
-		imageCachePathFlag            = "image-cache-path"
-		imageCacheTLSCertFileFlag     = "image-cache-tls-cert-file"
-		imageCacheTLSKeyFileFlag      = "image-cache-tls-key-file"
-		imageCachePortFlag            = "image-cache-port"
+		networkIPv4Flag                 = "ipv4"
+		networkIPv6Flag                 = "ipv6"
+		networkNoMasqueradeCIDRsFlag    = "no-masquerade-cidrs"
+		nameserversFlag                 = "nameservers"
+		preallocateDisksFlag            = "disk-preallocate"
+		clusterUserVolumesFlag          = "user-volumes"
+		clusterDiskSizeFlag             = "disk"
+		primaryDisksFlag                = "primary-disks"
+		diskBlockSizeFlag               = "disk-block-size"
+		useVIPFlag                      = "use-vip"
+		bootloaderEnabledFlag           = "with-bootloader"
+		skipInjectingExtraCmdlineFlag   = "skip-injecting-extra-cmdline"
+		controlPlanePortFlag            = "control-plane-port"
+		firewallFlag                    = "with-firewall"
+		bgpFlag                         = "with-bgp"
+		bgpCLOSFlag                     = "with-bgp-clos"
+		tpmEnabledFlag                  = "with-tpm1_2"
+		tpm2EnabledFlag                 = "with-tpm2"
+		withIOMMUFlag                   = "with-iommu"
+		talosconfigFlag                 = "talosconfig"
+		applyConfigEnabledFlag          = "with-apply-config"
+		wireguardCIDRFlag               = "wireguard-cidr"
+		controlPlaneCpusFlag            = "cpus"
+		workersCpusFlag                 = "cpus-workers"
+		controlPlaneMemoryFlag          = "memory"
+		workersMemoryFlag               = "memory-workers"
+		clusterWaitFlag                 = "wait"
+		clusterWaitTimeoutFlag          = "wait-timeout"
+		forceInitNodeAsEndpointFlag     = "init-node-as-endpoint"
+		withInitNodeFlag                = "with-init-node"
+		skipKubeconfigFlag              = "skip-kubeconfig"
+		skipInjectingConfigFlag         = "skip-injecting-config"
+		configPatchFlag                 = "config-patch"
+		configPatchControlPlaneFlag     = "config-patch-control-plane"
+		configPatchWorkerFlag           = "config-patch-worker"
+		skipUnattendedInstallConfigFlag = "skip-unattended-install-config"
+		skipK8sNodeReadinessCheckFlag   = "skip-k8s-node-readiness-check"
+		withJSONLogsFlag                = "with-json-logs"
+		nodeVmlinuzPathFlag             = "vmlinuz-path"
+		nodeISOPathFlag                 = "iso-path"
+		nodeUSBPathFlag                 = "usb-path"
+		nodeUKIPathFlag                 = "uki-path"
+		nodeInitramfsPathFlag           = "initrd-path"
+		nodeDiskImagePathFlag           = "disk-image-path"
+		nodeIPXEBootScriptFlag          = "ipxe-boot-script"
+		uefiEnabledFlag                 = "with-uefi"
+		extraUEFISearchPathsFlag        = "extra-uefi-search-paths"
+		extraDisksFlag                  = "extra-disks"
+		extraDisksDriversFlag           = "extra-disks-drivers"
+		extraDisksTagsFlag              = "extra-disks-tags"
+		extraDisksSerialsFlag           = "extra-disks-serials"
+		extraDiskSizeFlag               = "extra-disks-size"
+		extraDisksOnControlplanesFlag   = "extra-disks-on-controlplanes"
+		targetArchFlag                  = "arch"
+		cniBinPathFlag                  = "cni-bin-path"
+		cniConfDirFlag                  = "cni-conf-dir"
+		cniCacheDirFlag                 = "cni-cache-dir"
+		cniBundleURLFlag                = "cni-bundle-url"
+		badRTCFlag                      = "bad-rtc"
+		extraBootKernelArgsFlag         = "extra-boot-kernel-args"
+		dhcpSkipHostnameFlag            = "disable-dhcp-hostname"
+		networkChaosFlag                = "with-network-chaos"
+		jitterFlag                      = "with-network-jitter"
+		latencyFlag                     = "with-network-latency"
+		packetLossFlag                  = "with-network-packet-loss"
+		packetReorderFlag               = "with-network-packet-reorder"
+		packetCorruptFlag               = "with-network-packet-corrupt"
+		bandwidthFlag                   = "with-network-bandwidth"
+		withUUIDHostnamesFlag           = "with-uuid-hostnames"
+		withSiderolinkAgentFlag         = "with-siderolink"
+		configInjectionMethodFlag       = "config-injection-method"
+		airgappedFlag                   = "airgapped"
+		imageCachePathFlag              = "image-cache-path"
+		imageCacheTLSCertFileFlag       = "image-cache-tls-cert-file"
+		imageCacheTLSKeyFileFlag        = "image-cache-tls-key-file"
+		imageCachePortFlag              = "image-cache-port"
 
 		// The following flags are the gen options - the options that are only used in machine configuration (i.e., not during the qemu/docker provisioning).
 		// They are not applicable when no machine configuration is generated, hence mutually exclusive with the --input-dir flag.
@@ -129,6 +132,7 @@ func getCreateCmd(cmdName string, hidden bool) *cobra.Command {
 		forceEndpointFlag             = "endpoint"
 		kubePrismFlag                 = "kubeprism-port"
 		diskEncryptionKeyTypesFlag    = "disk-encryption-key-types"
+		skipEtcdK8sFlag               = "skip-etcd-k8s"
 	)
 
 	unImplementedFlagsDarwin := []string{
@@ -195,9 +199,11 @@ func getCreateCmd(cmdName string, hidden bool) *cobra.Command {
 		common.BoolVar(&cOps.EnableKubeSpan, enableKubeSpanFlag, cOps.EnableKubeSpan, "enable KubeSpan system")
 		common.IntVar(&cOps.KubePrismPort, kubePrismFlag, cOps.KubePrismPort, "KubePrism port (set to 0 to disable)")
 		common.BoolVar(&cOps.SkipK8sNodeReadinessCheck, skipK8sNodeReadinessCheckFlag, cOps.SkipK8sNodeReadinessCheck, "skip k8s node readiness checks")
+		common.BoolVar(&cOps.SkipUnattendedInstallConfig, skipUnattendedInstallConfigFlag, cOps.SkipUnattendedInstallConfig, "skip generating UnattendedInstallConfig document")
 		common.BoolVar(&cOps.WithJSONLogs, withJSONLogsFlag, cOps.WithJSONLogs, "enable JSON logs receiver and configure Talos to send logs there")
 		common.BoolVar(&cOps.WithUUIDHostnames, withUUIDHostnamesFlag, cOps.WithUUIDHostnames, "use machine UUIDs as default hostnames")
 		common.BoolVar(&cOps.NetworkIPv6, networkIPv6Flag, cOps.NetworkIPv6, "enable IPv6 network in the cluster")
+		common.BoolVar(&cOps.SkipEtcdK8sConfig, skipEtcdK8sFlag, cOps.SkipEtcdK8sConfig, "skip etcd and Kubernetes machine configuration (experimental)")
 
 		return common
 	}
@@ -207,7 +213,7 @@ func getCreateCmd(cmdName string, hidden bool) *cobra.Command {
 
 		qemu.BoolVar(&qOps.PreallocateDisks, preallocateDisksFlag, true, "whether disk space should be preallocated")
 		qemu.StringSliceVar(&qOps.ClusterUserVolumes, clusterUserVolumesFlag, qOps.ClusterUserVolumes, "list of user volumes to create for each VM in format: <name1>:<size1>:<name2>:<size2>")
-		qemu.StringVar(&qOps.NodeInstallImage, nodeInstallImageFlag, helpers.DefaultImage(images.DefaultInstallerImageRepository), "the installer image to use")
+		qemu.StringVar(&qOps.NodeInstallImage, nodeInstallImageFlag, helpers.DefaultImage(images.InstallerImageRepository("metal")), "the installer image to use")
 		qemu.StringVar(&qOps.NodeVmlinuzPath, nodeVmlinuzPathFlag, helpers.ArtifactPath(constants.KernelAssetWithArch), "the compressed kernel image to use")
 		qemu.StringVar(&qOps.NodeISOPath, nodeISOPathFlag, qOps.NodeISOPath, "the ISO path to use for the initial boot")
 		qemu.StringVar(&qOps.NodeUSBPath, nodeUSBPathFlag, qOps.NodeUSBPath, "the USB stick image path to use for the initial boot")
@@ -221,9 +227,7 @@ func getCreateCmd(cmdName string, hidden bool) *cobra.Command {
 		qemu.BoolVar(&qOps.UefiEnabled, uefiEnabledFlag, qOps.UefiEnabled, "enable UEFI on x86_64 architecture")
 		qemu.BoolVar(&qOps.Tpm1_2Enabled, tpmEnabledFlag, qOps.Tpm1_2Enabled, "enable TPM 1.2 emulation support using swtpm")
 		qemu.BoolVar(&qOps.Tpm2Enabled, tpm2EnabledFlag, qOps.Tpm2Enabled, "enable TPM 2.0 emulation support using swtpm")
-		qemu.BoolVar(&qOps.DebugShellEnabled, withDebugShellFlag, qOps.DebugShellEnabled, "drop talos into a maintenance shell on boot, this is for advanced debugging for developers only")
 		qemu.BoolVar(&qOps.WithIOMMU, withIOMMUFlag, qOps.WithIOMMU, "enable IOMMU support, this also add a new PCI root port and an interface attached to it")
-		qemu.MarkHidden("with-debug-shell") //nolint:errcheck
 		qemu.StringSliceVar(&qOps.ExtraUEFISearchPaths, extraUEFISearchPathsFlag, qOps.ExtraUEFISearchPaths, "additional search paths for UEFI firmware (only applies when UEFI is enabled)")
 		qemu.StringSliceVar(&qOps.NetworkNoMasqueradeCIDRs, networkNoMasqueradeCIDRsFlag, qOps.NetworkNoMasqueradeCIDRs, "list of CIDRs to exclude from NAT")
 		qemu.StringSliceVar(&qOps.Nameservers, nameserversFlag, qOps.Nameservers, "list of nameservers to use")
@@ -252,6 +256,8 @@ func getCreateCmd(cmdName string, hidden bool) *cobra.Command {
 			"specify percent of corrupt packets on the bridge interface. e.g. 50% = 0.50 (default: 0.0)")
 		qemu.IntVar(&qOps.Bandwidth, bandwidthFlag, qOps.Bandwidth, "specify bandwidth restriction (in kbps) on the bridge interface")
 		qemu.StringVar(&qOps.WithFirewall, firewallFlag, qOps.WithFirewall, "inject firewall rules into the cluster, value is default policy - accept/block")
+		qemu.BoolVar(&qOps.WithBGP, bgpFlag, qOps.WithBGP, "run an embedded GoBGP fabric peer on the bridge gateway for testing native BGP")
+		qemu.BoolVar(&qOps.WithBGPCLOS, bgpCLOSFlag, qOps.WithBGPCLOS, "full-CLOS BGP test: nodes have only dedicated unnumbered fabric uplinks to a host fabric peer, reachable via a BGP loopback")
 		qemu.Var(&qOps.WithSiderolinkAgent, withSiderolinkAgentFlag,
 			"enables the use of siderolink agent as configuration apply mechanism. `true` or `wireguard` enables the agent, `tunnel` enables the agent with grpc tunneling")
 		qemu.StringVar(&qOps.ConfigInjectionMethod,
@@ -271,63 +277,64 @@ func getCreateCmd(cmdName string, hidden bool) *cobra.Command {
 		Short: "Creates a local QEMU-based cluster for Talos development.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cli.WithContext(context.Background(), func(ctx context.Context) error {
-				if cmdName == "create" {
-					cli.Warning("the developer oriented 'cluster create' command has been moved to 'cluster create dev'")
+			if cmdName == "create" {
+				cli.Warning("the developer oriented 'cluster create' command has been moved to 'cluster create dev'")
+			}
+
+			if err := validateQemuFlags(cmd.Flags(), unImplementedFlagsDarwin); err != nil {
+				return err
+			}
+
+			var disks strings.Builder
+			fmt.Fprintf(&disks, "virtio:%d", legacyOps.clusterDiskSize)
+
+			for i := range legacyOps.extraDisks {
+				driver := "ide"
+				tag := ""
+				serial := ""
+
+				// ide driver is not supported on arm64
+				if qOps.TargetArch == "arm64" {
+					driver = "virtio"
 				}
 
-				if err := validateQemuFlags(cmd.Flags(), unImplementedFlagsDarwin); err != nil {
-					return err
+				if i < len(legacyOps.extraDisksDrivers) {
+					driver = legacyOps.extraDisksDrivers[i]
 				}
 
-				var disks strings.Builder
-				fmt.Fprintf(&disks, "virtio:%d", legacyOps.clusterDiskSize)
-
-				for i := range legacyOps.extraDisks {
-					driver := "ide"
-					tag := ""
-					serial := ""
-
-					// ide driver is not supported on arm64
-					if qOps.TargetArch == "arm64" {
-						driver = "virtio"
+				if i < len(legacyOps.extraDisksTags) {
+					if legacyOps.extraDisksTags[i] != "" {
+						tag = fmt.Sprintf(":tag=%s", legacyOps.extraDisksTags[i])
 					}
-
-					if i < len(legacyOps.extraDisksDrivers) {
-						driver = legacyOps.extraDisksDrivers[i]
-					}
-
-					if i < len(legacyOps.extraDisksTags) {
-						if legacyOps.extraDisksTags[i] != "" {
-							tag = fmt.Sprintf(":tag=%s", legacyOps.extraDisksTags[i])
-						}
-					}
-
-					if i < len(legacyOps.extraDisksSerials) {
-						if legacyOps.extraDisksSerials[i] != "" {
-							serial = fmt.Sprintf(":serial=%s", legacyOps.extraDisksSerials[i])
-						}
-					}
-
-					fmt.Fprintf(&disks, ",%s:%d%s%s", driver, legacyOps.extraDiskSize, tag, serial)
 				}
 
-				qOps.Disks = flags.Disks{}
-
-				if err := qOps.Disks.Set(disks.String()); err != nil {
-					return err
+				if i < len(legacyOps.extraDisksSerials) {
+					if legacyOps.extraDisksSerials[i] != "" {
+						serial = fmt.Sprintf(":serial=%s", legacyOps.extraDisksSerials[i])
+					}
 				}
 
-				return createDevCluster(ctx, cOps, qOps)
-			})
+				fmt.Fprintf(&disks, ",%s:%d%s%s", driver, legacyOps.extraDiskSize, tag, serial)
+			}
+
+			qOps.Disks = flags.Disks{}
+
+			if err := qOps.Disks.Set(disks.String()); err != nil {
+				return err
+			}
+
+			return createDevCluster(cmd.Context(), cOps, qOps)
 		},
 	}
 	createCmd.Flags().IntVar(&legacyOps.clusterDiskSize, clusterDiskSizeFlag, 6*1024, "default limit on disk size in MB (each VM)")
+	createCmd.Flags().IntVar(&qOps.PrimaryDisks, primaryDisksFlag, qOps.PrimaryDisks, "number of primary disks to create for each VM (each sized by --disk)")
 	createCmd.Flags().IntVar(&legacyOps.extraDisks, extraDisksFlag, 0, "number of extra disks to create for each worker VM")
 	createCmd.Flags().StringSliceVar(&legacyOps.extraDisksDrivers, extraDisksDriversFlag, nil, "driver for each extra disk (virtio, ide, ahci, scsi, nvme, megaraid)")
 	createCmd.Flags().StringSliceVar(&legacyOps.extraDisksTags, extraDisksTagsFlag, nil, "tags for each extra disk (only used by virtiofs)")
 	createCmd.Flags().StringSliceVar(&legacyOps.extraDisksSerials, extraDisksSerialsFlag, nil, "serials for each extra disk")
 	createCmd.Flags().IntVar(&legacyOps.extraDiskSize, extraDiskSizeFlag, 5*1024, "default limit on disk size in MB (each VM)")
+	createCmd.Flags().BoolVar(&qOps.ExtraDisksOnControlplanes, extraDisksOnControlplanesFlag, false,
+		"attach the extra disks to controlplane machines as well (by default they are attached only to workers)")
 
 	clustercmd.AddProvisionerFlag(createCmd)
 	cli.Should(createCmd.Flags().MarkHidden(clustercmd.ProvisionerFlagName))

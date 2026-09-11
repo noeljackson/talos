@@ -17,7 +17,7 @@ import (
 	"github.com/siderolabs/go-procfs/procfs"
 	"go.uber.org/zap"
 
-	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
+	cfgcfg "github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
@@ -71,8 +71,6 @@ func (ctrl *HostDNSConfigController) Run(ctx context.Context, r controller.Runti
 		case <-r.EventCh():
 		}
 
-		var cfgProvider talosconfig.Config
-
 		r.StartTrackingOutputs()
 
 		cfg, err := safe.ReaderGetByID[*config.MachineConfig](ctx, r, config.ActiveID)
@@ -80,8 +78,12 @@ func (ctrl *HostDNSConfigController) Run(ctx context.Context, r controller.Runti
 			if !state.IsNotFoundError(err) {
 				return fmt.Errorf("error getting config: %w", err)
 			}
-		} else if cfg.Config().Machine() != nil {
-			cfgProvider = cfg.Config()
+		}
+
+		var hostDNSConfig cfgcfg.NetworkHostDNSConfig
+
+		if cfg != nil {
+			hostDNSConfig = cfg.Config().NetworkHostDNSConfig()
 		}
 
 		newServiceAddrs := make([]netip.Addr, 0, 2)
@@ -90,31 +92,51 @@ func (ctrl *HostDNSConfigController) Run(ctx context.Context, r controller.Runti
 			res.TypedSpec().ListenAddresses = []netip.AddrPort{
 				netip.MustParseAddrPort("127.0.0.53:53"),
 			}
+			// Keep resolv.conf pointed at Host DNS during early bootstrap. The active
+			// machine configuration can disable it once it is loaded.
+			res.TypedSpec().Enabled = cfg == nil
+			res.TypedSpec().ResolveMemberNames = false
 
 			res.TypedSpec().ServiceHostDNSAddress = netip.Addr{}
+			res.TypedSpec().ServiceHostDNSAddressV6 = netip.Addr{}
 
-			if cfgProvider == nil {
-				res.TypedSpec().Enabled = false
-
+			if hostDNSConfig == nil {
 				return nil
 			}
 
-			res.TypedSpec().Enabled = cfgProvider.Machine().Features().HostDNS().Enabled()
-			res.TypedSpec().ResolveMemberNames = cfgProvider.Machine().Features().HostDNS().ResolveMemberNames()
+			res.TypedSpec().Enabled = hostDNSConfig.HostDNSEnabled()
+			res.TypedSpec().ResolveMemberNames = hostDNSConfig.ResolveMemberNames()
 
-			if !cfgProvider.Machine().Features().HostDNS().ForwardKubeDNSToHost() {
+			if !hostDNSConfig.ForwardKubeDNSToHost() {
 				return nil
+			}
+
+			var podCIDRs []netip.Prefix
+
+			if k8sNetwork := cfg.Config().K8sNetworkConfig(); k8sNetwork != nil {
+				podCIDRs = k8sNetwork.PodCIDRs()
 			}
 
 			if slices.ContainsFunc(
-				cfgProvider.Cluster().Network().PodCIDRs(),
-				func(cidr string) bool { return netip.MustParsePrefix(cidr).Addr().Is4() },
+				podCIDRs,
+				func(cidr netip.Prefix) bool { return cidr.Addr().Is4() },
 			) {
 				parsed := netip.MustParseAddr(constants.HostDNSAddress)
 				newServiceAddrs = append(newServiceAddrs, parsed)
 
 				res.TypedSpec().ListenAddresses = append(res.TypedSpec().ListenAddresses, netip.AddrPortFrom(parsed, 53))
 				res.TypedSpec().ServiceHostDNSAddress = parsed
+			}
+
+			if slices.ContainsFunc(
+				podCIDRs,
+				func(cidr netip.Prefix) bool { return cidr.Addr().Is6() },
+			) {
+				parsed := netip.MustParseAddr(constants.HostDNSAddressV6)
+				newServiceAddrs = append(newServiceAddrs, parsed)
+
+				res.TypedSpec().ListenAddresses = append(res.TypedSpec().ListenAddresses, netip.AddrPortFrom(parsed, 53))
+				res.TypedSpec().ServiceHostDNSAddressV6 = parsed
 			}
 
 			return nil

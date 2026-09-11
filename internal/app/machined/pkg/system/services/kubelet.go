@@ -72,7 +72,8 @@ func (k *Kubelet) PreFunc(ctx context.Context, r runtime.Runtime) error {
 	// Pull the image and unpack it.
 	containerdctx := namespaces.WithNamespace(ctx, constants.SystemContainerdNamespace)
 
-	img, err := image.Pull(containerdctx,
+	img, err := image.PullWithRetriesAndTimeout(
+		containerdctx,
 		cri.RegistryBuilder(r.State().V1Alpha2().Resources()),
 		r.State().V1Alpha2().Resources(),
 		client, spec.Image,
@@ -116,8 +117,8 @@ func (k *Kubelet) DependsOn(runtime.Runtime) []string {
 func (k *Kubelet) Volumes(runtime.Runtime) []string {
 	return []string{
 		"/var/lib",
-		"/var/lib/kubelet",
-		constants.LogMountPoint,
+		constants.KubeletDataVolumeID,
+		constants.LogVolumeID,
 		"/var/log/audit",
 		"/var/log/containers",
 		"/var/log/pods",
@@ -160,7 +161,6 @@ func (k *Kubelet) Runner(r runtime.Runtime) (runner.Runner, error) {
 		{Type: "bind", Destination: "/etc/os-release", Source: "/etc/os-release", Options: []string{"bind", "ro"}},
 		{Type: "bind", Destination: constants.PodResolvConfPath, Source: constants.PodResolvConfPath, Options: []string{"bind", "ro"}},
 		{Type: "bind", Destination: "/etc/cni", Source: "/etc/cni", Options: []string{"bind", "ro"}},
-		{Type: "bind", Destination: "/usr/libexec/kubernetes", Source: "/usr/libexec/kubernetes", Options: []string{"bind", "rw"}},
 		{Type: "bind", Destination: "/var/run", Source: "/run", Options: []string{"rbind", "rslave", "rw"}},
 		{Type: "bind", Destination: "/var/lib/containerd", Source: "/var/lib/containerd", Options: []string{"rbind", "rslave", "rw"}},
 		{Type: "bind", Destination: "/var/lib/kubelet", Source: "/var/lib/kubelet", Options: []string{"rbind", "rshared", "rw"}},
@@ -170,7 +170,8 @@ func (k *Kubelet) Runner(r runtime.Runtime) (runner.Runner, error) {
 	}
 
 	if _, err := os.Stat("/sys/kernel/security"); err == nil {
-		mounts = append(mounts,
+		mounts = append(
+			mounts,
 			specs.Mount{Type: "securityfs", Destination: "/sys/kernel/security", Source: "/sys/kernel/security", Options: []string{"bind", "ro"}},
 		)
 	}
@@ -187,32 +188,33 @@ func (k *Kubelet) Runner(r runtime.Runtime) (runner.Runner, error) {
 		mounts = append(mounts, mount)
 	}
 
-	return restart.New(containerd.NewRunner(
-		r.Config().Debug() && r.Config().Machine().Type() == machine.TypeWorker, // enable debug logs only for the worker nodes
-		&args,
-		runner.WithLoggingManager(r.Logging()),
-		runner.WithNamespace(constants.SystemContainerdNamespace),
-		runner.WithContainerImage(k.imgRef),
-		runner.WithEnv(environment.Get(r.Config())),
-		runner.WithCgroupPath(constants.CgroupKubelet),
-		runner.WithSelinuxLabel(constants.SelinuxLabelKubelet),
-		runner.WithOCISpecOpts(
-			containerd.WithRootfsPropagation("shared"),
-			oci.WithMounts(mounts),
-			oci.WithHostNamespace(specs.NetworkNamespace),
-			oci.WithHostNamespace(specs.PIDNamespace),
-			oci.WithParentCgroupDevices,
-			oci.WithMaskedPaths(nil),
-			oci.WithReadonlyPaths(nil),
-			oci.WithWriteableSysfs,
-			oci.WithWriteableCgroupfs,
-			oci.WithApparmorProfile(""),
-			oci.WithAllDevicesAllowed,
-			oci.WithCapabilities(capability.AllGrantableCapabilities()), // TODO: kubelet doesn't need all of these, we should consider limiting capabilities
+	return restart.New(
+		containerd.NewRunner(
+			r.Config().Debug() && r.Config().Machine().Type() == machine.TypeWorker, // enable debug logs only for the worker nodes
+			&args,
+			runner.WithLoggingManager(r.Logging()),
+			runner.WithNamespace(constants.SystemContainerdNamespace),
+			runner.WithContainerImage(k.imgRef),
+			runner.WithEnv(environment.Get(r.Config())),
+			runner.WithCgroupPath(constants.CgroupKubelet),
+			runner.WithSelinuxLabel(constants.SelinuxLabelKubelet),
+			runner.WithOCISpecOpts(
+				containerd.WithRootfsPropagation("shared"),
+				oci.WithMounts(mounts),
+				oci.WithHostNamespace(specs.NetworkNamespace),
+				oci.WithHostNamespace(specs.PIDNamespace),
+				oci.WithParentCgroupDevices,
+				oci.WithMaskedPaths(nil),
+				oci.WithReadonlyPaths(nil),
+				oci.WithWriteableSysfs,
+				oci.WithWriteableCgroupfs,
+				oci.WithApparmorProfile(""),
+				oci.WithAllDevicesAllowed,
+				oci.WithCapabilities(capability.AllGrantableCapabilities()), // TODO: kubelet doesn't need all of these, we should consider limiting capabilities
+			),
+			runner.WithOOMScoreAdj(constants.KubeletOOMScoreAdj),
+			runner.WithCustomSeccompProfile(kubeletSeccomp),
 		),
-		runner.WithOOMScoreAdj(constants.KubeletOOMScoreAdj),
-		runner.WithCustomSeccompProfile(kubeletSeccomp),
-	),
 		restart.WithType(restart.Forever),
 	), nil
 }
@@ -242,7 +244,8 @@ func (k *Kubelet) APIStartAllowed(runtime.Runtime) bool {
 
 func kubeletSeccomp(seccomp *specs.LinuxSeccomp) {
 	// for cephfs mounts
-	seccomp.Syscalls = append(seccomp.Syscalls,
+	seccomp.Syscalls = append(
+		seccomp.Syscalls,
 		specs.LinuxSyscall{
 			Names: []string{
 				"add_key",

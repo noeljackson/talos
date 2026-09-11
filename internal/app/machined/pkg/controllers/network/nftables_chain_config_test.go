@@ -16,6 +16,7 @@ import (
 	netctrl "github.com/siderolabs/talos/internal/app/machined/pkg/controllers/network"
 	configtypes "github.com/siderolabs/talos/pkg/machinery/config/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/meta"
 	networkcfg "github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
@@ -40,7 +41,7 @@ func (suite *NfTablesChainConfigTestSuite) injectConfig(block bool) {
 	kubeletIngressCfg.Ingress = []networkcfg.IngressRule{
 		{
 			Subnet: netip.MustParsePrefix("10.0.0.0/8"),
-			Except: networkcfg.Prefix{Prefix: netip.MustParsePrefix("10.3.0.0/16")},
+			Except: meta.Prefix{Prefix: netip.MustParsePrefix("10.3.0.0/16")},
 		},
 		{
 			Subnet: netip.MustParsePrefix("192.168.0.0/16"),
@@ -109,6 +110,25 @@ func (suite *NfTablesChainConfigTestSuite) TestDefaultAccept() {
 					Verdict:     new(nethelpers.VerdictAccept),
 				},
 				{
+					MatchConntrackState: &network.NfTablesConntrackStateMatch{
+						States: []nethelpers.ConntrackState{
+							nethelpers.ConntrackStateEstablished,
+							nethelpers.ConntrackStateRelated,
+						},
+					},
+					AnonCounter: true,
+					Verdict:     new(nethelpers.VerdictAccept),
+				},
+				{
+					MatchConntrackState: &network.NfTablesConntrackStateMatch{
+						States: []nethelpers.ConntrackState{
+							nethelpers.ConntrackStateInvalid,
+						},
+					},
+					AnonCounter: true,
+					Verdict:     new(nethelpers.VerdictDrop),
+				},
+				{
 					MatchSourceAddress: &network.NfTablesAddressMatch{
 						IncludeSubnets: []netip.Prefix{
 							netip.MustParsePrefix("10.0.0.0/8"),
@@ -155,7 +175,8 @@ func (suite *NfTablesChainConfigTestSuite) TestDefaultAccept() {
 					Verdict:     new(nethelpers.VerdictDrop),
 				},
 			},
-			spec.Rules)
+			spec.Rules,
+		)
 	})
 
 	ctest.AssertResource(suite, netctrl.PreroutingChainName, func(chain *network.NfTablesChain, asrt *assert.Assertions) {
@@ -247,7 +268,8 @@ func (suite *NfTablesChainConfigTestSuite) TestDefaultAccept() {
 					Verdict:     new(nethelpers.VerdictDrop),
 				},
 			},
-			spec.Rules)
+			spec.Rules,
+		)
 	})
 }
 
@@ -377,7 +399,8 @@ func (suite *NfTablesChainConfigTestSuite) TestDefaultBlock() {
 					Verdict:     new(nethelpers.VerdictAccept),
 				},
 			},
-			spec.Rules)
+			spec.Rules,
+		)
 	})
 
 	ctest.AssertResource(suite, netctrl.PreroutingChainName, func(chain *network.NfTablesChain, asrt *assert.Assertions) {
@@ -491,7 +514,8 @@ func (suite *NfTablesChainConfigTestSuite) TestDefaultBlock() {
 					Verdict:     new(nethelpers.VerdictDrop),
 				},
 			},
-			spec.Rules)
+			spec.Rules,
+		)
 	})
 }
 

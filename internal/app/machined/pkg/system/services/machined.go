@@ -7,7 +7,6 @@ package services
 import (
 	"context"
 	"io"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -128,6 +127,26 @@ var rules = map[string]role.Set{
 		// for maintenance only, verified in the handler
 		role.Reader,
 	),
+	"/machine.LVMService/LogicalVolumeRemove": role.MakeSet(
+		role.Admin,
+		// for maintenance only, verified in the handler
+		role.Reader,
+	),
+	"/machine.LVMService/VolumeGroupRemove": role.MakeSet(
+		role.Admin,
+		// for maintenance only, verified in the handler
+		role.Reader,
+	),
+	"/machine.LVMService/PhysicalVolumeRemove": role.MakeSet(
+		role.Admin,
+		// for maintenance only, verified in the handler
+		role.Reader,
+	),
+	"/machine.MDService/Destroy": role.MakeSet(
+		role.Admin,
+		// for maintenance only, verified in the handler
+		role.Reader,
+	),
 
 	"/time.TimeService/Time":      role.MakeSet(role.Admin, role.Operator, role.Reader),
 	"/time.TimeService/TimeCheck": role.MakeSet(role.Admin, role.Operator, role.Reader),
@@ -140,17 +159,13 @@ type machinedService struct {
 // Main is an entrypoint to the API service.
 func (s *machinedService) Main(ctx context.Context, _ runtime.Runtime, logWriter io.Writer) error {
 	injector := &authz.Injector{
-		Mode: authz.MetadataOnly,
-	}
-
-	if debug.Enabled {
-		injector.Logger = log.New(logWriter, "machined/authz/injector ", log.Flags()).Printf
+		Mode:    authz.MetadataOnly,
+		Verbose: debug.Enabled,
 	}
 
 	authorizer := &authz.Authorizer{
 		Rules:         rules,
 		FallbackRoles: role.MakeSet(role.Admin),
-		Logger:        log.New(logWriter, "machined/authz/authorizer ", log.Flags()).Printf,
 	}
 
 	// machined's own identity, used to recognize the kernel static usermode helper
@@ -205,15 +220,22 @@ func (s *machinedService) Main(ctx context.Context, _ runtime.Runtime, logWriter
 				// allow processes forked inside the container to access apid as well
 				AllowNamespaceMatch: true,
 			},
+			{
+				// containers with security.machinedAccess enabled.
+				Pattern:      constants.ContainerServicePIDPrefix + "*",
+				AllowedRoles: role.All,
+				// allow processes forked inside the container to access machined as well
+				AllowNamespaceMatch: true,
+			},
 		},
-		Logger: log.New(logWriter, "machined/authz/unix/authorizer ", log.Flags()).Printf,
 	}
 
 	logger := logging.ZapLogger(
-		logging.NewLogDestination(logWriter, zapcore.DebugLevel,
+		logging.NewLogDestination(
+			logWriter, zapcore.DebugLevel,
 			logging.WithColoredLevels(),
 		),
-	)
+	).With(logging.Component("machined"))
 
 	// Start the API server.
 	server := factory.NewServer( //nolint:contextcheck

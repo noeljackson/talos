@@ -39,7 +39,7 @@ type Controller struct {
 	priorityLock *PriorityLock[runtime.Sequence]
 }
 
-// NewController intializes and returns a controller.
+// NewController initializes and returns a controller.
 func NewController() (*Controller, error) {
 	s, err := NewState()
 	if err != nil {
@@ -57,7 +57,17 @@ func NewController() (*Controller, error) {
 		priorityLock: NewPriorityLock[runtime.Sequence](),
 	}
 
-	ctlr.v2, err = v1alpha2.NewController(ctlr.r)
+	reboot := func(ctx context.Context) error {
+		if err := ctlr.Run(ctx, runtime.SequenceReboot, &machine.RebootRequest{}); err != nil {
+			if !runtime.IsRebootError(err) {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	ctlr.v2, err = v1alpha2.NewController(ctlr.r, reboot)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +180,13 @@ func (c *Controller) V1Alpha2() runtime.V1Alpha2Controller {
 // Runtime implements the controller interface.
 func (c *Controller) Runtime() runtime.Runtime {
 	return c.r
+}
+
+// SetSandbox publishes (or clears, with a nil launcher) the sandbox namespace
+// client. The sandboxd runner calls it each time the namespace is (re)created or
+// torn down, so it may be invoked repeatedly over the node's lifetime.
+func (c *Controller) SetSandbox(launcher runtime.SandboxLauncher) {
+	c.r.SetSandbox(launcher)
 }
 
 // Sequencer implements the controller interface.

@@ -17,6 +17,7 @@ import (
 	"slices"
 
 	"github.com/google/uuid"
+	"github.com/siderolabs/gen/xerrors"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-blockdevice/v2/blkid"
 	"github.com/siderolabs/go-blockdevice/v2/block"
@@ -70,10 +71,22 @@ type Options struct {
 	// Options specific for the image creation mode.
 	ImageSecureboot     bool
 	DiskImageBootloader string
-	Version             string
-	BootAssets          bootloaderoptions.BootAssets
-	Printf              func(string, ...any)
-	MountPrefix         string
+	ImageSectorSize     uint
+
+	Version     string
+	BootAssets  bootloaderoptions.BootAssets
+	Printf      func(string, ...any)
+	MountPrefix string
+
+	// SecureBoot key auto-enrollment (image creation mode only).
+	//
+	// When SecureBootEnrollKeys is non-empty, the bootloader installer writes
+	// loader/keys/auto/{PK,KEK,db}.auth on the ESP and renders loader.conf with
+	// secure-boot-enroll set to this value.
+	SecureBootEnrollKeys string
+	PlatformKeyPath      string
+	KeyExchangeKeyPath   string
+	SignatureKeyPath     string
 }
 
 // Mode is the install mode.
@@ -105,7 +118,7 @@ func Install(ctx context.Context, p runtime.Platform, mode Mode, opts *Options) 
 	if overlayPresent() {
 		extraOptionsBytes, err := os.ReadFile(constants.ImagerOverlayExtraOptionsPath)
 		if err != nil {
-			return err
+			return xerrors.NewTaggedf[DependencyTag]("%w", err)
 		}
 
 		var extraOptions overlay.ExtraOptions
@@ -114,7 +127,7 @@ func Install(ctx context.Context, p runtime.Platform, mode Mode, opts *Options) 
 		decoder.KnownFields(true)
 
 		if err := decoder.Decode(&extraOptions); err != nil {
-			return fmt.Errorf("failed to decode extra options: %w", err)
+			return xerrors.NewTaggedf[InvalidInputTag]("failed to decode extra options: %w", err)
 		}
 
 		opts.OverlayInstaller = executor.New(constants.ImagerOverlayInstallerDefaultPath)
@@ -133,13 +146,13 @@ func Install(ctx context.Context, p runtime.Platform, mode Mode, opts *Options) 
 
 	// first defaults, then extra kernel args to allow extra kernel args to override defaults
 	if err := cmdline.AppendAll(kernel.DefaultArgs(quirks.Quirks{})); err != nil {
-		return err
+		return xerrors.NewTagged[InvalidInputTag](err)
 	}
 
 	if opts.OverlayInstaller != nil {
 		overlayOpts, getOptsErr := opts.OverlayInstaller.GetOptions(ctx, opts.ExtraOptions)
 		if getOptsErr != nil {
-			return fmt.Errorf("failed to get overlay installer options: %w", getOptsErr)
+			return xerrors.NewTaggedf[DependencyTag]("failed to get overlay installer options: %w", getOptsErr)
 		}
 
 		opts.OverlayName = overlayOpts.Name
@@ -162,16 +175,16 @@ func Install(ctx context.Context, p runtime.Platform, mode Mode, opts *Options) 
 		procfs.WithOverwriteArgs(constants.KernelParamPlatform),
 		procfs.WithDeleteNegatedArgs(),
 	); err != nil {
-		return err
+		return xerrors.NewTagged[InvalidInputTag](err)
 	}
 
 	i, err := NewInstaller(ctx, cmdline, mode, opts)
 	if err != nil {
-		return err
+		return xerrors.NewTagged[InstallTag](err)
 	}
 
 	if err = i.Install(ctx, mode); err != nil {
-		return err
+		return xerrors.NewTagged[InstallTag](err)
 	}
 
 	i.options.Printf("installation of %s complete", version.Tag)
@@ -297,7 +310,15 @@ func (i *Installer) blockDeviceData(mode Mode) (*block.Device, *blkid.Info, erro
 
 		return bd, info, nil
 	case ModeImage:
-		info, err := blkid.ProbePath(i.options.DiskPath, blkid.WithSkipLocking(true))
+		blkidProbeOptions := []blkid.ProbeOption{
+			blkid.WithSkipLocking(true),
+		}
+
+		if i.options.ImageSectorSize > 0 {
+			blkidProbeOptions = append(blkidProbeOptions, blkid.WithSectorSize(i.options.ImageSectorSize))
+		}
+
+		info, err := blkid.ProbePath(i.options.DiskPath, blkidProbeOptions...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to probe blockdevice %s: %w", i.options.DiskPath, err)
 		}
@@ -364,7 +385,15 @@ func (i *Installer) Install(ctx context.Context, mode Mode) (err error) {
 	}
 
 	// re-probe the device to get updated partition information
-	info, err = blkid.ProbePath(i.options.DiskPath, blkid.WithSkipLocking(true))
+	blkidProbeOptions := []blkid.ProbeOption{
+		blkid.WithSkipLocking(true),
+	}
+
+	if mode == ModeImage && i.options.ImageSectorSize > 0 {
+		blkidProbeOptions = append(blkidProbeOptions, blkid.WithSectorSize(i.options.ImageSectorSize))
+	}
+
+	info, err = blkid.ProbePath(i.options.DiskPath, blkidProbeOptions...)
 	if err != nil {
 		return fmt.Errorf("failed to probe blockdevice %s: %w", i.options.DiskPath, err)
 	}
@@ -433,7 +462,13 @@ func (i *Installer) handleMeta(ctx context.Context, mode Mode, previousLabel str
 
 		defer f.Close() //nolint:errcheck
 
-		gptdev, err := gpt.DeviceFromFile(f)
+		var gptFileOptions []gpt.FileOption
+
+		if i.options.ImageSectorSize != 0 {
+			gptFileOptions = append(gptFileOptions, gpt.WithFileSectorSize(i.options.ImageSectorSize))
+		}
+
+		gptdev, err := gpt.DeviceFromFile(f, gptFileOptions...)
 		if err != nil {
 			return fmt.Errorf("failed to initialize GPT device from image file %s: %w", i.options.DiskPath, err)
 		}
@@ -518,6 +553,11 @@ func (i *Installer) generateBootloaderOptions(ctx context.Context, mode Mode, in
 		MountPrefix:       i.options.MountPrefix,
 		BlkidInfo:         info,
 
+		SecureBootEnrollKeys: i.options.SecureBootEnrollKeys,
+		PlatformKeyPath:      i.options.PlatformKeyPath,
+		KeyExchangeKeyPath:   i.options.KeyExchangeKeyPath,
+		SignatureKeyPath:     i.options.SignatureKeyPath,
+
 		ExtraInstallStep: func() error {
 			if i.options.OverlayInstaller != nil {
 				i.options.Printf("running overlay installer %q", i.options.OverlayName)
@@ -544,21 +584,9 @@ func (i *Installer) getBootPartitions(ctx context.Context, mode Mode, bootloader
 
 	bootloaderOptions := i.generateBootloaderOptions(ctx, mode, nil)
 
-	partitionOptions, err := bootloader.GenerateAssets(bootloaderOptions)
+	partitionOptions, err := bootloader.PrepareBootPartitions(bootloaderOptions)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate bootloader assets: %w", err)
-	}
-
-	efiPartitionPresent := slices.ContainsFunc(partitionOptions, func(p partition.Options) bool {
-		return p.Label == constants.EFIPartitionLabel && p.SourceDirectory != ""
-	})
-
-	// We need to move out bootloaderOptions.MountPrefix+/boot/EFI to bootloaderOptions.MountPrefix+/EFI otherwise
-	// BOOT partition will be populated with EFI directory inside boot directory.
-	if efiPartitionPresent {
-		if err := os.Rename(filepath.Join(bootloaderOptions.MountPrefix, constants.EFIMountPoint), filepath.Join(bootloaderOptions.MountPrefix, "EFI")); err != nil {
-			return nil, fmt.Errorf("failed to move EFI directory: %w", err)
-		}
+		return nil, fmt.Errorf("failed to prepare bootloader partitions: %w", err)
 	}
 
 	return partitionOptions, nil
@@ -602,7 +630,13 @@ func (i *Installer) createPartitions(ctx context.Context, mode Mode, bd *block.D
 
 		defer f.Close() //nolint:errcheck
 
-		gptdev, err = gpt.DeviceFromFile(f)
+		var gptFileOptions []gpt.FileOption
+
+		if i.options.ImageSectorSize != 0 {
+			gptFileOptions = append(gptFileOptions, gpt.WithFileSectorSize(i.options.ImageSectorSize))
+		}
+
+		gptdev, err = gpt.DeviceFromFile(f, gptFileOptions...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize GPT device from image file %s: %w", i.options.DiskPath, err)
 		}
@@ -676,7 +710,13 @@ func (i *Installer) formatPartitions(ctx context.Context, mode Mode, parts []par
 
 		defer f.Close() //nolint:errcheck
 
-		gptdev, err := gpt.DeviceFromFile(f)
+		var gptFileOptions []gpt.FileOption
+
+		if i.options.ImageSectorSize != 0 {
+			gptFileOptions = append(gptFileOptions, gpt.WithFileSectorSize(i.options.ImageSectorSize))
+		}
+
+		gptdev, err := gpt.DeviceFromFile(f, gptFileOptions...)
 		if err != nil {
 			return fmt.Errorf("failed to initialize GPT device from image file %s: %w", i.options.DiskPath, err)
 		}
@@ -890,7 +930,8 @@ func (i *Installer) getPartitionOptions(ctx context.Context, mode Mode, hostTalo
 	partitions := slices.Clone(bootPartitions)
 
 	// META partition
-	partitions = append(partitions,
+	partitions = append(
+		partitions,
 		partition.NewPartitionOptions(false, quirk, partition.WithLabel(constants.MetaPartitionLabel)),
 	)
 
@@ -898,13 +939,15 @@ func (i *Installer) getPartitionOptions(ctx context.Context, mode Mode, hostTalo
 
 	// compatibility when installing on Talos < 1.8
 	if legacyImage || (hostTalosVersion != nil && hostTalosVersion.PrecreateStatePartition()) {
-		partitions = append(partitions,
+		partitions = append(
+			partitions,
 			partition.NewPartitionOptions(false, quirk, partition.WithLabel(constants.StatePartitionLabel)),
 		)
 	}
 
 	if legacyImage {
-		partitions = append(partitions,
+		partitions = append(
+			partitions,
 			partition.NewPartitionOptions(false, quirk, partition.WithLabel(constants.EphemeralPartitionLabel)),
 		)
 	}
@@ -916,7 +959,8 @@ func (i *Installer) getPartitionOptions(ctx context.Context, mode Mode, hostTalo
 		}
 
 		if mode == ModeImage {
-			imageCachePartitionFormatOptions = append(imageCachePartitionFormatOptions,
+			imageCachePartitionFormatOptions = append(
+				imageCachePartitionFormatOptions,
 				partition.WithReproducible(),
 			)
 		}
@@ -938,6 +982,13 @@ func (i *Installer) getPartitionOptions(ctx context.Context, mode Mode, hostTalo
 
 			// Generate deterministic partition GUID from label for reproducible images
 			p.PartitionOpts = append(p.PartitionOpts, gpt.WithUniqueGUID(partitionGUID))
+
+			return p
+		})
+
+		// push down sector size for the image
+		partitions = xslices.Map(partitions, func(p partition.Options) partition.Options {
+			p.SectorSize = i.options.ImageSectorSize
 
 			return p
 		})

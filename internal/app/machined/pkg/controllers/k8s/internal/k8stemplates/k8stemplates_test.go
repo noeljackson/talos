@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/k8s/internal/k8stemplates"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/resources/secrets"
 )
@@ -34,17 +35,244 @@ func TestTemplates(t *testing.T) {
 		{
 			name: "apiserver-encryption-secretbox",
 			obj: func() runtime.Object {
-				return k8stemplates.APIServerEncryptionConfig(&secrets.KubernetesRootSpec{
+				obj, err := k8stemplates.APIServerEncryptionConfig(&secrets.KubernetesRootSpec{
 					SecretboxEncryptionSecret: "/FYehPLp5F8POCNQRVDEUb7Hmt+KkV44e+fQL4HMexs=",
 				})
+				require.NoError(t, err)
+
+				return obj
 			},
 		},
 		{
 			name: "apiserver-encryption-aescbc",
 			obj: func() runtime.Object {
-				return k8stemplates.APIServerEncryptionConfig(&secrets.KubernetesRootSpec{
+				obj, err := k8stemplates.APIServerEncryptionConfig(&secrets.KubernetesRootSpec{
 					AESCBCEncryptionSecret: "/sFYehPLp5F8POCNQRVDEUb7Hmt+KkV44e+fQL4HMexs=",
 				})
+				require.NoError(t, err)
+
+				return obj
+			},
+		},
+		{
+			name: "apiserver-encryption-config",
+			obj: func() runtime.Object {
+				obj, err := k8stemplates.APIServerEncryptionConfig(&secrets.KubernetesRootSpec{
+					EtcdEncryptionConfig: map[string]any{
+						"resources": []any{
+							map[string]any{
+								"resources": []string{"secrets"},
+								"providers": []any{
+									map[string]any{
+										"secretbox": map[string]any{
+											"keys": []any{
+												map[string]any{
+													"name":   "key2",
+													"secret": "/FYehPLp5F8POCNQRVDEUb7Hmt+KkV44e+fQL4HMexs=",
+												},
+											},
+										},
+									},
+									map[string]any{
+										"aescbc": map[string]any{
+											"keys": []any{
+												map[string]any{
+													"name":   "key1",
+													"secret": "/sFYehPLp5F8POCNQRVDEUb7Hmt+KkV44e+fQL4HMexs=",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				})
+				require.NoError(t, err)
+
+				return obj
+			},
+		},
+		{
+			name: "controller-manager",
+			obj: func() runtime.Object {
+				cfg := k8s.NewControllerManagerConfig(k8s.FinalControllerManagerConfigID)
+				*cfg.TypedSpec() = k8s.ControllerManagerConfigSpec{
+					Enabled:       true,
+					Image:         "registry.k8s.io/controller-manager:v1.36.0",
+					CloudProvider: "external",
+					PodCIDRs:      []string{"10.96.0.0/12"},
+					ServiceCIDRs:  []string{"10.224.0.0/16"},
+					Args: []string{
+						"/usr/local/bin/kube-controller-manager",
+						"--use-service-account-credentials",
+						"--allocate-node-cidrs=true",
+					},
+					EnvironmentVariables: map[string]string{
+						"HTTP_PROXY": "http://127.0.0.1:443",
+					},
+					Resources: k8s.Resources{
+						Requests: map[string]string{
+							"cpu":    "50m",
+							"memory": "500Mi",
+						},
+						Limits: map[string]string{
+							"cpu":    "1",
+							"memory": "1000Mi",
+						},
+					},
+				}
+
+				obj, err := k8stemplates.ControllerManagerPod(cfg, "111")
+				require.NoError(t, err)
+
+				return obj
+			},
+		},
+		{
+			name: "scheduler",
+			obj: func() runtime.Object {
+				cfg := k8s.NewSchedulerConfig(k8s.FinalSchedulerConfigID)
+				*cfg.TypedSpec() = k8s.SchedulerConfigSpec{
+					Enabled: true,
+					Image:   "registry.k8s.io/scheduler:v1.36.0",
+					Args: []string{
+						"/usr/local/bin/kube-scheduler",
+						"--authentication-kubeconfig=",
+						"--authentication-tolerate-lookup-failure=false",
+						"--authorization-kubeconfig=",
+						"--bind-address=127.0.0.1",
+						"--config=",
+						"--leader-elect=true",
+						"--profiling=false",
+						"--tls-min-version=VersionTLS13",
+					},
+					EnvironmentVariables: map[string]string{
+						"HTTP_PROXY": "http://127.0.0.1:443",
+					},
+					Resources: k8s.Resources{
+						Requests: map[string]string{
+							"cpu":    "50m",
+							"memory": "500Mi",
+						},
+					},
+				}
+
+				obj, err := k8stemplates.SchedulerPod(cfg, "222")
+				require.NoError(t, err)
+
+				return obj
+			},
+		},
+		{
+			name: "apiserver-minimal",
+			obj: func() runtime.Object {
+				cfg := k8s.NewAPIServerConfig(k8s.FinalAPIServerConfigID)
+				*cfg.TypedSpec() = k8s.APIServerConfigSpec{
+					Image:     "registry.k8s.io/kube-apiserver:v1.36.0",
+					LocalPort: 6443,
+					Args: []string{
+						"/usr/local/bin/kube-apiserver",
+						"--etcd-servers=https://127.0.0.1:2379",
+						"--secure-port=6443",
+					},
+				}
+
+				obj, err := k8stemplates.APIServerPod(cfg, "111", "222")
+				require.NoError(t, err)
+
+				return obj
+			},
+		},
+		{
+			name: "apiserver-with-startup-probes",
+			obj: func() runtime.Object {
+				cfg := k8s.NewAPIServerConfig(k8s.FinalAPIServerConfigID)
+				*cfg.TypedSpec() = k8s.APIServerConfigSpec{
+					Image:                "registry.k8s.io/kube-apiserver:v1.36.0",
+					LocalPort:            6443,
+					StartupProbesEnabled: true,
+					Args: []string{
+						"/usr/local/bin/kube-apiserver",
+						"--etcd-servers=https://127.0.0.1:2379",
+						"--secure-port=6443",
+					},
+				}
+
+				obj, err := k8stemplates.APIServerPod(cfg, "111", "222")
+				require.NoError(t, err)
+
+				return obj
+			},
+		},
+		{
+			name: "apiserver-with-resources-and-env",
+			obj: func() runtime.Object {
+				cfg := k8s.NewAPIServerConfig(k8s.FinalAPIServerConfigID)
+				*cfg.TypedSpec() = k8s.APIServerConfigSpec{
+					Image:     "registry.k8s.io/kube-apiserver:v1.36.0",
+					LocalPort: 6443,
+					Args: []string{
+						"/usr/local/bin/kube-apiserver",
+						"--etcd-servers=https://127.0.0.1:2379",
+						"--secure-port=6443",
+					},
+					EnvironmentVariables: map[string]string{
+						"HTTP_PROXY":  "http://127.0.0.1:443",
+						"GOGC":        "50",
+						"NO_PROXY":    "10.0.0.0/8",
+						"HTTPS_PROXY": "http://127.0.0.1:443",
+					},
+					Resources: k8s.Resources{
+						Requests: map[string]string{
+							"cpu":    "100m",
+							"memory": "1Gi",
+						},
+						Limits: map[string]string{
+							"cpu":    "2",
+							"memory": "4Gi",
+						},
+					},
+				}
+
+				obj, err := k8stemplates.APIServerPod(cfg, "111", "222")
+				require.NoError(t, err)
+
+				return obj
+			},
+		},
+		{
+			name: "apiserver-with-extra-volumes",
+			obj: func() runtime.Object {
+				cfg := k8s.NewAPIServerConfig(k8s.FinalAPIServerConfigID)
+				*cfg.TypedSpec() = k8s.APIServerConfigSpec{
+					Image:     "registry.k8s.io/kube-apiserver:v1.36.0",
+					LocalPort: 6443,
+					Args: []string{
+						"/usr/local/bin/kube-apiserver",
+						"--etcd-servers=https://127.0.0.1:2379",
+						"--secure-port=6443",
+					},
+					ExtraVolumes: []k8s.ExtraVolume{
+						{
+							Name:      "audit",
+							HostPath:  "/var/lib/audit",
+							MountPath: "/etc/kubernetes/audit",
+							ReadOnly:  true,
+						},
+						{
+							Name:      "encryption",
+							HostPath:  "/var/lib/encryption",
+							MountPath: "/etc/kubernetes/encryption",
+							ReadOnly:  false,
+						},
+					},
+				}
+
+				obj, err := k8stemplates.APIServerPod(cfg, "111", "222")
+				require.NoError(t, err)
+
+				return obj
 			},
 		},
 		{
@@ -146,10 +374,64 @@ func TestTemplates(t *testing.T) {
 		{
 			name: "kube-proxy-daemonset",
 			obj: func() runtime.Object {
-				return k8stemplates.KubeProxyDaemonSetTemplate(&k8s.BootstrapManifestsConfigSpec{
+				spec, err := k8stemplates.KubeProxyDaemonSetTemplate(&k8s.BootstrapManifestsConfigSpec{
 					ProxyImage: "k8s.gcr.io/kube-proxy:v1.27.0",
 					ProxyArgs:  []string{"--proxy-mode=iptables"},
 				})
+				require.NoError(t, err)
+
+				return spec
+			},
+		},
+		{
+			name: "kube-proxy-daemonset-with-config",
+			obj: func() runtime.Object {
+				spec, err := k8stemplates.KubeProxyDaemonSetTemplate(&k8s.BootstrapManifestsConfigSpec{
+					ProxyImage: "k8s.gcr.io/kube-proxy:v1.27.0",
+					ProxyArgs:  []string{"--config=/var/lib/kube-proxy/config.conf", "--hostname-override=$(NODE_NAME)"},
+					ProxyConfig: map[string]any{
+						"apiVersion": "kubeproxy.config.k8s.io/v1alpha1",
+						"kind":       "KubeProxyConfiguration",
+						"mode":       "nftables",
+					},
+					ProxyResources: k8s.Resources{
+						Requests: map[string]string{
+							"cpu":    "150m",
+							"memory": "64Mi",
+						},
+						Limits: map[string]string{
+							"cpu":    "300m",
+							"memory": "128Mi",
+						},
+					},
+					ProxyConfigChecksum: "abc123",
+				})
+				require.NoError(t, err)
+
+				return spec
+			},
+		},
+		{
+			name: "kube-proxy-configmap",
+			obj: func() runtime.Object {
+				spec, err := k8stemplates.KubeProxyConfigMapTemplate(&k8s.BootstrapManifestsConfigSpec{
+					ProxyConfig: map[string]any{
+						"apiVersion":  "kubeproxy.config.k8s.io/v1alpha1",
+						"kind":        "KubeProxyConfiguration",
+						"mode":        "nftables",
+						"clusterCIDR": "10.244.0.0/16",
+						"clientConnection": map[string]any{
+							"kubeconfig": "/etc/kubernetes/kubeconfig",
+						},
+						"conntrack": map[string]any{
+							"maxPerCore": int32(0),
+						},
+					},
+					ProxyConfigChecksum: "abc123",
+				})
+				require.NoError(t, err)
+
+				return spec
 			},
 		},
 		{
@@ -190,7 +472,9 @@ func TestTemplates(t *testing.T) {
 			name: "flannel-configmap-v4",
 			obj: func() runtime.Object {
 				return k8stemplates.FlannelConfigMapTemplate(&k8s.BootstrapManifestsConfigSpec{
-					PodCIDRs: []string{"10.96.0.0/12"},
+					PodCIDRs:           []string{"10.96.0.0/12"},
+					FlannelBackendType: constants.FlannelDefaultBackend,
+					FlannelBackendPort: constants.FlannelDefaultBackendPort,
 				})
 			},
 		},
@@ -198,7 +482,9 @@ func TestTemplates(t *testing.T) {
 			name: "flannel-configmap-v6",
 			obj: func() runtime.Object {
 				return k8stemplates.FlannelConfigMapTemplate(&k8s.BootstrapManifestsConfigSpec{
-					PodCIDRs: []string{"fd00::/112"},
+					PodCIDRs:           []string{"fd00::/112"},
+					FlannelBackendType: constants.FlannelDefaultBackend,
+					FlannelBackendPort: constants.FlannelDefaultBackendPort,
 				})
 			},
 		},
@@ -206,28 +492,60 @@ func TestTemplates(t *testing.T) {
 			name: "flannel-configmap-dual",
 			obj: func() runtime.Object {
 				return k8stemplates.FlannelConfigMapTemplate(&k8s.BootstrapManifestsConfigSpec{
-					PodCIDRs: []string{"10.96.0.0/12", "fd00::/112"},
+					PodCIDRs:           []string{"10.96.0.0/12", "fd00::/112"},
+					FlannelBackendType: constants.FlannelDefaultBackend,
+					FlannelBackendPort: constants.FlannelDefaultBackendPort,
+					FlannelBackendExtraConfig: map[string]any{
+						"VNI": 4096,
+					},
+				})
+			},
+		},
+		{
+			name: "flannel-configmap-with-mtu",
+			obj: func() runtime.Object {
+				return k8stemplates.FlannelConfigMapTemplate(&k8s.BootstrapManifestsConfigSpec{
+					PodCIDRs:           []string{"10.96.0.0/12"},
+					FlannelBackendType: constants.FlannelDefaultBackend,
+					FlannelBackendPort: constants.FlannelDefaultBackendPort,
+					FlannelBackendMTU:  1420,
 				})
 			},
 		},
 		{
 			name: "flannel-daemonset",
 			obj: func() runtime.Object {
-				return k8stemplates.FlannelDaemonSetTemplate(&k8s.BootstrapManifestsConfigSpec{
+				spec, err := k8stemplates.FlannelDaemonSetTemplate(&k8s.BootstrapManifestsConfigSpec{
 					FlannelImage:     "quay.io/coreos/flannel:v0.14.0",
 					FlannelExtraArgs: []string{"--foo=bar"},
 				})
+				require.NoError(t, err)
+
+				return spec
 			},
 		},
 		{
 			name: "flannel-daemonset-with-network-policies",
 			obj: func() runtime.Object {
-				return k8stemplates.FlannelDaemonSetTemplate(&k8s.BootstrapManifestsConfigSpec{
-					FlannelImage:                      "quay.io/coreos/flannel:v0.14.0",
-					FlannelExtraArgs:                  []string{"--foo=bar"},
+				spec, err := k8stemplates.FlannelDaemonSetTemplate(&k8s.BootstrapManifestsConfigSpec{
+					FlannelImage:     "quay.io/coreos/flannel:v0.14.0",
+					FlannelExtraArgs: []string{"--foo=bar"},
+					FlannelResources: k8s.Resources{
+						Requests: map[string]string{
+							"cpu":    "100m",
+							"memory": "50Mi",
+						},
+						Limits: map[string]string{
+							"cpu":    "200m",
+							"memory": "100Mi",
+						},
+					},
 					FlannelKubeNetworkPoliciesEnabled: true,
 					FlannelKubeNetworkPoliciesImage:   "registry.k8s.io/networking/kube-network-policies:v0.7.0",
 				})
+				require.NoError(t, err)
+
+				return spec
 			},
 		},
 	} {

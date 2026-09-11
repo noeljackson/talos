@@ -20,10 +20,9 @@ func TestLookupFileContextForPersistentOverlays(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]string{
-		"/etc/cni/net.d":                          "system_u:object_r:cni_conf_t:s0",
-		"/etc/kubernetes/kubeconfig":              "system_u:object_r:k8s_conf_t:s0",
-		"/run/lock/iscsi/lock":                    "system_u:object_r:iscsi_lock_t:s0",
-		"/usr/libexec/kubernetes/kubelet-plugins": "system_u:object_r:k8s_plugin_t:s0",
+		"/etc/cni/net.d":                "system_u:object_r:cni_conf_t:s0",
+		"/etc/kubernetes/kubeconfig":    "system_u:object_r:k8s_conf_t:s0",
+		"/run/lock/iscsi/lock":          "system_u:object_r:iscsi_lock_t:s0",
 		"/opt":                          "system_u:object_r:opt_t:s0",
 		"/opt/cni/bin":                  "system_u:object_r:cni_plugin_t:s0",
 		"/opt/cni/bin/cilium-sysctlfix": "system_u:object_r:cni_plugin_t:s0",
@@ -133,21 +132,59 @@ func TestCiliumDomainMayInstallCNIBinaries(t *testing.T) {
 	assert.Contains(t, string(policy), "(typeattributeset mcs_exempt_p cilium_t)")
 }
 
+func TestCiliumPolicyPreservesSandboxNamespaceWithoutGenericPodPrivileges(t *testing.T) {
+	t.Parallel()
+
+	cri, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+	common, err := os.ReadFile("policy/selinux/common/processes.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(cri), "(allow cilium_t sandboxd_t (fs_classes (ro)))")
+	assert.NotContains(t, string(common), "(allow pod_t sandboxd_t")
+	assert.NotContains(t, string(common), "(allow pod_p self (perf_event")
+	assert.NotContains(t, string(common), "(allow pod_p bpf_t")
+	assert.NotContains(t, string(cri), "(typetransition pod_p run_t")
+
+	// These upstream baseline privileges deliberately remain. The effective
+	// negative proof is about pinned BPF objects, perf events and entrypoints,
+	// not a false claim that ordinary pods have no BPF or execute permissions.
+	assert.Contains(t, string(common), "(allow any_p self (bpf (map_create map_read map_write prog_load prog_run)))")
+	assert.Contains(t, string(cri), "(allow pod_p any_f (file (execute execute_no_trans)))")
+}
+
+func TestRuntimePortPreservesUpstreamTmpfsAndSandboxLauncherContracts(t *testing.T) {
+	t.Parallel()
+
+	cri, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+	kubelet, err := os.ReadFile("policy/selinux/services/kubelet.cil")
+	require.NoError(t, err)
+	sandbox, err := os.ReadFile("policy/selinux/services/sandboxd.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(cri), "(allow pod_containerd_t cni_conf_t (fs_classes (rw)))")
+	assert.Contains(t, string(cri), "(allow cni_conf_t cni_conf_t (filesystem (associate)))")
+	assert.Contains(t, string(cri), "(allow pod_containerd_t k8s_conf_t (filesystem (remount)))")
+	assert.Contains(t, string(kubelet), "(allow k8s_conf_t k8s_conf_t (filesystem (associate)))")
+	assert.Contains(t, string(sandbox), "(call service_p (sandboxd_t init_exec_t))")
+	assert.Contains(t, string(sandbox), "(allow sandboxd_t service_p (process (transition signal sigkill)))")
+	assert.Contains(t, string(sandbox), "(allow sandboxd_t procfs_t (filesystem (mount remount)))")
+	assert.NotContains(t, string(sandbox), "(typeattributeset mcs_exempt_p")
+}
+
 func TestOverlayCompositorMayCompleteCNILowerExecuteCheck(t *testing.T) {
 	t.Parallel()
 
-	machinedPolicy, err := os.ReadFile("policy/selinux/services/machined.cil")
+	commonPolicy, err := os.ReadFile("policy/selinux/common/processes.cil")
 	require.NoError(t, err)
 	criPolicy, err := os.ReadFile("policy/selinux/services/cri.cil")
 	require.NoError(t, err)
 
 	// OverlayFS checks the real CRI caller first, then the credential stashed by
-	// initramfs when it composed /opt. Both narrowly scoped edges are required.
+	// initramfs when it composed /opt. Preserve 1.14's shared compositor rule.
 	assert.Contains(t, string(criPolicy), "(allow pod_containerd_t cni_plugin_t (file (execute_no_trans execute)))")
-	assert.Contains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (file (execute)))")
-	assert.NotContains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (fs_classes")
-	assert.NotContains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (file (entrypoint")
-	assert.NotContains(t, string(machinedPolicy), "(allow initramfs_t cni_plugin_t (file (execute_no_trans")
+	assert.Contains(t, string(commonPolicy), "(allow overlay_mounter_p any_f (file (execute)))")
 }
 
 func TestCRIContainerdMayDeliverKataShimLogsToTalosSyslogd(t *testing.T) {

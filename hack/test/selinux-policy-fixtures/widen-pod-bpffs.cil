@@ -1,0 +1,1 @@
+(allow pod_p bpf_t (file (write)))
