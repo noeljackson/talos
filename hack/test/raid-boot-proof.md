@@ -42,33 +42,47 @@ Before authorizing execution, bind checksums/source heads for:
   the raw boot before performing its first strict disk-only cold boot.
 - The native CNI bundle `talosctl-cni-bundle-amd64.tar.gz`, QEMU, and the UEFI
   firmware selected by the existing native provisioner. Record their versions.
-- The existing debug-suite image `docker.io/library/alpine:3.23`, resolved and
-  recorded by digest through the reviewed registry/mirror path. Its ordinary
-  privileged DebugService profile writes only the two fixture markers; no HOST_NS
-  profile, custom host route, relay, firewall exception, or boot-media fallback
-  is added by this suite.
+- A reviewed Linux/amd64 debug image with `/bin/sh`, `test`, `printf`, and `sync`
+  (for example the appropriate Alpine 3.23 platform manifest), resolved and
+  recorded through the reviewed registry/mirror path. Pass its fully qualified
+  `name@sha256:<64 lowercase hex digits>` as `RAID_DEBUG_IMAGE`; there is no tag or
+  implicit image default. The suite validates it before VM creation, requires
+  the pull completion to return that exact identity, and passes only that identity
+  to DebugService. Preserve the admitted and verified image bindings in the test
+  transcript. Its ordinary privileged profile writes only the two fixture markers;
+  no HOST_NS profile, custom host route, relay, firewall exception, or boot-media
+  fallback is added by this suite. Digest binding is not a signature or origin
+  verification claim; the image itself still requires review.
 
 The host must be Linux/amd64 with usable `/dev/kvm`, privileges for the checked-in
 native CNI/network-namespace topology, and at least 32 GiB free under `/var/tmp`
 (full RAID resync makes sparse disks consume real space). Allow 4 GiB per VM plus
-host overhead. The three fixtures run serially. Review that native CIDR
-`172.21.0.0/24` and cluster names `raid-lifecycle`, `raid-wrong-serial`, and
-`raid-missing-serial` do not collide with existing resources. No live execution is
-implied by this document or the unit/compile checks.
+host overhead. The three fixtures run serially. Bind an explicitly reviewed,
+unused native IPv4 CIDR as `RAID_CIDR` using the existing
+`-talos.provision.cidr` selector; do not assume the provisioner's default
+`172.21.0.0/24` is free. Check host routes, addresses, and existing cluster names
+`raid-lifecycle`, `raid-wrong-serial`, and `raid-missing-serial` for collisions.
+Choosing the CIDR does not change the native CNI topology or authorize changing
+or removing an active host bridge. No live execution is implied by this document
+or the unit/compile checks.
 
 ## Focused entrypoint
 
 After artifact/topology review and explicit VM execution coordination, run the
 native integration binary directly with the same CNI and MTU inputs as
 `provision-tests.sh`, plus the explicit opt-in. The shell variables below must be
-bound to the reviewed artifacts and image version; this command does not build,
-publish, load images, acquire credentials, or modify firewall rules.
+bound to the reviewed artifacts, image identities, and unused CIDR. The command
+does not build or publish artifacts or acquire credentials. VM execution does
+pull the selected installer/debug images and applies the existing native CNI
+networking, including its managed rules; it adds no separate firewall exception.
 
 ```sh
 "${RAID_ARTIFACTS:?}/integration-test-provision-linux-amd64" \
   -test.v -test.timeout=2h \
   -test.run='^TestIntegration$/^provision[.]RAIDBootSuite[.](lifecycle|wrong-serial|missing-serial)-TR3$/^TestProof$' \
   -talos.provision.raid-proof \
+  -talos.provision.raid-debug-image="${RAID_DEBUG_IMAGE:?}" \
+  -talos.provision.cidr="${RAID_CIDR:?}" \
   -talos.config=/dev/null \
   -talos.talosctlpath="${RAID_ARTIFACTS:?}/talosctl-linux-amd64" \
   -talos.version="${RAID_VERSION:?}" \
