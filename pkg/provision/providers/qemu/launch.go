@@ -40,7 +40,15 @@ const (
 
 // LaunchConfig is passed in to the Launch function over stdin.
 type LaunchConfig struct {
-	StatePath string
+	StatePath         string
+	NodeName          string
+	DiskLayoutControl bool
+
+	// Set per launch from the bounded, opt-in disk layout, never from callers'
+	// backing paths. Original indexes keep qdev identity stable across reordering.
+	diskIndexes    []int
+	diskBootOnly   bool
+	diskGeneration string
 
 	// VM options
 	DiskPaths                 []string
@@ -137,14 +145,24 @@ type tpmConfig struct {
 	TPM2 bool
 }
 
-// launchVM runs qemu with args built based on config.
+// prepareQEMUArgs prepares firmware/media and constructs the QEMU invocation.
 //
 //nolint:gocyclo,cyclop
-func launchVM(config *LaunchConfig) error {
+func prepareQEMUArgs(config *LaunchConfig) ([]string, error) {
 	bootOrder := config.DefaultBootOrder
 
 	if config.controller.ForcePXEBoot() {
+		if config.diskBootOnly {
+			return nil, errors.New("PXE boot is forbidden by disk-only layout")
+		}
+
 		bootOrder = "nc"
+	}
+	bootOptions := fmt.Sprintf("order=%s,reboot-timeout=5000", bootOrder)
+	if config.diskBootOnly {
+		// Explicit disk bootindexes plus strict mode exclude unlisted firmware
+		// boot options. Do not mix bootindex and the legacy order= mechanism.
+		bootOptions = "strict=on,reboot-timeout=5000"
 	}
 
 	cpuArg := "max"
@@ -164,7 +182,7 @@ func launchVM(config *LaunchConfig) error {
 		"-device", "virtio-balloon,deflate-on-oom=on",
 		"-monitor", fmt.Sprintf("unix:%s,server,nowait", config.MonitorPath),
 		"-no-reboot",
-		"-boot", fmt.Sprintf("order=%s,reboot-timeout=5000", bootOrder),
+		"-boot", bootOptions,
 		"-smbios", fmt.Sprintf("type=1,uuid=%s", config.NodeUUID),
 		"-chardev", fmt.Sprintf("socket,path=%s/%s.sock,server=on,wait=off,id=qga0", config.StatePath, config.Network.Hostname),
 		"-device", "virtio-serial",
@@ -175,9 +193,14 @@ func launchVM(config *LaunchConfig) error {
 
 	// management net0 (skipped for authentic full-CLOS nodes, which have only fabric uplinks).
 	if !config.CLOSNoNet0 {
+		networkDevice := fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s,host_mtu=%d", config.VMMac, config.Network.MTU)
+		if config.diskBootOnly {
+			networkDevice += ",romfile="
+		}
+
 		args = append(args,
 			"-netdev", getNetdevParams(config.Network, "net0"),
-			"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s,host_mtu=%d", config.VMMac, config.Network.MTU),
+			"-device", networkDevice,
 		)
 	}
 
@@ -221,10 +244,20 @@ func launchVM(config *LaunchConfig) error {
 
 		switch driver {
 		case "virtio":
+			deviceIndex := i
+			qdevID := ""
+			if config.DiskLayoutControl {
+				deviceIndex = config.diskIndexes[i]
+				qdevID = fmt.Sprintf(",id=talos-disk%d", deviceIndex)
+			}
+			if config.diskBootOnly {
+				qdevID += fmt.Sprintf(",bootindex=%d", i+1)
+			}
+
 			args = append(
 				args,
-				"-drive", fmt.Sprintf("id=virtio%d,format=raw,if=none,file=%s,cache=none", i, disk),
-				"-device", fmt.Sprintf("virtio-blk-pci,drive=virtio%d,logical_block_size=%d,physical_block_size=%d%s", i, blockSize, blockSize, serial),
+				"-drive", fmt.Sprintf("id=virtio%d,format=raw,if=none,file=%s,cache=none", deviceIndex, disk),
+				"-device", fmt.Sprintf("virtio-blk-pci,drive=virtio%d,logical_block_size=%d,physical_block_size=%d%s%s", deviceIndex, blockSize, blockSize, serial, qdevID),
 			)
 
 		case "ide":
@@ -288,7 +321,7 @@ func launchVM(config *LaunchConfig) error {
 
 		case "virtiofs":
 			if runtime.GOOS != "linux" {
-				return fmt.Errorf("virtiofs driver is only supported on linux hosts")
+				return nil, fmt.Errorf("virtiofs driver is only supported on linux hosts")
 			}
 
 			if !virtiofsAttached {
@@ -308,7 +341,7 @@ func launchVM(config *LaunchConfig) error {
 			)
 
 		default:
-			return fmt.Errorf("unsupported disk driver %q", driver)
+			return nil, fmt.Errorf("unsupported disk driver %q", driver)
 		}
 	}
 
@@ -322,7 +355,7 @@ func launchVM(config *LaunchConfig) error {
 
 	args = append(args, pflashArgs...)
 
-	if config.ExtraISOPath != "" {
+	if config.ExtraISOPath != "" && !config.diskBootOnly {
 		args = append(
 			args,
 			"-drive",
@@ -331,9 +364,13 @@ func launchVM(config *LaunchConfig) error {
 	}
 
 	// check if disk is empty/wiped
-	diskBootable, err := checkPartitions(config)
-	if err != nil {
-		return err
+	diskBootable := config.diskBootOnly
+	if !config.diskBootOnly {
+		var err error
+		diskBootable, err = checkPartitions(config)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if !diskBootable && config.TPMConfig.NodeName == "" {
@@ -349,7 +386,7 @@ func launchVM(config *LaunchConfig) error {
 		// so we can't wipe them without losing SecureBoot state.
 		if len(config.PFlashSpec) >= 2 && len(config.PFlashImages) >= 2 {
 			if err := writePFlashImage(config.PFlashImages[1], config.PFlashSpec[1]); err != nil {
-				return fmt.Errorf("reset UEFI variable store: %w", err)
+				return nil, fmt.Errorf("reset UEFI variable store: %w", err)
 			}
 		}
 	}
@@ -378,11 +415,11 @@ func launchVM(config *LaunchConfig) error {
 		log.Printf("starting swtpm: %s", cmd.String())
 
 		if err := cmd.Start(); err != nil {
-			return err
+			return nil, err
 		}
 
 		if err := waitForFileToExist(tpm2SocketPath, 5*time.Second); err != nil {
-			return err
+			return nil, err
 		}
 
 		args = append(
@@ -408,7 +445,7 @@ func launchVM(config *LaunchConfig) error {
 	// accumulates another " talos.config=..." into the persistent field.
 	sdStubExtraCmdline := config.sdStubExtraCmdline
 
-	if !diskBootable || !config.BootloaderEnabled {
+	if !config.diskBootOnly && (!diskBootable || !config.BootloaderEnabled) {
 		// if the disk is bootable, and we were forced to disable disk bootloader,
 		// we need to skip ISO/USB boot, as it will fall back to boot from disk
 		skipBootloader := diskBootable && !config.BootloaderEnabled
@@ -443,7 +480,7 @@ func launchVM(config *LaunchConfig) error {
 		}
 	}
 
-	if (config.UKIPath != "" || config.KernelImagePath != "") && config.USBPath == "" && config.ISOPath == "" {
+	if !config.diskBootOnly && (config.UKIPath != "" || config.KernelImagePath != "") && config.USBPath == "" && config.ISOPath == "" {
 		// inject talos.config= into the boot, even if the disk is bootable,
 		// as the tests might wipe just STATE partition relying on Talos being able to
 		// re-download the config on boot
@@ -452,7 +489,7 @@ func launchVM(config *LaunchConfig) error {
 		sdStubExtraCmdline += config.sdStubExtraCmdlineConfig
 	}
 
-	if !config.SkipInjectingExtraCmdline {
+	if !config.SkipInjectingExtraCmdline && !config.diskBootOnly {
 		args = append(
 			args,
 			"-smbios", fmt.Sprintf("type=11,value=%s=%s", constants.SDStubCmdlineExtraOEMVar, sdStubExtraCmdline),
@@ -470,6 +507,16 @@ func launchVM(config *LaunchConfig) error {
 	// Extra caller-supplied QEMU arguments (e.g. an emulated BMC device set),
 	// appended last so they can reference devices declared above.
 	args = append(args, config.ExtraQEMUArgs...)
+
+	return args, nil
+}
+
+// launchVM runs QEMU with the prepared arguments.
+func launchVM(config *LaunchConfig) error {
+	args, err := prepareQEMUArgs(config)
+	if err != nil {
+		return err
+	}
 
 	// QEMU runs with `-no-reboot`, so every reboot of the VM is a relaunch, and a relaunch can lose
 	// a race against the host services backing the VM's devices. The known case is virtiofsd: it
@@ -521,6 +568,15 @@ func runQemu(config *LaunchConfig, args []string) error {
 
 	if err := startQemuCmd(config, cmd); err != nil {
 		return fmt.Errorf("%w: %w", errQemuStartFailed, err)
+	}
+
+	if config.DiskLayoutControl {
+		if err := recordDiskBootState(config, cmd.Process.Pid, cmd.Args); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+
+			return fmt.Errorf("record actual disk boot process: %w", err)
+		}
 	}
 
 	startedAt := time.Now()
@@ -688,7 +744,12 @@ func Launch() error {
 				}
 			}
 
-			if err := launchVM(config); err != nil {
+			launchConfig, err := configForDiskLayout(config)
+			if err != nil {
+				return err
+			}
+
+			if err := launchVM(launchConfig); err != nil {
 				return err
 			}
 		}
