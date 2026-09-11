@@ -21,6 +21,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"github.com/siderolabs/go-procfs/procfs"
 	"github.com/stretchr/testify/assert"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/mgmt/helpers"
 	"github.com/siderolabs/talos/internal/pkg/md"
+	"github.com/siderolabs/talos/pkg/cluster/check"
 	"github.com/siderolabs/talos/pkg/images"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -39,6 +41,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	blockcfg "github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	networkcfg "github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	runtimecfg "github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
 	storagecfg "github.com/siderolabs/talos/pkg/machinery/config/types/storage"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -50,7 +53,13 @@ import (
 	"github.com/siderolabs/talos/pkg/provision"
 )
 
-var raidProofEnabled = flag.Bool("talos.provision.raid-proof", false, "enable isolated native QEMU RAID cold-boot proof fixtures")
+var (
+	raidProofEnabled = flag.Bool("talos.provision.raid-proof", false, "enable isolated native QEMU RAID cold-boot proof fixtures")
+	raidDebugImage   = flag.String("talos.provision.raid-debug-image", "", "reviewed canonical name@sha256:digest debug image for native RAID proof (required with raid-proof)")
+	// Test-only: hosts whose fixture network has no outbound NTP disable Talos
+	// time sync so the boot sequence does not wait on an unreachable server.
+	raidNoTimeSync = flag.Bool("talos.provision.raid-no-time-sync", false, "disable Talos time sync in the native RAID proof fixture (for fixture networks without outbound NTP)")
+)
 
 const (
 	raidBootA        = "RAID-SYSTEM-A"
@@ -61,9 +70,6 @@ const (
 	raidDataPath     = "/var/mnt/raid-data"
 	raidSystemMarker = "/var/raid-proof-marker"
 	raidDataMarker   = raidDataPath + "/raid-proof-marker"
-	// Reuse the small image already selected by api.DebugSuite. Only the native
-	// DebugService privileged-container profile is used, never HOST_NS.
-	raidDebugImage = "docker.io/library/alpine:3.23"
 )
 
 // RAIDBootSuite proves serial-selected mirrors with cold-boot device loss and
@@ -72,10 +78,15 @@ type RAIDBootSuite struct {
 	BaseSuite
 	variant                                          string
 	privateRoot                                      string
+	debugImage                                       string
 	disks                                            []*provision.Disk
 	node                                             provision.NodeInfo
 	diskControl                                      provision.DiskLayoutProvisioner
 	bootUUID, dataUUID, dataFilesystemUUID, identity string
+	// dataFormatBoot is true from install until the first cold boot. Talos
+	// reports a volume's filesystem UUID when it locates an existing
+	// filesystem, so the boot that formats the data mirror reports none.
+	dataFormatBoot bool
 }
 
 func (suite *RAIDBootSuite) SuiteName() string {
@@ -87,6 +98,11 @@ func (suite *RAIDBootSuite) SetupSuite() {
 	if !*raidProofEnabled {
 		suite.T().Skip("requires explicit -talos.provision.raid-proof")
 	}
+	// Admission precedes any VM creation or private state allocation. Keep the
+	// admitted identity in the suite, not a mutable tag or a later flag lookup.
+	suite.Require().NoError(validateRAIDDebugImage(*raidDebugImage))
+	suite.debugImage = *raidDebugImage
+	suite.T().Logf("admitted RAID debug image=%s native CIDR=%s", suite.debugImage, DefaultSettings.CIDR)
 	suite.Require().Equal("linux", runtime.GOOS, "RAID proof requires Linux procfs and KVM")
 	suite.Require().NoError(unix.Access("/dev/kvm", unix.R_OK|unix.W_OK), "RAID proof requires accessible KVM, not software emulation")
 	// Keep AF_UNIX socket paths short and full resync off /tmp's tmpfs. This
@@ -151,6 +167,11 @@ func raidProofDocuments(variant, installer string) []configconfig.Document {
 	security := runtimecfg.NewSecurityProfileConfigV1Alpha1()
 	security.WorkloadIsolationEnabled = new(true)
 	documents := []configconfig.Document{boot, data, install, security}
+	if *raidNoTimeSync {
+		timeSync := networkcfg.NewTimeSyncConfigV1Alpha1()
+		timeSync.TimeEnabled = new(false)
+		documents = append(documents, timeSync)
+	}
 	if variant == "lifecycle" {
 		// This disposable user filesystem is test-only. The production data
 		// mirror's unformatted provisioning contract is not changed.
@@ -220,6 +241,7 @@ func (suite *RAIDBootSuite) TestProof() {
 	data := suite.waitRAID(ctx, c, "data", []string{raidDataA, raidDataB})
 	suite.bootUUID, suite.dataUUID = boot.uuid, data.uuid
 	suite.Require().NotEqual(suite.bootUUID, suite.dataUUID)
+	suite.dataFormatBoot = true
 	suite.assertDataMount(ctx, c, data.device)
 	identity, err := safe.StateGetByID[*cluster.Identity](ctx, c.COSI, cluster.LocalIdentity)
 	suite.Require().NoError(err)
@@ -402,6 +424,7 @@ func (suite *RAIDBootSuite) coldBootRAID(ctx context.Context, c *client.Client, 
 	generation, err := suite.diskControl.RebootNodeWithDisks(ctx, suite.Cluster, suite.node,
 		provision.DiskLayout{Serials: serials, DiskBootOnly: true})
 	suite.Require().NoError(err)
+	suite.dataFormatBoot = false
 	var inventory provision.DiskBootState
 	suite.Require().EventuallyWithT(func(collect *assert.CollectT) {
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -420,7 +443,7 @@ func (suite *RAIDBootSuite) coldBootRAID(ctx context.Context, c *client.Client, 
 		inventory = actual
 	}, 5*time.Minute, time.Second, "waiting for a new physical disk-only boot")
 	suite.T().Logf("verified cold-boot generation=%s pid=%d invocation=%q", inventory.Generation, inventory.ProcessID, inventory.Arguments)
-	suite.waitForClusterHealth()
+	suite.waitForRAIDHealth(ctx, c)
 	suite.assertRAIDSecurity(ctx, c)
 	security, err := safe.StateGetByID[*runtimeres.SecurityState](ctx, c.COSI, runtimeres.SecurityStateID)
 	suite.Require().NoError(err)
@@ -431,10 +454,13 @@ func (suite *RAIDBootSuite) coldBootRAID(ctx context.Context, c *client.Client, 
 	cmdline, err := readRAIDText(ctx, c, "/proc/cmdline")
 	suite.Require().NoError(err)
 	suite.Require().NotContains(cmdline, "talos.config=", "cold boot must use the persisted machine config")
-	persistent, err := safe.StateGetByID[*configres.MachineConfig](ctx, c.COSI, configres.PersistentID)
+	// With no talos.config= source, the active config is the one loaded from
+	// STATE; Talos publishes a separate "persistent" config only when another
+	// source supplied it.
+	active, err := safe.StateGetByID[*configres.MachineConfig](ctx, c.COSI, configres.ActiveID)
 	suite.Require().NoError(err)
-	suite.Require().NotNil(persistent.Config().SecurityProfileConfig())
-	suite.Require().True(persistent.Config().SecurityProfileConfig().WorkloadIsolation())
+	suite.Require().NotNil(active.Config().SecurityProfileConfig())
+	suite.Require().True(active.Config().SecurityProfileConfig().WorkloadIsolation())
 }
 
 func (suite *RAIDBootSuite) assertRAIDSecurity(ctx context.Context, c *client.Client) {
@@ -597,7 +623,12 @@ func (suite *RAIDBootSuite) assertDataMount(ctx context.Context, c *client.Clien
 		}
 		assert.Equal(collect, block.VolumePhaseReady, volume.TypedSpec().Phase)
 		assert.Equal(collect, device, volume.TypedSpec().Location)
-		assert.NotEmpty(collect, volume.TypedSpec().UUID)
+		// On the formatting boot the UUID is unreported; the marker written
+		// then and read back after every cold boot proves the filesystem
+		// persists, and its UUID is bound on the first boot that locates it.
+		if !suite.dataFormatBoot {
+			assert.NotEmpty(collect, volume.TypedSpec().UUID)
+		}
 		if suite.dataFilesystemUUID != "" {
 			assert.Equal(collect, suite.dataFilesystemUUID, volume.TypedSpec().UUID)
 		}
@@ -648,40 +679,90 @@ func (suite *RAIDBootSuite) assertRAIDPersistenceWithData(ctx context.Context, c
 func (suite *RAIDBootSuite) runRAIDDebug(ctx context.Context, c *client.Client, args []string) {
 	operation, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
+	suite.Require().NoError(runRAIDDebugImage(operation, c, suite.debugImage, args))
+	suite.T().Logf("verified RAID marker image pull/debug binding=%s", suite.debugImage)
+}
+
+func validateRAIDDebugImage(image string) error {
+	parsed, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return fmt.Errorf("-talos.provision.raid-debug-image requires a canonical name@sha256:digest: %w", err)
+	}
+	canonical, pinned := parsed.(reference.Canonical)
+	_, tagged := parsed.(reference.Tagged)
+	if !pinned || tagged || parsed.String() != image || canonical.Digest().Algorithm() != "sha256" {
+		return errors.New("-talos.provision.raid-debug-image requires a fully qualified canonical name@sha256:digest without a tag")
+	}
+	return nil
+}
+
+// runRAIDDebugImage keeps the admitted image bound through both real API
+// requests. ImageService returns a canonical name after pulling; accepting a
+// different completion name would silently execute an unreviewed artifact.
+func runRAIDDebugImage(ctx context.Context, c *client.Client, image string, args []string) error {
+	if err := validateRAIDDebugImage(image); err != nil {
+		return err
+	}
 	instance := &common.ContainerdInstance{Driver: common.ContainerDriver_CONTAINERD, Namespace: common.ContainerdNamespace_NS_SYSTEM}
-	pull, err := c.ImageClient.Pull(operation, &machineapi.ImageServicePullRequest{Containerd: instance, ImageRef: raidDebugImage})
-	suite.Require().NoError(err)
-	var image string
+	pull, err := c.ImageClient.Pull(ctx, &machineapi.ImageServicePullRequest{Containerd: instance, ImageRef: image})
+	if err != nil {
+		return fmt.Errorf("pull RAID debug image: %w", err)
+	}
+	completed := false
 	for {
 		message, err := pull.Recv()
 		if errors.Is(err, io.EOF) {
 			break
 		}
-		suite.Require().NoError(err)
-		if message.GetName() != "" {
-			image = message.GetName()
+		if err != nil {
+			return fmt.Errorf("receive RAID image pull: %w", err)
 		}
+		if completed {
+			return errors.New("unexpected RAID image pull response after completion")
+		}
+		if message.GetPullProgress() != nil {
+			continue
+		}
+		if message.GetName() != image {
+			return fmt.Errorf("RAID image pull returned %q, wanted admitted identity %q", message.GetName(), image)
+		}
+		completed = true
 	}
-	suite.Require().NotEmpty(image)
-	stream, err := c.DebugClient.ContainerRun(operation)
-	suite.Require().NoError(err)
-	suite.Require().NoError(stream.Send(&machineapi.DebugContainerRunRequest{Request: &machineapi.DebugContainerRunRequest_Spec{
+	if !completed {
+		return errors.New("RAID image pull ended without its admitted identity")
+	}
+	stream, err := c.DebugClient.ContainerRun(ctx)
+	if err != nil {
+		return fmt.Errorf("open RAID debug stream: %w", err)
+	}
+	if err := stream.Send(&machineapi.DebugContainerRunRequest{Request: &machineapi.DebugContainerRunRequest_Spec{
 		Spec: &machineapi.DebugContainerRunRequestSpec{Containerd: instance, ImageName: image, Args: args, Profile: machineapi.DebugContainerRunRequestSpec_PROFILE_PRIVILEGED},
-	}}))
-	suite.Require().NoError(stream.CloseSend())
+	}}); err != nil {
+		return fmt.Errorf("send RAID debug specification: %w", err)
+	}
+	if err := stream.CloseSend(); err != nil {
+		return fmt.Errorf("close RAID debug send stream: %w", err)
+	}
 	exited := false
 	for {
 		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			break
 		}
-		suite.Require().NoError(err)
+		if err != nil {
+			return fmt.Errorf("receive RAID debug stream: %w", err)
+		}
 		if exit, ok := message.GetResp().(*machineapi.DebugContainerRunResponse_ExitCode); ok {
+			if exited || exit.ExitCode != 0 {
+				return fmt.Errorf("RAID marker debug exit is duplicate or unsuccessful: %d", exit.ExitCode)
+			}
 			exited = true
-			suite.Require().Zero(exit.ExitCode, "writing durable RAID markers failed")
 		}
 	}
-	suite.Require().True(exited, "debug stream must report successful exit")
+	if !exited {
+		return errors.New("RAID debug stream ended without successful exit")
+	}
+	return nil
 }
 
 func (suite *RAIDBootSuite) assertFreshSelectorFailure(ctx context.Context, c *client.Client) {
@@ -734,4 +815,38 @@ func init() {
 	for _, variant := range []string{"lifecycle", "wrong-serial", "missing-serial"} {
 		allSuites = append(allSuites, &RAIDBootSuite{variant: variant})
 	}
+}
+
+// waitForRAIDHealth waits for cluster health after a cold boot. On failure it
+// logs the machine stage, its unmet conditions and each service state, which
+// the support archive cannot collect without cluster endpoints.
+func (suite *RAIDBootSuite) waitForRAIDHealth(ctx context.Context, c *client.Client) {
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+
+	err := check.Wait(checkCtx, suite.clusterAccess, check.DefaultClusterChecks(), check.StderrReporter())
+	if err != nil {
+		diagCtx, diagCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer diagCancel()
+
+		if status, statusErr := safe.StateGetByID[*runtimeres.MachineStatus](diagCtx, c.COSI, runtimeres.MachineStatusID); statusErr == nil {
+			suite.T().Logf("machine stage=%s ready=%v unmet=%+v", status.TypedSpec().Stage,
+				status.TypedSpec().Status.Ready, status.TypedSpec().Status.UnmetConditions)
+		} else {
+			suite.T().Logf("machine status unavailable: %v", statusErr)
+		}
+
+		if services, servicesErr := c.ServiceList(diagCtx); servicesErr == nil {
+			for _, message := range services.Messages {
+				for _, service := range message.Services {
+					suite.T().Logf("service %s state=%s health=%v message=%q", service.Id, service.State,
+						service.Health.GetHealthy(), service.Health.GetLastMessage())
+				}
+			}
+		} else {
+			suite.T().Logf("service list unavailable: %v", servicesErr)
+		}
+	}
+
+	suite.Require().NoError(err)
 }
