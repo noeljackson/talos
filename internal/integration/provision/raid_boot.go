@@ -21,6 +21,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"github.com/siderolabs/go-procfs/procfs"
 	"github.com/stretchr/testify/assert"
@@ -50,7 +51,10 @@ import (
 	"github.com/siderolabs/talos/pkg/provision"
 )
 
-var raidProofEnabled = flag.Bool("talos.provision.raid-proof", false, "enable isolated native QEMU RAID cold-boot proof fixtures")
+var (
+	raidProofEnabled = flag.Bool("talos.provision.raid-proof", false, "enable isolated native QEMU RAID cold-boot proof fixtures")
+	raidDebugImage   = flag.String("talos.provision.raid-debug-image", "", "reviewed canonical name@sha256:digest debug image for native RAID proof (required with raid-proof)")
+)
 
 const (
 	raidBootA        = "RAID-SYSTEM-A"
@@ -61,9 +65,6 @@ const (
 	raidDataPath     = "/var/mnt/raid-data"
 	raidSystemMarker = "/var/raid-proof-marker"
 	raidDataMarker   = raidDataPath + "/raid-proof-marker"
-	// Reuse the small image already selected by api.DebugSuite. Only the native
-	// DebugService privileged-container profile is used, never HOST_NS.
-	raidDebugImage = "docker.io/library/alpine:3.23"
 )
 
 // RAIDBootSuite proves serial-selected mirrors with cold-boot device loss and
@@ -72,6 +73,7 @@ type RAIDBootSuite struct {
 	BaseSuite
 	variant                                          string
 	privateRoot                                      string
+	debugImage                                       string
 	disks                                            []*provision.Disk
 	node                                             provision.NodeInfo
 	diskControl                                      provision.DiskLayoutProvisioner
@@ -87,6 +89,11 @@ func (suite *RAIDBootSuite) SetupSuite() {
 	if !*raidProofEnabled {
 		suite.T().Skip("requires explicit -talos.provision.raid-proof")
 	}
+	// Admission precedes any VM creation or private state allocation. Keep the
+	// admitted identity in the suite, not a mutable tag or a later flag lookup.
+	suite.Require().NoError(validateRAIDDebugImage(*raidDebugImage))
+	suite.debugImage = *raidDebugImage
+	suite.T().Logf("admitted RAID debug image=%s native CIDR=%s", suite.debugImage, DefaultSettings.CIDR)
 	suite.Require().Equal("linux", runtime.GOOS, "RAID proof requires Linux procfs and KVM")
 	suite.Require().NoError(unix.Access("/dev/kvm", unix.R_OK|unix.W_OK), "RAID proof requires accessible KVM, not software emulation")
 	// Keep AF_UNIX socket paths short and full resync off /tmp's tmpfs. This
@@ -648,40 +655,90 @@ func (suite *RAIDBootSuite) assertRAIDPersistenceWithData(ctx context.Context, c
 func (suite *RAIDBootSuite) runRAIDDebug(ctx context.Context, c *client.Client, args []string) {
 	operation, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
+	suite.Require().NoError(runRAIDDebugImage(operation, c, suite.debugImage, args))
+	suite.T().Logf("verified RAID marker image pull/debug binding=%s", suite.debugImage)
+}
+
+func validateRAIDDebugImage(image string) error {
+	parsed, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return fmt.Errorf("-talos.provision.raid-debug-image requires a canonical name@sha256:digest: %w", err)
+	}
+	canonical, pinned := parsed.(reference.Canonical)
+	_, tagged := parsed.(reference.Tagged)
+	if !pinned || tagged || parsed.String() != image || canonical.Digest().Algorithm() != "sha256" {
+		return errors.New("-talos.provision.raid-debug-image requires a fully qualified canonical name@sha256:digest without a tag")
+	}
+	return nil
+}
+
+// runRAIDDebugImage keeps the admitted image bound through both real API
+// requests. ImageService returns a canonical name after pulling; accepting a
+// different completion name would silently execute an unreviewed artifact.
+func runRAIDDebugImage(ctx context.Context, c *client.Client, image string, args []string) error {
+	if err := validateRAIDDebugImage(image); err != nil {
+		return err
+	}
 	instance := &common.ContainerdInstance{Driver: common.ContainerDriver_CONTAINERD, Namespace: common.ContainerdNamespace_NS_SYSTEM}
-	pull, err := c.ImageClient.Pull(operation, &machineapi.ImageServicePullRequest{Containerd: instance, ImageRef: raidDebugImage})
-	suite.Require().NoError(err)
-	var image string
+	pull, err := c.ImageClient.Pull(ctx, &machineapi.ImageServicePullRequest{Containerd: instance, ImageRef: image})
+	if err != nil {
+		return fmt.Errorf("pull RAID debug image: %w", err)
+	}
+	completed := false
 	for {
 		message, err := pull.Recv()
 		if errors.Is(err, io.EOF) {
 			break
 		}
-		suite.Require().NoError(err)
-		if message.GetName() != "" {
-			image = message.GetName()
+		if err != nil {
+			return fmt.Errorf("receive RAID image pull: %w", err)
 		}
+		if completed {
+			return errors.New("unexpected RAID image pull response after completion")
+		}
+		if message.GetPullProgress() != nil {
+			continue
+		}
+		if message.GetName() != image {
+			return fmt.Errorf("RAID image pull returned %q, wanted admitted identity %q", message.GetName(), image)
+		}
+		completed = true
 	}
-	suite.Require().NotEmpty(image)
-	stream, err := c.DebugClient.ContainerRun(operation)
-	suite.Require().NoError(err)
-	suite.Require().NoError(stream.Send(&machineapi.DebugContainerRunRequest{Request: &machineapi.DebugContainerRunRequest_Spec{
+	if !completed {
+		return errors.New("RAID image pull ended without its admitted identity")
+	}
+	stream, err := c.DebugClient.ContainerRun(ctx)
+	if err != nil {
+		return fmt.Errorf("open RAID debug stream: %w", err)
+	}
+	if err := stream.Send(&machineapi.DebugContainerRunRequest{Request: &machineapi.DebugContainerRunRequest_Spec{
 		Spec: &machineapi.DebugContainerRunRequestSpec{Containerd: instance, ImageName: image, Args: args, Profile: machineapi.DebugContainerRunRequestSpec_PROFILE_PRIVILEGED},
-	}}))
-	suite.Require().NoError(stream.CloseSend())
+	}}); err != nil {
+		return fmt.Errorf("send RAID debug specification: %w", err)
+	}
+	if err := stream.CloseSend(); err != nil {
+		return fmt.Errorf("close RAID debug send stream: %w", err)
+	}
 	exited := false
 	for {
 		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			break
 		}
-		suite.Require().NoError(err)
+		if err != nil {
+			return fmt.Errorf("receive RAID debug stream: %w", err)
+		}
 		if exit, ok := message.GetResp().(*machineapi.DebugContainerRunResponse_ExitCode); ok {
+			if exited || exit.ExitCode != 0 {
+				return fmt.Errorf("RAID marker debug exit is duplicate or unsuccessful: %d", exit.ExitCode)
+			}
 			exited = true
-			suite.Require().Zero(exit.ExitCode, "writing durable RAID markers failed")
 		}
 	}
-	suite.Require().True(exited, "debug stream must report successful exit")
+	if !exited {
+		return errors.New("RAID debug stream ended without successful exit")
+	}
+	return nil
 }
 
 func (suite *RAIDBootSuite) assertFreshSelectorFailure(ctx context.Context, c *client.Client) {
