@@ -1,0 +1,1 @@
+(allow udev_t run_t (dir (remove_name)))

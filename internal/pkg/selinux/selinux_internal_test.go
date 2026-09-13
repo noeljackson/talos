@@ -104,6 +104,104 @@ func TestCiliumRuntimePolicyAllowsKubeletHostPathSetup(t *testing.T) {
 	assert.NotContains(t, string(policy), "(allow kubelet_t pod_containerd_run_t")
 }
 
+func TestMDADMRuntimePolicyNamedCreationPreservesDefaults(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/udev.cil")
+	require.NoError(t, err)
+
+	// These are source contracts, not proof of either runtime creation order.
+	// mdmonitor starts in init_t; a udev mdadm invocation may also create the
+	// directory. Only the basename "mdadm" gets the dedicated runtime type.
+	var transitions []string
+
+	for line := range strings.Lines(string(policy)) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "(typetransition ") && strings.Contains(line, "mdadm_run_t") {
+			transitions = append(transitions, line)
+		}
+	}
+
+	assert.Equal(t, []string{
+		`(typetransition init_t run_t dir "mdadm" mdadm_run_t)`,
+		`(typetransition udev_t run_t dir "mdadm" mdadm_run_t)`,
+	}, transitions)
+
+	for _, class := range []string{"file", "dir", "lnk_file", "chr_file", "blk_file", "fifo_file"} {
+		t.Run(class, func(t *testing.T) {
+			assert.Contains(t, string(policy), "(typetransition udev_t run_t "+class+" udev_run_t)")
+		})
+	}
+
+	assert.Contains(t, string(policy), "(allow udev_t run_t (dir (add_name write)))")
+}
+
+func TestMDADMRuntimePolicyMapLifecycleAndBoundaries(t *testing.T) {
+	t.Parallel()
+
+	policy, err := os.ReadFile("policy/selinux/services/udev.cil")
+	require.NoError(t, err)
+	boundaries, err := os.ReadFile("policy/selinux/common/runtime-boundaries.cil")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(policy), "(type mdadm_run_t)")
+	assert.Contains(t, string(policy), "(call system_f (mdadm_run_t))")
+	assert.NotContains(t, string(policy), "(call filesystem_f (mdadm_run_t))")
+	assert.NotContains(t, string(policy), "(call common_f (mdadm_run_t))")
+
+	var allows []string
+
+	for line := range strings.Lines(string(policy)) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "(allow ") && strings.Contains(line, "mdadm_run_t") {
+			allows = append(allows, line)
+		}
+	}
+
+	// Keep explicit directory/regular-file operations, with no fs_classes,
+	// executable, device, socket, relabel or unconfined shortcut.
+	assert.Equal(t, []string{
+		"(allow mdadm_run_t tmpfs_t (filesystem (associate)))",
+		"(allow init_t mdadm_run_t (dir (create getattr search open read write add_name remove_name)))",
+		"(allow init_t mdadm_run_t (file (create read write open getattr lock rename unlink)))",
+		"(allow udev_t mdadm_run_t (dir (create getattr search open read write add_name remove_name)))",
+		"(allow udev_t mdadm_run_t (file (create read write open getattr lock rename unlink)))",
+	}, allows)
+
+	assert.Contains(t, string(boundaries), "(neverallow udev_t run_t (dir (remove_name)))")
+	assert.Contains(t, string(boundaries), "(neverallow pod_t mdadm_run_t (dir (create read open write add_name remove_name)))")
+	assert.Contains(t, string(boundaries), "(neverallow pod_t mdadm_run_t (file (create read open write lock rename unlink)))")
+}
+
+func TestMDADMRuntimePolicyCompilerFixtures(t *testing.T) {
+	t.Parallel()
+
+	// The existing compiler engine proves effective allow/neverallow conflicts.
+	// Here bind each new fixture to exactly one intended CIL statement.
+	fixtures := map[string]string{
+		"require-mdadm-init-directory-create": "(neverallow init_t mdadm_run_t (dir (create)))",
+		"require-mdadm-udev-directory-remove": "(neverallow udev_t mdadm_run_t (dir (remove_name)))",
+		"require-mdadm-udev-map-create":       "(neverallow udev_t mdadm_run_t (file (create)))",
+		"require-mdadm-udev-map-lock":         "(neverallow udev_t mdadm_run_t (file (lock)))",
+		"require-mdadm-udev-map-rename":       "(neverallow udev_t mdadm_run_t (file (rename)))",
+		"require-mdadm-udev-map-unlink":       "(neverallow udev_t mdadm_run_t (file (unlink)))",
+		"require-mdadm-tmpfs-associate":       "(neverallow mdadm_run_t tmpfs_t (filesystem (associate)))",
+		"widen-mdadm-generic-run-remove":      "(allow udev_t run_t (dir (remove_name)))",
+		"widen-mdadm-pod-map-read":            "(allow pod_t mdadm_run_t (file (read)))",
+		"widen-mdadm-pod-map-write":           "(allow pod_t mdadm_run_t (file (write)))",
+		"widen-mdadm-pod-directory-remove":    "(allow pod_t mdadm_run_t (dir (remove_name)))",
+		"widen-mdadm-state-attribute":         "(typeattributeset common_f mdadm_run_t)",
+	}
+
+	for name, statement := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			fixture, readErr := os.ReadFile(filepath.Join("../../../hack/test/selinux-policy-fixtures", name+".cil"))
+			require.NoError(t, readErr)
+			assert.Equal(t, statement+"\n", string(fixture))
+		})
+	}
+}
+
 func TestPrivilegedCSIPluginMayMountWithKubeletStateContext(t *testing.T) {
 	t.Parallel()
 

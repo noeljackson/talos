@@ -1,0 +1,1 @@
+(allow pod_t mdadm_run_t (file (write)))
