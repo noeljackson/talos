@@ -1,0 +1,1 @@
+(neverallow udev_t mdadm_run_t (dir (remove_name)))

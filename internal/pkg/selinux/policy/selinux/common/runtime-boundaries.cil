@@ -2,6 +2,12 @@
 ; These protect specific runtime boundaries, not a blanket host-access claim:
 ; any_p still has self BPF operations and pod_p still has any_f execute.
 
+; mdadm may replace its dedicated runtime map, not remove generic /run names.
+; Ordinary pods retain baseline getattr/search, not mdadm state access.
+(neverallow udev_t run_t (dir (remove_name)))
+(neverallow pod_t mdadm_run_t (dir (create read open write add_name remove_name)))
+(neverallow pod_t mdadm_run_t (file (create read open write lock rename unlink)))
+
 ; Ordinary pods cannot read or modify Cilium's dedicated host runtime state.
 ; Generic getattr/search remain part of the upstream traversal baseline.
 (neverallow pod_t cilium_runtime_t (file (read open write create unlink)))
