@@ -1,0 +1,1 @@
+(neverallow init_t mdadm_run_t (dir (create)))
