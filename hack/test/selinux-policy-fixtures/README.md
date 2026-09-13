@@ -26,5 +26,13 @@ plus the 1.14 tmpfs, overlay, and sandbox service-launch contracts. They do not
 claim that SELinux removes every host-device access or that a privileged CRI
 workload is isolated from the host.
 
+The `*-mdadm-*` fixtures protect the dedicated `mdadm_run_t` map-file lifecycle
+and tmpfs association, prohibit udev removal of generic `run_t` names, and keep
+ordinary pods from reading or changing mdadm state, including through attribute
+widening. Source tests require basename-specific directory transitions for both
+`init_t` and `udev_t`, preserving unrelated runtime labels. These source and
+compiler contracts do not test runtime creation order or establish the cause of
+a failed RAID assembly.
+
 Compiler proof does not replace the enforcing VM boot, runtime, and AVC gates
 against the exact composed installer.
