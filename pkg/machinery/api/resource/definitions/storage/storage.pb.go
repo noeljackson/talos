@@ -7,15 +7,13 @@
 package storage
 
 import (
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
-
+	enums "github.com/siderolabs/talos/pkg/machinery/api/resource/definitions/enums"
 	v1alpha1 "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-
-	enums "github.com/siderolabs/talos/pkg/machinery/api/resource/definitions/enums"
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
 )
 
 const (
@@ -1442,6 +1440,79 @@ func (x *MDRefreshRequestSpec) GetRequest() int64 {
 	return 0
 }
 
+// MDStartupStatusSpec survives controller restarts, but is never persisted across boots.
+type MDStartupStatusSpec struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Complete includes no arrays, not applicable, failure and timeout outcomes.
+	Complete bool `protobuf:"varint,1,opt,name=complete,proto3" json:"complete,omitempty"`
+	// GraceDeadline is an absolute CLOCK_BOOTTIME deadline in nanoseconds, not wall time.
+	GraceDeadline int64 `protobuf:"varint,2,opt,name=grace_deadline,json=graceDeadline,proto3" json:"grace_deadline,omitempty"`
+	// AttemptDeadline bounds the shared startup attempt, without renewal on restart.
+	AttemptDeadline int64 `protobuf:"varint,3,opt,name=attempt_deadline,json=attemptDeadline,proto3" json:"attempt_deadline,omitempty"`
+	// Attempted is recorded before running mdadm; a restarted owner never repeats it.
+	Attempted     bool `protobuf:"varint,4,opt,name=attempted,proto3" json:"attempted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MDStartupStatusSpec) Reset() {
+	*x = MDStartupStatusSpec{}
+	mi := &file_resource_definitions_storage_storage_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MDStartupStatusSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MDStartupStatusSpec) ProtoMessage() {}
+
+func (x *MDStartupStatusSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_resource_definitions_storage_storage_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MDStartupStatusSpec.ProtoReflect.Descriptor instead.
+func (*MDStartupStatusSpec) Descriptor() ([]byte, []int) {
+	return file_resource_definitions_storage_storage_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *MDStartupStatusSpec) GetComplete() bool {
+	if x != nil {
+		return x.Complete
+	}
+	return false
+}
+
+func (x *MDStartupStatusSpec) GetGraceDeadline() int64 {
+	if x != nil {
+		return x.GraceDeadline
+	}
+	return 0
+}
+
+func (x *MDStartupStatusSpec) GetAttemptDeadline() int64 {
+	if x != nil {
+		return x.AttemptDeadline
+	}
+	return 0
+}
+
+func (x *MDStartupStatusSpec) GetAttempted() bool {
+	if x != nil {
+		return x.Attempted
+	}
+	return false
+}
+
 var File_resource_definitions_storage_storage_proto protoreflect.FileDescriptor
 
 const file_resource_definitions_storage_storage_proto_rawDesc = "" +
@@ -1594,7 +1665,12 @@ const file_resource_definitions_storage_storage_proto_rawDesc = "" +
 	"\vsync_action\x18\v \x01(\tR\n" +
 	"syncAction\"0\n" +
 	"\x14MDRefreshRequestSpec\x12\x18\n" +
-	"\arequest\x18\x01 \x01(\x03R\arequestBx\n" +
+	"\arequest\x18\x01 \x01(\x03R\arequest\"\xa1\x01\n" +
+	"\x13MDStartupStatusSpec\x12\x1a\n" +
+	"\bcomplete\x18\x01 \x01(\bR\bcomplete\x12%\n" +
+	"\x0egrace_deadline\x18\x02 \x01(\x03R\rgraceDeadline\x12)\n" +
+	"\x10attempt_deadline\x18\x03 \x01(\x03R\x0fattemptDeadline\x12\x1c\n" +
+	"\tattempted\x18\x04 \x01(\bR\tattemptedBx\n" +
 	"*dev.talos.api.resource.definitions.storageZJgithub.com/siderolabs/talos/pkg/machinery/api/resource/definitions/storageb\x06proto3"
 
 var (
@@ -1609,7 +1685,7 @@ func file_resource_definitions_storage_storage_proto_rawDescGZIP() []byte {
 	return file_resource_definitions_storage_storage_proto_rawDescData
 }
 
-var file_resource_definitions_storage_storage_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_resource_definitions_storage_storage_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_resource_definitions_storage_storage_proto_goTypes = []any{
 	(*LVMLogicalVolumeSpecSpec)(nil),       // 0: talos.resource.definitions.storage.LVMLogicalVolumeSpecSpec
 	(*LVMLogicalVolumeStatusSpec)(nil),     // 1: talos.resource.definitions.storage.LVMLogicalVolumeStatusSpec
@@ -1622,19 +1698,20 @@ var file_resource_definitions_storage_storage_proto_goTypes = []any{
 	(*MDArraySpecSpec)(nil),                // 8: talos.resource.definitions.storage.MDArraySpecSpec
 	(*MDArrayStatusSpec)(nil),              // 9: talos.resource.definitions.storage.MDArrayStatusSpec
 	(*MDRefreshRequestSpec)(nil),           // 10: talos.resource.definitions.storage.MDRefreshRequestSpec
-	(enums.StorageLVMLogicalVolumeType)(0), // 11: talos.resource.definitions.enums.StorageLVMLogicalVolumeType
-	(enums.StorageMDLevel)(0),              // 12: talos.resource.definitions.enums.StorageMDLevel
-	(*v1alpha1.CheckedExpr)(nil),           // 13: google.api.expr.v1alpha1.CheckedExpr
-	(enums.StorageMDMetadata)(0),           // 14: talos.resource.definitions.enums.StorageMDMetadata
-	(enums.StorageMDArrayPhase)(0),         // 15: talos.resource.definitions.enums.StorageMDArrayPhase
+	(*MDStartupStatusSpec)(nil),            // 11: talos.resource.definitions.storage.MDStartupStatusSpec
+	(enums.StorageLVMLogicalVolumeType)(0), // 12: talos.resource.definitions.enums.StorageLVMLogicalVolumeType
+	(enums.StorageMDLevel)(0),              // 13: talos.resource.definitions.enums.StorageMDLevel
+	(*v1alpha1.CheckedExpr)(nil),           // 14: google.api.expr.v1alpha1.CheckedExpr
+	(enums.StorageMDMetadata)(0),           // 15: talos.resource.definitions.enums.StorageMDMetadata
+	(enums.StorageMDArrayPhase)(0),         // 16: talos.resource.definitions.enums.StorageMDArrayPhase
 }
 var file_resource_definitions_storage_storage_proto_depIdxs = []int32{
-	11, // 0: talos.resource.definitions.storage.LVMLogicalVolumeSpecSpec.type:type_name -> talos.resource.definitions.enums.StorageLVMLogicalVolumeType
-	12, // 1: talos.resource.definitions.storage.MDArraySpecSpec.level:type_name -> talos.resource.definitions.enums.StorageMDLevel
-	13, // 2: talos.resource.definitions.storage.MDArraySpecSpec.volume_selector:type_name -> google.api.expr.v1alpha1.CheckedExpr
-	14, // 3: talos.resource.definitions.storage.MDArraySpecSpec.metadata:type_name -> talos.resource.definitions.enums.StorageMDMetadata
-	12, // 4: talos.resource.definitions.storage.MDArrayStatusSpec.level:type_name -> talos.resource.definitions.enums.StorageMDLevel
-	15, // 5: talos.resource.definitions.storage.MDArrayStatusSpec.status:type_name -> talos.resource.definitions.enums.StorageMDArrayPhase
+	12, // 0: talos.resource.definitions.storage.LVMLogicalVolumeSpecSpec.type:type_name -> talos.resource.definitions.enums.StorageLVMLogicalVolumeType
+	13, // 1: talos.resource.definitions.storage.MDArraySpecSpec.level:type_name -> talos.resource.definitions.enums.StorageMDLevel
+	14, // 2: talos.resource.definitions.storage.MDArraySpecSpec.volume_selector:type_name -> google.api.expr.v1alpha1.CheckedExpr
+	15, // 3: talos.resource.definitions.storage.MDArraySpecSpec.metadata:type_name -> talos.resource.definitions.enums.StorageMDMetadata
+	13, // 4: talos.resource.definitions.storage.MDArrayStatusSpec.level:type_name -> talos.resource.definitions.enums.StorageMDLevel
+	16, // 5: talos.resource.definitions.storage.MDArrayStatusSpec.status:type_name -> talos.resource.definitions.enums.StorageMDArrayPhase
 	6,  // [6:6] is the sub-list for method output_type
 	6,  // [6:6] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
@@ -1653,7 +1730,7 @@ func file_resource_definitions_storage_storage_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_resource_definitions_storage_storage_proto_rawDesc), len(file_resource_definitions_storage_storage_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

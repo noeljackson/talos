@@ -54,6 +54,13 @@ func WithMdadmPath(path string) Option {
 func (md *MD) run(ctx context.Context, args ...string) (string, error) {
 	out, err := cmd.RunWithOptions(ctx, md.mdadm, args, cmd.WithFullStdoutCapture())
 	if err != nil {
+		// The process wrapper can return a signal error containing captured
+		// output after CommandContext kills the child. Preserve the caller's
+		// cancellation contract without forwarding that process diagnostic.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+
 		return "", fmt.Errorf("mdadm failed: %w", classifyError(err))
 	}
 

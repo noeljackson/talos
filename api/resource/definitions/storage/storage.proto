@@ -278,3 +278,15 @@ message MDRefreshRequestSpec {
   int64 request = 1;
 }
 
+// MDStartupStatusSpec survives controller restarts, but is never persisted across boots.
+message MDStartupStatusSpec {
+  // Complete includes no arrays, not applicable, failure and timeout outcomes.
+  bool complete = 1;
+  // GraceDeadline is an absolute CLOCK_BOOTTIME deadline in nanoseconds, not wall time.
+  int64 grace_deadline = 2;
+  // AttemptDeadline bounds the shared startup attempt, without renewal on restart.
+  int64 attempt_deadline = 3;
+  // Attempted is recorded before running mdadm; a restarted owner never repeats it.
+  bool attempted = 4;
+}
+

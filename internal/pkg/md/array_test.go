@@ -43,6 +43,42 @@ MD_DEVICE_dev_sdb_DEV=/dev/sdb
 	assert.Equal(t, map[string]string{"/dev/sda": "0", "/dev/sdb": "1"}, detail.MemberRoles)
 }
 
+func TestRunArrayDeadlineCancelsDirectChild(t *testing.T) {
+	dir := t.TempDir()
+	controlPath, argsPath := filepath.Join(dir, "control"), filepath.Join(dir, "args")
+	require.NoError(t, unix.Mkfifo(controlPath, 0o600))
+	control, err := os.OpenFile(controlPath, os.O_RDWR, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, control.Close()) })
+	t.Setenv("MDADM_CONTROL", controlPath)
+	t.Setenv("MDADM_ARGS", argsPath)
+	script := filepath.Join(dir, "mdadm")
+	// Builtins only: no descendant can retain a pipe after direct-child kill.
+	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
+printf '%s\n' "$*" > "$MDADM_ARGS"
+printf 'PRIVATE_CANCEL_CANARY\n' >&2
+read -r ignored < "$MDADM_CONTROL"
+`), 0o700))
+	backend, err := New(WithMdadmPath(script))
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- backend.RunArray(ctx, "/dev/synthetic-no-real-disk") }()
+	require.Eventually(t, func() bool {
+		data, err := os.ReadFile(argsPath)
+		return err == nil && string(data) == "--run /dev/synthetic-no-real-disk\n"
+	}, 500*time.Millisecond, 10*time.Millisecond)
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+		assert.NotContains(t, err.Error(), "PRIVATE_CANCEL_CANARY")
+	case <-time.After(3 * time.Second):
+		t.Fatal("direct mdadm substitute did not exit and reap after deadline")
+	}
+}
+
 func TestParseDetailExportDegradedMirrorRetainsConfiguredSlots(t *testing.T) {
 	detail := parseDetailExport(`MD_LEVEL=raid1
 MD_DEVICES=2

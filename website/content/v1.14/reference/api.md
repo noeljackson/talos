@@ -685,6 +685,7 @@ description: Talos gRPC API reference.
     - [MDArraySpecSpec](#talos.resource.definitions.storage.MDArraySpecSpec)
     - [MDArrayStatusSpec](#talos.resource.definitions.storage.MDArrayStatusSpec)
     - [MDRefreshRequestSpec](#talos.resource.definitions.storage.MDRefreshRequestSpec)
+    - [MDStartupStatusSpec](#talos.resource.definitions.storage.MDStartupStatusSpec)
   
 - [resource/definitions/time/time.proto](#resource/definitions/time/time.proto)
     - [AdjtimeStatusSpec](#talos.resource.definitions.time.AdjtimeStatusSpec)
@@ -12144,6 +12145,24 @@ MDRefreshRequestSpec is the spec for MDRefreshRequest.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | request | [int64](#int64) |  |  |
+
+
+
+
+
+
+<a name="talos.resource.definitions.storage.MDStartupStatusSpec"></a>
+
+### MDStartupStatusSpec
+MDStartupStatusSpec survives controller restarts, but is never persisted across boots.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| complete | [bool](#bool) |  | Complete includes no arrays, not applicable, failure and timeout outcomes. |
+| grace_deadline | [int64](#int64) |  | GraceDeadline is an absolute CLOCK_BOOTTIME deadline in nanoseconds, not wall time. |
+| attempt_deadline | [int64](#int64) |  | AttemptDeadline bounds the shared startup attempt, without renewal on restart. |
+| attempted | [bool](#bool) |  | Attempted is recorded before running mdadm; a restarted owner never repeats it. |
 
 
 
