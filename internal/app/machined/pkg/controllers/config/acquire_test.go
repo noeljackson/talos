@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/rtestutils"
 	"github.com/cosi-project/runtime/pkg/safe"
@@ -29,6 +30,7 @@ import (
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap"
 
 	configctrl "github.com/siderolabs/talos/internal/app/machined/pkg/controllers/config"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/ctest"
@@ -292,6 +294,146 @@ func (suite *AcquireSuite) presentStateVolume() {
 	volumeStatus := block.NewVolumeStatus(block.NamespaceName, constants.StatePartitionLabel)
 	volumeStatus.TypedSpec().Phase = block.VolumePhaseReady
 	suite.Create(volumeStatus)
+}
+
+// steppedAcquireController keeps the real controller and runtime, but lets these
+// transition tests await a completed reconcile without relying on scheduler timing.
+type steppedAcquireController struct {
+	*configctrl.AcquireController
+	events    chan controller.ReconcileEvent
+	completed chan struct{}
+}
+
+func (ctrl *steppedAcquireController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+	return ctrl.AcquireController.Run(ctx, &steppedAcquireRuntime{
+		Runtime:   r,
+		events:    ctrl.events,
+		completed: ctrl.completed,
+		done:      ctx.Done(),
+	}, logger)
+}
+
+type steppedAcquireRuntime struct {
+	controller.Runtime
+	events    <-chan controller.ReconcileEvent
+	completed chan<- struct{}
+	done      <-chan struct{}
+}
+
+func (r *steppedAcquireRuntime) EventCh() <-chan controller.ReconcileEvent {
+	return r.events
+}
+
+func (r *steppedAcquireRuntime) ResetRestartBackoff() {
+	r.Runtime.ResetRestartBackoff()
+
+	select {
+	case r.completed <- struct{}{}:
+	case <-r.done:
+	}
+}
+
+func setupSteppedAcquire(t *testing.T) (*ctest.DefaultSuite, func()) {
+	t.Helper()
+
+	s := &ctest.DefaultSuite{Timeout: 5 * time.Second}
+	s.SetT(t)
+	s.SetupTest()
+	t.Cleanup(s.TearDownTest)
+
+	setter := &configSetterMock{
+		cfgCh:          make(chan config.Provider, 1),
+		persistedCfgCh: make(chan config.Provider, 1),
+	}
+	ctrl := &steppedAcquireController{
+		AcquireController: &configctrl.AcquireController{
+			PlatformConfiguration: &platformConfigMock{err: errors.ErrNoConfigSource},
+			PlatformEvent:         &platformEventMock{},
+			ConfigSetter:          setter,
+			Mode:                  validationModeMock{},
+			CmdlineGetter:         (&cmdlineGetterMock{procfs.NewCmdline("")}).Getter(),
+			EventPublisher:        &eventPublisherMock{},
+			ValidationMode:        validationModeMock{},
+			ResourceState:         s.State(),
+			EmbeddedDirectory:     t.TempDir(),
+		},
+		events:    make(chan controller.ReconcileEvent),
+		completed: make(chan struct{}),
+	}
+	s.Require().NoError(s.Runtime().RegisterController(ctrl))
+	s.Create(v1alpha1.NewAcquireConfigSpec())
+
+	return s, func() {
+		t.Helper()
+
+		select {
+		case ctrl.events <- controller.ReconcileEvent{}:
+		case <-s.Ctx().Done():
+			s.Require().FailNow("timed out delivering acquire reconcile")
+		}
+
+		select {
+		case <-ctrl.completed:
+		case <-s.Ctx().Done():
+			s.Require().FailNow("timed out completing acquire reconcile")
+		}
+
+		// Neither case supplies a mount status or configuration; stop before any
+		// filesystem read, configuration application, or persistence.
+		s.Require().Empty(setter.cfgCh)
+		s.Require().Empty(setter.persistedCfgCh)
+	}
+}
+
+func TestAcquireMissingStateThenReadyRemainsInMaintenance(t *testing.T) {
+	t.Parallel()
+
+	s, reconcile := setupSteppedAcquire(t)
+	volume := block.NewVolumeStatus(block.NamespaceName, constants.StatePartitionLabel)
+	volume.TypedSpec().Phase = block.VolumePhaseMissing
+	s.Create(volume)
+	reconcile()
+
+	_, err := safe.StateGetResource(s.Ctx(), s.State(), runtime.NewMaintenanceServiceRequest())
+	s.Require().NoError(err)
+
+	volume.TypedSpec().Phase = block.VolumePhaseReady
+	s.Update(volume)
+	reconcile()
+
+	_, err = safe.StateGetResource(s.Ctx(), s.State(), runtime.NewMaintenanceServiceRequest())
+	s.Require().NoError(err)
+	_, err = safe.StateGetByID[*block.VolumeMountRequest](s.Ctx(), s.State(), (&configctrl.AcquireController{}).Name()+"-"+constants.StatePartitionLabel)
+	s.Require().True(state.IsNotFoundError(err), "late STATE must not silently re-enter the disk acquisition path")
+}
+
+func TestAcquireWaitingStateThenReadyRequestsDiskMount(t *testing.T) {
+	t.Parallel()
+
+	s, reconcile := setupSteppedAcquire(t)
+	volume := block.NewVolumeStatus(block.NamespaceName, constants.StatePartitionLabel)
+	volume.TypedSpec().Phase = block.VolumePhaseWaiting
+	s.Create(volume)
+	reconcile()
+
+	mountID := (&configctrl.AcquireController{}).Name() + "-" + constants.StatePartitionLabel
+	_, err := safe.StateGetByID[*block.VolumeMountRequest](s.Ctx(), s.State(), mountID)
+	s.Require().True(state.IsNotFoundError(err))
+	_, err = safe.StateGetResource(s.Ctx(), s.State(), runtime.NewMaintenanceServiceRequest())
+	s.Require().True(state.IsNotFoundError(err))
+
+	volume.TypedSpec().Phase = block.VolumePhaseReady
+	s.Update(volume)
+	reconcile()
+
+	request, err := safe.StateGetByID[*block.VolumeMountRequest](s.Ctx(), s.State(), mountID)
+	s.Require().NoError(err)
+	s.Require().Equal(constants.StatePartitionLabel, request.TypedSpec().VolumeID)
+	s.Require().Equal((&configctrl.AcquireController{}).Name(), request.TypedSpec().Requester)
+	s.Require().True(request.TypedSpec().ReadOnly)
+	s.Require().True(request.TypedSpec().Detached)
+	_, err = safe.StateGetResource(s.Ctx(), s.State(), runtime.NewMaintenanceServiceRequest())
+	s.Require().True(state.IsNotFoundError(err))
 }
 
 func (suite *AcquireSuite) injectViaDisk(cfg []byte, wait bool) {

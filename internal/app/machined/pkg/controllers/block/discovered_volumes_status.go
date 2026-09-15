@@ -16,9 +16,11 @@ import (
 
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
+	"github.com/siderolabs/talos/pkg/machinery/resources/storage"
 )
 
-// DiscoveredVolumesStatusController publishes DiscoveredVolumesStatus once devices are ready and volume discovery refresh is done.
+// DiscoveredVolumesStatusController publishes DiscoveredVolumesStatus once devices
+// and the startup MD assembly attempt are ready and a subsequent discovery refresh is done.
 type DiscoveredVolumesStatusController struct{}
 
 // Name implements controller.Controller interface.
@@ -33,6 +35,12 @@ func (ctl *DiscoveredVolumesStatusController) Inputs() []controller.Input {
 			Namespace: runtime.NamespaceName,
 			Type:      runtime.DevicesStatusType,
 			ID:        optional.Some(runtime.DevicesID),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: storage.NamespaceName,
+			Type:      storage.MDStartupStatusType,
+			ID:        optional.Some(storage.MDStartupID),
 			Kind:      controller.InputWeak,
 		},
 		{
@@ -84,10 +92,22 @@ func (ctrl *DiscoveredVolumesStatusController) Run(ctx context.Context, r contro
 
 		devicesReady := devicesStatus != nil && devicesStatus.TypedSpec().Ready
 
+		mdStartupStatus, err := safe.ReaderGetByID[*storage.MDStartupStatus](ctx, r, storage.MDStartupID)
+		if err != nil && !state.IsNotFoundError(err) {
+			return fmt.Errorf("error fetching MD startup status: %w", err)
+		}
+
+		// Settled udev alone does not finish degraded MD assembly: the last-resort
+		// owner may still be in its grace period. Do not make an absent STATE
+		// definitive until that bounded startup attempt has completed. Completion
+		// includes failed/not-applicable attempts and is not an array health claim.
+		devicesReady = devicesReady && mdStartupStatus != nil && mdStartupStatus.TypedSpec().Complete
+
 		if devicesReady && !devicesReadyObserved {
 			devicesReadyObserved = true
 
-			// udevd reports that devices are ready, now it's time to refresh the discovery volumes
+			// Request a fresh scan only after both startup owners have completed;
+			// an acknowledgement from before MD startup completion is insufficient.
 			if err = safe.WriterModify(ctx, r, block.NewDiscoveryRefreshRequest(block.NamespaceName, block.RefreshID), func(drr *block.DiscoveryRefreshRequest) error {
 				drr.TypedSpec().Request++
 				discoveryRefreshRequest = drr.TypedSpec().Request

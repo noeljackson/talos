@@ -296,6 +296,7 @@ func NewState() (*State, error) {
 		&storage.MDArraySpec{},
 		&storage.MDArrayStatus{},
 		&storage.MDRefreshRequest{},
+		&storage.MDStartupStatus{},
 		&time.AdjtimeStatus{},
 		&time.NTPStatus{},
 		&time.Status{},
