@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/siderolabs/go-cmd/pkg/cmd"
@@ -82,10 +83,10 @@ func (ec *EventCallback[T]) Emit(event T) {
 
 // Monitor runs mdadm monitor and calls onEvent for each emitted event line.
 //
-// onEvent receives only stdout event lines. Errors are not delivered through the
-// callback: stderr is buffered and classified via the process exit, so the
-// terminal "no array" condition surfaces once, as the (quiet) ErrNotFound return
-// value, rather than also being logged as a warning per restart.
+// onEvent receives stdout lines and recognized stderr event lines: mdadm's
+// monitor emits events on stderr. Other stderr remains classification-only, so
+// the terminal "no array" condition surfaces once, as the quiet ErrNotFound
+// return value, rather than also being logged per restart.
 func (md *MD) Monitor(ctx context.Context, onEvent func(string)) error {
 	var stderr bytes.Buffer
 
@@ -101,6 +102,10 @@ func (md *MD) Monitor(ctx context.Context, onEvent func(string)) error {
 		cmd.WithStderr(newLineWriter(func(s string) {
 			stderr.WriteString(s)
 			stderr.WriteByte('\n')
+
+			if strings.Contains(s, " event detected ") {
+				ec.Emit(s)
+			}
 		})),
 	)
 	if err != nil {
