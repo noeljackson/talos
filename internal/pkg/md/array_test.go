@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func TestParseDetailExport(t *testing.T) {
@@ -121,6 +123,114 @@ printf 'mdadm: RebuildFinished event detected on md device /dev/md0\n'
 		"mdadm: RebuildStarted event detected on md device /dev/md0",
 		"mdadm: RebuildFinished event detected on md device /dev/md0",
 	}, events)
+}
+
+func TestMonitorStreamsStderrBeforeExit(t *testing.T) {
+	for _, terminal := range []string{"exit", "command-error", "cancel"} {
+		t.Run(terminal, func(t *testing.T) {
+			dir := t.TempDir()
+			controlPath := filepath.Join(dir, "control")
+			require.NoError(t, unix.Mkfifo(controlPath, 0o600))
+
+			control, err := os.OpenFile(controlPath, os.O_RDWR, 0)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, control.Close()) })
+			t.Setenv("MDADM_CONTROL", controlPath)
+			t.Setenv("MDADM_ARGS", filepath.Join(dir, "args"))
+
+			script := filepath.Join(dir, "mdadm")
+			// Only shell builtins: the producer stays alive in read, with no
+			// sleep descendant holding its output pipes during cancellation.
+			require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
+printf '%s\n' "$*" > "$MDADM_ARGS"
+exec 3< "$MDADM_CONTROL"
+printf 'mdadm: PRIVATE_NON_EVENT_CANARY\n' >&2
+printf 'mdadm: NewArray event detected on md device /dev/md0\n' >&2
+printf 'mdadm: RebuildStarted event detected on md device /dev/md0\n' >&2
+printf 'mdadm: RebuildFinished event det' >&2
+printf 'ected on md device /dev/md0\n' >&2
+read -r terminal <&3
+case "$terminal" in
+  command-error) printf 'mdadm: invalid option PRIVATE_ERROR_CANARY\n' >&2; exit 17 ;;
+  exit) exit 0 ;;
+  *) exit 18 ;;
+esac
+`), 0o700))
+
+			monitor, err := New(WithMdadmPath(script))
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			events := make(chan string, 8)
+			done := make(chan struct{})
+
+			var monitorErr error
+
+			go func() {
+				defer close(done)
+
+				monitorErr = monitor.Monitor(ctx, func(event string) { events <- event })
+			}()
+			t.Cleanup(func() {
+				cancel()
+
+				select {
+				case <-done:
+				case <-time.After(3 * time.Second):
+					t.Error("monitor did not stop after cancellation")
+				}
+			})
+
+			for _, event := range []string{"NewArray", "RebuildStarted", "RebuildFinished"} {
+				select {
+				case actual := <-events:
+					require.Equal(t, "mdadm: "+event+" event detected on md device /dev/md0", actual)
+				case <-done:
+					t.Fatal("producer exited before release")
+				case <-time.After(3 * time.Second):
+					t.Fatal("stderr event was not delivered while producer remained alive")
+				}
+			}
+
+			select {
+			case <-done:
+				t.Fatal("producer must still be blocked before release")
+			default:
+			}
+
+			args, err := os.ReadFile(filepath.Join(dir, "args"))
+			require.NoError(t, err)
+			require.Equal(t, "--monitor --scan --mail=talos@local\n", string(args))
+
+			if terminal == "cancel" {
+				cancel()
+			} else {
+				_, err = control.WriteString(terminal + "\n")
+				require.NoError(t, err)
+			}
+
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("monitor did not return after release")
+			}
+
+			if terminal == "command-error" {
+				require.ErrorIs(t, monitorErr, ErrInvalidArgument)
+
+				var classified *ExecError
+
+				require.ErrorAs(t, monitorErr, &classified)
+				assert.Equal(t, 17, classified.ExitCode)
+				assert.Contains(t, string(classified.Stderr), "PRIVATE_ERROR_CANARY")
+				assert.NotContains(t, monitorErr.Error(), "PRIVATE_ERROR_CANARY")
+			} else {
+				require.NoError(t, monitorErr)
+			}
+
+			assert.Empty(t, events, "ordinary stderr must not reach the callback")
+		})
+	}
 }
 
 func TestMonitorNoArrayIsNotFound(t *testing.T) {
