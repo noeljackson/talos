@@ -141,3 +141,22 @@ policy test evidence; these checks are not an enforcing boot or RAID/SNP gate.
 Do not fake GitHub environment variables to make a local build look like an
 authorized publisher. Only the checked-in deployment workflow publishes the
 two helpers, and only Infra composes and qualifies the final host installer.
+
+## AMS/FRA kernel qualification
+
+The deployment overlay selects the immutable `noeljackson/kernel` package in
+`Makefile`; every other package remains on the deployed upstream package set.
+Both helper configurations expose that build input as
+`io.codewire.kernel.package`. The installer base contains tools, not a kernel;
+the imager contains the boot assets built with that package.
+
+Kernel source is `noeljackson/pkgs` commit
+`f6afafe3f382f47262cbef11e8c76a973476e9c2`, based on deployed
+`2f03590c50e45a9439a4b3abcdbe247693c179e0`. The DRBD package from the same
+build/signing identity is
+`ghcr.io/noeljackson/drbd-pkg@sha256:005b414a6095acfa384ce4faa60ad42246350123b57d20f09d8fcf543c1f1444`.
+Do not combine this kernel with the old official DRBD extension. Infra's closed
+AMS/FRA cohort must bind the matching source-owned extension and complete the
+public artifact, enforcing direct-boot and staged-upgrade gates before rollout.
+The source regression fixtures are evidence of protocol behavior, not physical
+throughput or Talos runtime acceptance.

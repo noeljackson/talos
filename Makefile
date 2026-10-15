@@ -52,7 +52,9 @@ PKG_GRUB ?= $(PKGS_PREFIX)/grub:$(PKGS)
 PKG_IGZIP ?= $(PKGS_PREFIX)/igzip:$(PKGS)
 PKG_IPTABLES ?= $(PKGS_PREFIX)/iptables:$(PKGS)
 PKG_IPXE ?= $(PKGS_PREFIX)/ipxe:$(PKGS)
-PKG_KERNEL ?= $(PKGS_PREFIX)/kernel:$(PKGS)
+# AMS/FRA WireGuard batching candidate; matching DRBD comes from this same
+# pkgs build/signing identity. Other packages retain the deployed upstream set.
+PKG_KERNEL ?= ghcr.io/noeljackson/kernel@sha256:229c04e313d7a90cb8ddf5767a965472a8b53d554e1215c36fbd3f5e95815e43
 PKG_KMOD ?= $(PKGS_PREFIX)/kmod:$(PKGS)
 PKG_LIBAIO ?= $(PKGS_PREFIX)/libaio:$(PKGS)
 PKG_LIBARCHIVE ?= $(PKGS_PREFIX)/libarchive:$(PKGS)

@@ -1238,11 +1238,13 @@ COPY --link --from=installer-base-image / /
 FROM installer-base-image-squashed AS installer-base
 ARG TAG
 ARG SHA
+ARG PKG_KERNEL
 ENV VERSION=${TAG}
 LABEL "alpha.talos.dev/version"="${VERSION}"
 LABEL org.opencontainers.image.source=https://github.com/noeljackson/talos
 LABEL org.opencontainers.image.revision=${SHA}
 LABEL org.opencontainers.image.version=${VERSION}
+LABEL io.codewire.kernel.package=${PKG_KERNEL}
 ENTRYPOINT ["/bin/installer"]
 
 # Imager can be thought of as an extended installer.
@@ -1288,11 +1290,13 @@ COPY --link --from=imager-image-normalized /rootfs/ /
 FROM imager-image-squashed AS imager
 ARG TAG
 ARG SHA
+ARG PKG_KERNEL
 ENV VERSION=${TAG}
 LABEL "alpha.talos.dev/version"="${VERSION}"
 LABEL org.opencontainers.image.source=https://github.com/noeljackson/talos
 LABEL org.opencontainers.image.revision=${SHA}
 LABEL org.opencontainers.image.version=${VERSION}
+LABEL io.codewire.kernel.package=${PKG_KERNEL}
 ENTRYPOINT ["/bin/imager"]
 
 FROM imager AS iso-amd64-build
