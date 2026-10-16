@@ -151,10 +151,16 @@ Both helper configurations expose that build input as
 the imager contains the boot assets built with that package.
 
 Kernel source is `noeljackson/pkgs` commit
-`f6afafe3f382f47262cbef11e8c76a973476e9c2`, based on deployed
+`cdd772fe6e4696d265303a9e2b0cdb9cd8bea211`, based on deployed
 `2f03590c50e45a9439a4b3abcdbe247693c179e0`. The DRBD package from the same
 build/signing identity is
-`ghcr.io/noeljackson/drbd-pkg@sha256:005b414a6095acfa384ce4faa60ad42246350123b57d20f09d8fcf543c1f1444`.
+`ghcr.io/noeljackson/drbd-pkg@sha256:294edc95a4d74137b18a0def286dff7a509754ed0258d1c9bc6ec6c63d97dd3e`.
+This candidate adds UDP-tunnel GSO capabilities so VXLAN batches reach
+WireGuard's existing software segmentation and encrypted batching path. Its
+24-case nested-tunnel matrix, upstream regression and paired interoperability
+checks passed. The signed package pair and all 744 payload files were verified
+locally; package publication and downstream artifact/physical qualification
+remain pending. Local VM throughput is not a physical-path acceptance result.
 Do not combine this kernel with the old official DRBD extension. Infra's closed
 AMS/FRA cohort must bind the matching source-owned extension and complete the
 public artifact, enforcing direct-boot and staged-upgrade gates before rollout.
