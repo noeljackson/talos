@@ -151,11 +151,12 @@ Both helper configurations expose that build input as
 the imager contains the boot assets built with that package.
 
 Kernel source is `noeljackson/pkgs` commit
-`cdd772fe6e4696d265303a9e2b0cdb9cd8bea211`, based on deployed
+`e676fe67c541d185b3290b8ef93375b0c84896a4`, based on deployed
 `2f03590c50e45a9439a4b3abcdbe247693c179e0`. The DRBD package from the same
 build/signing identity is
-`ghcr.io/noeljackson/drbd-pkg@sha256:294edc95a4d74137b18a0def286dff7a509754ed0258d1c9bc6ec6c63d97dd3e`.
-This candidate adds UDP-tunnel GSO capabilities so VXLAN batches reach
+`ghcr.io/noeljackson/drbd-pkg@sha256:c54c20f622db457ee08befc5b80458d7748694b25357a294b4cb284c4682e8cc`.
+This candidate also widens the ordered per-peer WireGuard receive admission
+bound (experimental) on top of the earlier UDP-tunnel GSO capabilities so VXLAN batches reach
 WireGuard's existing software segmentation and encrypted batching path. Its
 24-case nested-tunnel matrix, upstream regression and paired interoperability
 checks passed. The signed package pair and all 744 payload files were verified
