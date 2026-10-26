@@ -20,7 +20,7 @@ var SupportedArchitectures = []string{
 
 const (
 	// DefaultKernelVersion is the default Linux kernel version.
-	DefaultKernelVersion = "6.18.57-talos"
+	DefaultKernelVersion = "6.18.58-talos"
 
 	// KernelParamConfig is the kernel parameter name for specifying the URL.
 	// to the config.
@@ -449,7 +449,7 @@ const (
 
 	// DefaultEtcdVersion is the default target version of etcd.
 	// renovate: datasource=docker depName=registry.k8s.io/etcd
-	DefaultEtcdVersion = "v3.7.2"
+	DefaultEtcdVersion = "v3.7.3"
 
 	// EtcdRootTalosKey is the root etcd key for Talos-specific storage.
 	EtcdRootTalosKey = "talos:v1"
@@ -1265,8 +1265,14 @@ const (
 	// ProcModulesPath is the path to /proc/modules.
 	ProcModulesPath = "/proc/modules"
 
+	// ModprobePath is the modprobe path the kernel is configured with (kernel.modprobe sysctl).
+	//
+	// The path is only used as argv[0] of the kernel usermode helper (machined), which handles it as the modprobe
+	// entrypoint, there is no such executable in the Talos root filesystem.
+	ModprobePath = "/sbin/modprobe"
+
 	// GoVersion is the version of Go compiler this release was built with.
-	GoVersion = "go1.26.9"
+	GoVersion = "go1.26.10"
 
 	// KubernetesTalosAPIServiceName is the name of the Kubernetes service to access Talos API.
 	KubernetesTalosAPIServiceName = "talos"

@@ -92,7 +92,9 @@ networking, including its managed rules; it adds no separate firewall exception.
 ```
 
 Use only the existing native `-talos.provision.registry-mirror` option if a reviewed
-mirror is required. The fixture creates its private state and CNI root under
+mirror is required. On a host whose fixture network has no outbound NTP, add
+`-talos.provision.raid-no-time-sync`: it appends a disabled `TimeSyncConfig` to
+the fixture documents and changes nothing else. It is test-only. The fixture creates its private state and CNI root under
 `/var/tmp/talos-raid-*` and never opens or merges a user talosconfig. Teardown
 destroys only this cluster and removes only its private state; native log/support
 archives use the existing `/tmp/logs-raid-*.tar.gz` and `/tmp/support-raid-*.zip`

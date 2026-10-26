@@ -32,6 +32,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
+	networkcfg "github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	"github.com/siderolabs/talos/pkg/machinery/config/validation"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 	storageres "github.com/siderolabs/talos/pkg/machinery/resources/storage"
@@ -450,4 +451,29 @@ func TestRAIDProofPhysicalInventory(t *testing.T) {
 	extra := block.NewDisk(block.NamespaceName, "vdf")
 	extra.TypedSpec().Serial = "unexpected"
 	require.Error(t, validateRAIDPhysicalDisks(append(raidPhysicalDiskFixture(expected), extra), expected))
+}
+
+// The no-time-sync option only appends a disabled TimeSyncConfig; it never
+// changes the RAID, install or security documents. Not parallel: it toggles
+// the package flag.
+func TestRAIDProofNoTimeSyncOption(t *testing.T) {
+	defaultDocuments := raidProofDocuments("lifecycle", "example.invalid/test/installer:proof")
+
+	*raidNoTimeSync = true
+	defer func() { *raidNoTimeSync = false }()
+
+	documents := raidProofDocuments("lifecycle", "example.invalid/test/installer:proof")
+	require.Len(t, documents, len(defaultDocuments)+1)
+
+	var timeSync *networkcfg.TimeSyncConfigV1Alpha1
+
+	for _, document := range documents {
+		if candidate, ok := document.(*networkcfg.TimeSyncConfigV1Alpha1); ok {
+			timeSync = candidate
+		}
+	}
+
+	require.NotNil(t, timeSync)
+	require.NotNil(t, timeSync.TimeEnabled)
+	assert.False(t, *timeSync.TimeEnabled)
 }

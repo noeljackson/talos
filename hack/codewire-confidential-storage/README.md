@@ -8,9 +8,9 @@ artifact and host profile, running the enforcing boot gate, and publishing the
 final installer.
 
 The active upstreamable source branch is
-`downstream/confidential-storage-source-v1.14.4`, based on Talos v1.14.4. The
-earlier `downstream/confidential-storage-source` branch (Talos v1.14.0) is kept
-unchanged as the provenance of installers built from it. Neither contains a
+`downstream/confidential-storage-source-v1.14.5`, based on Talos v1.14.5. The
+earlier source branches are kept as the provenance of installers built from
+them (see "Source provenance" below). Neither contains a
 publication workflow. A pull request into `downstream/confidential-storage`
 runs only the source-free publication contract. Landing its exact head starts
 one automatic `linux/amd64` build from that event commit and publishes:
@@ -47,8 +47,8 @@ combination branch or manual helper publication is needed.
 
 ## Local archive qualification (no publication)
 
-The current release identity is Talos `v1.14.4`, peeled upstream commit
-`3fb46c3789527b32ad3382d096e23084d158df88`. The full checked-out deployment
+The current release identity is Talos `v1.14.5`, peeled upstream commit
+`dad8d3edfe7ca381044d7cad259fdf3030efa700`. The full checked-out deployment
 commit determines the version suffix and source epoch; do not hardcode the
 source-branch commit as the deployment identity. Compose the accepted source
 with the current deployment head using the ordered two-parent procedure before
@@ -147,14 +147,14 @@ two helpers, and only Infra composes and qualifies the final host installer.
 
 ## Package set
 
-The deployment head builds Talos v1.14.4 with its own upstream package set and
-tools (`siderolabs/pkgs` `v1.14.0-44-g2ec10eb`, `siderolabs/tools`
-`v1.14.0-9-g6b71647`). The overlay overrides no package. That set carries
-Linux 6.18.57, containerd 2.3.7, runc 1.5.2 and libpathrs 0.2.6, so the earlier
-runc pin is gone: it fixed the runc init panic of opencontainers/runc#5438,
-which upstream now ships. Hosts using these helpers pair with the official
-Sidero extensions from the same Talos v1.14.4 release; DRBD is `9.3.4-v1.14.4`,
-signed by this kernel build.
+The deployment head builds Talos v1.14.5 with its own upstream package set and
+tools (`siderolabs/pkgs` `v1.14.0-48-gf4bda77`, `siderolabs/tools`
+`v1.14.0-11-g8dad45e`). The overlay overrides no package. That set carries
+Linux 6.18.58 with `siderolabs/pkgs` `ec119504d` ("fix: restore ACPI power
+button", siderolabs/talos#14657), containerd 2.3.7, runc 1.5.2 and libpathrs
+0.2.6. Hosts using these helpers pair with the official Sidero extensions from
+the same Talos v1.14.5 release; DRBD is `9.3.4-v1.14.5`, signed by this kernel
+build.
 
 Helpers from earlier deployment heads stay published and immutable:
 
@@ -162,8 +162,11 @@ Helpers from earlier deployment heads stay published and immutable:
   remain valid only for the profiles that pin them. A future custom-kernel
   build must re-add that overlay deliberately and pass the artifact, enforcing
   direct-boot and staged-upgrade gates again.
-- `1642d7a9e` (Talos v1.14.0 with a runc 1.5.2 pin) is superseded by this head
-  and must not be pinned.
+- `1642d7a9e` (Talos v1.14.0 with a runc 1.5.2 pin) is superseded and must not
+  be pinned.
+- `3e7b1556b` (Talos v1.14.4, Linux 6.18.57) is superseded by this head and must
+  not be pinned for new installers: 6.18.57 drops the ACPI fixed-event power
+  button, so a power-button or IPMI soft-off no longer shuts Talos down.
 
 Both helper configurations record their kernel input as
 `io.codewire.kernel.package`.
@@ -171,16 +174,40 @@ Both helper configurations record their kernel input as
 ## Carried source patches
 
 Each patch below is carried only because no stable upstream release has the
-fix yet. Drop a patch as soon as a stable release contains it.
+fix yet. Drop a patch as soon as a stable release contains it. Commit IDs are
+those on `downstream/confidential-storage-source-v1.14.5`.
 
-| Patch | Status |
-| --- | --- |
-| fix(runtime): preserve enforcing extension and pod labels | upstream-ready, carried until upstream has it |
-| fix(selinux): give mdadm shared runtime map a dedicated label | upstream-ready, carried until upstream has it |
-| fix(md): deliver live mdadm stderr monitor events | upstream-ready, carried until upstream has it |
-| fix(sbom): bind complete license inputs to module checksums | upstream-ready, carried until upstream has it |
-| fix: wait for inactive MD arrays before volume discovery | upstream release-1.14 `449f82d46`, carried until v1.14.5 |
-| test(storage) and test(provision) RAID cold-boot proofs | tests for the patches above |
+| Commit | Patch | Status |
+| --- | --- | --- |
+| `3a8e473a1` | fix(runtime): preserve enforcing extension and pod labels on Talos 1.14 | upstream-ready, carried until upstream has it |
+| `98a4862c5` | fix(selinux): give mdadm shared runtime map a dedicated label | upstream-ready, carried until upstream has it |
+| `54f4012af` | fix(md): deliver live mdadm stderr monitor events | upstream-ready, carried until upstream has it |
+| `1a2f818d2` | fix(sbom): bind complete license inputs to module checksums | upstream-ready, carried until upstream has it |
+| `9993966de` | test(storage): cover exact-serial mirror selection and rejoin | tests for the patches above |
+| `002f9e801` | test(provision): prove exact-serial mirrored disk cold boots | tests for the patches above |
+| `e88968763` | test(provision): run the RAID cold-boot proof on isolated Talos 1.14 fixtures | upstream-ready, test-only |
+
+Upstream's `449f82d46` ("wait for inactive MD arrays before volume discovery"),
+carried on the v1.14.4 stack, is part of v1.14.5 and is no longer carried.
+
+## Source provenance
+
+Source branches are append-only: later changes are new commits on top, never
+a rewrite.
+
+| Deployment head | Talos | Source commit (second parent) | Source branch |
+| --- | --- | --- | --- |
+| this head | v1.14.5 | `54f4012af` | `downstream/confidential-storage-source-v1.14.5` |
+| `3e7b1556b` | v1.14.4 | `f37d59689` | see below |
+| `1642d7a9e` and earlier | v1.14.0 | | `downstream/confidential-storage-source` |
+
+`f37d59689` is the source of the published `3e7b1556b` helpers and stays
+reachable through the deployment branch as `3e7b1556b`'s second parent. On
+2026-10-26 `downstream/confidential-storage-source-v1.14.4` was force-pushed
+twice, `f37d59689` to `17b914ade` and then to `90dbd051a`, folding test-only
+RAID harness changes into its RAID proof commit (the runtime tree is
+unchanged), so that branch's head no longer contains `f37d59689`. Those
+rewrites broke the append-only rule; they are recorded here and not repeated.
 
 ## CRI unpack sync
 

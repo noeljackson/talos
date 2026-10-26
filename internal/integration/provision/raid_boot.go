@@ -29,6 +29,7 @@ import (
 
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/mgmt/helpers"
 	"github.com/siderolabs/talos/internal/pkg/md"
+	"github.com/siderolabs/talos/pkg/cluster/check"
 	"github.com/siderolabs/talos/pkg/images"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -40,6 +41,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	blockcfg "github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	networkcfg "github.com/siderolabs/talos/pkg/machinery/config/types/network"
 	runtimecfg "github.com/siderolabs/talos/pkg/machinery/config/types/runtime"
 	storagecfg "github.com/siderolabs/talos/pkg/machinery/config/types/storage"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -54,6 +56,9 @@ import (
 var (
 	raidProofEnabled = flag.Bool("talos.provision.raid-proof", false, "enable isolated native QEMU RAID cold-boot proof fixtures")
 	raidDebugImage   = flag.String("talos.provision.raid-debug-image", "", "reviewed canonical name@sha256:digest debug image for native RAID proof (required with raid-proof)")
+	// Test-only: hosts whose fixture network has no outbound NTP disable Talos
+	// time sync so the boot sequence does not wait on an unreachable server.
+	raidNoTimeSync = flag.Bool("talos.provision.raid-no-time-sync", false, "disable Talos time sync in the native RAID proof fixture (for fixture networks without outbound NTP)")
 )
 
 const (
@@ -78,6 +83,10 @@ type RAIDBootSuite struct {
 	node                                             provision.NodeInfo
 	diskControl                                      provision.DiskLayoutProvisioner
 	bootUUID, dataUUID, dataFilesystemUUID, identity string
+	// dataFormatBoot is true from install until the first cold boot. Talos
+	// reports a volume's filesystem UUID when it locates an existing
+	// filesystem, so the boot that formats the data mirror reports none.
+	dataFormatBoot bool
 }
 
 func (suite *RAIDBootSuite) SuiteName() string {
@@ -158,6 +167,11 @@ func raidProofDocuments(variant, installer string) []configconfig.Document {
 	security := runtimecfg.NewSecurityProfileConfigV1Alpha1()
 	security.WorkloadIsolationEnabled = new(true)
 	documents := []configconfig.Document{boot, data, install, security}
+	if *raidNoTimeSync {
+		timeSync := networkcfg.NewTimeSyncConfigV1Alpha1()
+		timeSync.TimeEnabled = new(false)
+		documents = append(documents, timeSync)
+	}
 	if variant == "lifecycle" {
 		// This disposable user filesystem is test-only. The production data
 		// mirror's unformatted provisioning contract is not changed.
@@ -227,6 +241,7 @@ func (suite *RAIDBootSuite) TestProof() {
 	data := suite.waitRAID(ctx, c, "data", []string{raidDataA, raidDataB})
 	suite.bootUUID, suite.dataUUID = boot.uuid, data.uuid
 	suite.Require().NotEqual(suite.bootUUID, suite.dataUUID)
+	suite.dataFormatBoot = true
 	suite.assertDataMount(ctx, c, data.device)
 	identity, err := safe.StateGetByID[*cluster.Identity](ctx, c.COSI, cluster.LocalIdentity)
 	suite.Require().NoError(err)
@@ -409,6 +424,7 @@ func (suite *RAIDBootSuite) coldBootRAID(ctx context.Context, c *client.Client, 
 	generation, err := suite.diskControl.RebootNodeWithDisks(ctx, suite.Cluster, suite.node,
 		provision.DiskLayout{Serials: serials, DiskBootOnly: true})
 	suite.Require().NoError(err)
+	suite.dataFormatBoot = false
 	var inventory provision.DiskBootState
 	suite.Require().EventuallyWithT(func(collect *assert.CollectT) {
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -427,7 +443,7 @@ func (suite *RAIDBootSuite) coldBootRAID(ctx context.Context, c *client.Client, 
 		inventory = actual
 	}, 5*time.Minute, time.Second, "waiting for a new physical disk-only boot")
 	suite.T().Logf("verified cold-boot generation=%s pid=%d invocation=%q", inventory.Generation, inventory.ProcessID, inventory.Arguments)
-	suite.waitForClusterHealth()
+	suite.waitForRAIDHealth(ctx, c)
 	suite.assertRAIDSecurity(ctx, c)
 	security, err := safe.StateGetByID[*runtimeres.SecurityState](ctx, c.COSI, runtimeres.SecurityStateID)
 	suite.Require().NoError(err)
@@ -438,10 +454,13 @@ func (suite *RAIDBootSuite) coldBootRAID(ctx context.Context, c *client.Client, 
 	cmdline, err := readRAIDText(ctx, c, "/proc/cmdline")
 	suite.Require().NoError(err)
 	suite.Require().NotContains(cmdline, "talos.config=", "cold boot must use the persisted machine config")
-	persistent, err := safe.StateGetByID[*configres.MachineConfig](ctx, c.COSI, configres.PersistentID)
+	// With no talos.config= source, the active config is the one loaded from
+	// STATE; Talos publishes a separate "persistent" config only when another
+	// source supplied it.
+	active, err := safe.StateGetByID[*configres.MachineConfig](ctx, c.COSI, configres.ActiveID)
 	suite.Require().NoError(err)
-	suite.Require().NotNil(persistent.Config().SecurityProfileConfig())
-	suite.Require().True(persistent.Config().SecurityProfileConfig().WorkloadIsolation())
+	suite.Require().NotNil(active.Config().SecurityProfileConfig())
+	suite.Require().True(active.Config().SecurityProfileConfig().WorkloadIsolation())
 }
 
 func (suite *RAIDBootSuite) assertRAIDSecurity(ctx context.Context, c *client.Client) {
@@ -604,7 +623,12 @@ func (suite *RAIDBootSuite) assertDataMount(ctx context.Context, c *client.Clien
 		}
 		assert.Equal(collect, block.VolumePhaseReady, volume.TypedSpec().Phase)
 		assert.Equal(collect, device, volume.TypedSpec().Location)
-		assert.NotEmpty(collect, volume.TypedSpec().UUID)
+		// On the formatting boot the UUID is unreported; the marker written
+		// then and read back after every cold boot proves the filesystem
+		// persists, and its UUID is bound on the first boot that locates it.
+		if !suite.dataFormatBoot {
+			assert.NotEmpty(collect, volume.TypedSpec().UUID)
+		}
 		if suite.dataFilesystemUUID != "" {
 			assert.Equal(collect, suite.dataFilesystemUUID, volume.TypedSpec().UUID)
 		}
@@ -791,4 +815,38 @@ func init() {
 	for _, variant := range []string{"lifecycle", "wrong-serial", "missing-serial"} {
 		allSuites = append(allSuites, &RAIDBootSuite{variant: variant})
 	}
+}
+
+// waitForRAIDHealth waits for cluster health after a cold boot. On failure it
+// logs the machine stage, its unmet conditions and each service state, which
+// the support archive cannot collect without cluster endpoints.
+func (suite *RAIDBootSuite) waitForRAIDHealth(ctx context.Context, c *client.Client) {
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+
+	err := check.Wait(checkCtx, suite.clusterAccess, check.DefaultClusterChecks(), check.StderrReporter())
+	if err != nil {
+		diagCtx, diagCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer diagCancel()
+
+		if status, statusErr := safe.StateGetByID[*runtimeres.MachineStatus](diagCtx, c.COSI, runtimeres.MachineStatusID); statusErr == nil {
+			suite.T().Logf("machine stage=%s ready=%v unmet=%+v", status.TypedSpec().Stage,
+				status.TypedSpec().Status.Ready, status.TypedSpec().Status.UnmetConditions)
+		} else {
+			suite.T().Logf("machine status unavailable: %v", statusErr)
+		}
+
+		if services, servicesErr := c.ServiceList(diagCtx); servicesErr == nil {
+			for _, message := range services.Messages {
+				for _, service := range message.Services {
+					suite.T().Logf("service %s state=%s health=%v message=%q", service.Id, service.State,
+						service.Health.GetHealthy(), service.Health.GetLastMessage())
+				}
+			}
+		} else {
+			suite.T().Logf("service list unavailable: %v", servicesErr)
+		}
+	}
+
+	suite.Require().NoError(err)
 }
