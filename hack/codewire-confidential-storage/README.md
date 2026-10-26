@@ -142,29 +142,45 @@ Do not fake GitHub environment variables to make a local build look like an
 authorized publisher. Only the checked-in deployment workflow publishes the
 two helpers, and only Infra composes and qualifies the final host installer.
 
-## AMS/FRA kernel qualification
+## AMS/FRA kernel overlay (removed)
 
-The deployment overlay selects the immutable `noeljackson/kernel` package in
-`Makefile`; every other package remains on the deployed upstream package set.
-Both helper configurations expose that build input as
-`io.codewire.kernel.package`. The installer base contains tools, not a kernel;
-the imager contains the boot assets built with that package.
+The deployment head no longer selects the AMS/FRA WireGuard encrypt-batch
+kernel. `PKG_KERNEL` is back on the upstream v1.14.0 package set
+(`siderolabs/pkgs` `2f03590`, Linux 6.18.48), the same kernel the deployed
+`a8b91c97d` helpers carry. Hosts that use these helpers pair with the official
+`siderolabs/drbd:9.3.3-v1.14.0` extension, which is signed by that kernel
+build.
 
-Kernel source is `noeljackson/pkgs` commit
-`63f8953b22ca4bff1dcf9cc95bb9a99dfcd1cfc3`, based on deployed
-`2f03590c50e45a9439a4b3abcdbe247693c179e0`. The DRBD package from the same
-build/signing identity is
-`ghcr.io/noeljackson/drbd-pkg@sha256:6e9d254b3cc3da96f270efa4f1452a3fd6700a9fc3d4b5d68ed08da0f7800bff`.
-This candidate also widens the ordered per-peer WireGuard receive admission
-bound and builds the outer UDP batches on the parallel encrypt workers
-(experimental) on top of the earlier UDP-tunnel GSO capabilities so VXLAN batches reach
-WireGuard's existing software segmentation and encrypted batching path. Its
-24-case nested-tunnel matrix, upstream regression and paired interoperability
-checks passed. The signed package pair and all 744 payload files were verified
-locally; package publication and downstream artifact/physical qualification
-remain pending. Local VM throughput is not a physical-path acceptance result.
-Do not combine this kernel with the old official DRBD extension. Infra's closed
-AMS/FRA cohort must bind the matching source-owned extension and complete the
-public artifact, enforcing direct-boot and staged-upgrade gates before rollout.
-The source regression fixtures are evidence of protocol behavior, not physical
-throughput or Talos runtime acceptance.
+The helpers already published from `5b15ba08c` and `d92d63d2f` (kernel source
+`noeljackson/pkgs` `63f8953b22ca4bff1dcf9cc95bb9a99dfcd1cfc3`, DRBD
+`ghcr.io/noeljackson/drbd-pkg@sha256:6e9d254b3cc3da96f270efa4f1452a3fd6700a9fc3d4b5d68ed08da0f7800bff`)
+remain valid for the profiles that pin them. They must not be mixed with
+helpers from this head. A future custom-kernel build must re-add the overlay
+deliberately: select the immutable `noeljackson/kernel` package in `Makefile`,
+bind the matching source-owned DRBD extension in Infra, and complete the
+artifact, enforcing direct-boot and staged-upgrade gates again.
+
+Both helper configurations still record their kernel input as
+`io.codewire.kernel.package`.
+
+## runc package
+
+The deployment overlay selects the upstream `siderolabs/runc` package from the
+Talos v1.14.4 package set (`siderolabs/pkgs` release-1.14 commit `2ec10eb`):
+runc 1.5.2 with libpathrs 0.2.6, pinned by index digest in `Makefile`. Every
+other package, including the kernel, keeps its existing pin.
+
+runc 1.5.1 with libpathrs 0.2.5, from the v1.14.0 package set, aborts
+`runc init` with a libpathrs panic (`src/procfs.rs:349`, "cached procfs handle
+should be valid ... Bad file descriptor") whenever the container's `execve`
+fails under an SELinux process label. Talos labels every system container
+when SELinux is enabled. The deferred SELinux label reset runs after runc has
+closed all file descriptors, including libpathrs's cached procfs handle. The
+abort hides the real exec error. runc 1.5.2 removes the deferred reset
+(opencontainers/runc#5438, #5442), and libpathrs 0.2.6 tolerates a closed
+cached handle (cyphar/libpathrs#422). With this package a failed exec reports
+`exec <path>: <error>` instead of SIGABRT. It does not change whether the exec
+succeeds.
+
+Drop this pin when the deployment moves to a package set that already carries
+runc 1.5.2 or later.

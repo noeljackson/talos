@@ -52,9 +52,7 @@ PKG_GRUB ?= $(PKGS_PREFIX)/grub:$(PKGS)
 PKG_IGZIP ?= $(PKGS_PREFIX)/igzip:$(PKGS)
 PKG_IPTABLES ?= $(PKGS_PREFIX)/iptables:$(PKGS)
 PKG_IPXE ?= $(PKGS_PREFIX)/ipxe:$(PKGS)
-# AMS/FRA WireGuard batching candidate; matching DRBD comes from this same
-# pkgs build/signing identity. Other packages retain the deployed upstream set.
-PKG_KERNEL ?= ghcr.io/noeljackson/kernel@sha256:236481b2c6fdc4f1dec17ba5b1e0bcdc3f467401c4eab1d490af4a26bf82d646
+PKG_KERNEL ?= $(PKGS_PREFIX)/kernel:$(PKGS)
 PKG_KMOD ?= $(PKGS_PREFIX)/kmod:$(PKGS)
 PKG_LIBAIO ?= $(PKGS_PREFIX)/libaio:$(PKGS)
 PKG_LIBARCHIVE ?= $(PKGS_PREFIX)/libarchive:$(PKGS)
@@ -85,7 +83,10 @@ PKG_OPEN_VMDK ?= $(PKGS_PREFIX)/open-vmdk:$(PKGS)
 PKG_PCRE2 ?= $(PKGS_PREFIX)/pcre2:$(PKGS)
 PKG_PIGZ ?= $(PKGS_PREFIX)/pigz:$(PKGS)
 PKG_QEMU_TOOLS ?= $(PKGS_PREFIX)/qemu-tools:$(PKGS)
-PKG_RUNC ?= $(PKGS_PREFIX)/runc:$(PKGS)
+# runc 1.5.2 + libpathrs 0.2.6 from the upstream Talos v1.14.4 package set:
+# fixes the runc init SIGABRT that masked execve failures (runc#5438).
+# Other packages retain the deployed upstream set.
+PKG_RUNC ?= ghcr.io/siderolabs/runc:v1.14.0-44-g2ec10eb@sha256:7975a0748debf40cd4e0d32d51e648a9f1294fac54fc345647a7821336881ff6
 PKG_SD_BOOT ?= $(PKGS_PREFIX)/sd-boot:$(PKGS)
 PKG_SQUASHFS_TOOLS ?= $(PKGS_PREFIX)/squashfs-tools:$(PKGS)
 PKG_SYSTEMD_UDEVD ?= $(PKGS_PREFIX)/systemd-udevd:$(PKGS)

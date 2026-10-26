@@ -16,3 +16,11 @@ imports = [
 [debug]
 level = "info"
 format = "json"
+
+# Flush each unpacked layer to disk (syncfs) before containerd commits its
+# snapshot. Without this, a power loss shortly after a pull can leave
+# zero-length files in snapshots that containerd's metadata records as fully
+# unpacked, and an image already marked as pulled is not pulled again.
+[plugins."io.containerd.service.v1.diff-service"]
+  default = ["walking"]
+  sync_fs = true
