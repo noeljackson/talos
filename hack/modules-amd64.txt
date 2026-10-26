@@ -204,11 +204,14 @@ kernel/drivers/net/ethernet/stmicro/stmmac/stmmac-platform.ko
 kernel/drivers/net/ethernet/stmicro/stmmac/stmmac.ko
 kernel/drivers/net/hyperv/hv_netvsc.ko
 kernel/drivers/net/ifb.ko
+kernel/drivers/net/macsec.ko
 kernel/drivers/net/mdio.ko
 kernel/drivers/net/mdio/mdio-i2c.ko
 kernel/drivers/net/mii.ko
 kernel/drivers/net/pcs/pcs_xpcs.ko
+kernel/drivers/net/phy/microchip.ko
 kernel/drivers/net/phy/sfp.ko
+kernel/drivers/net/usb/lan78xx.ko
 kernel/drivers/net/usb/r8152.ko
 kernel/drivers/net/virtio_net.ko
 kernel/drivers/net/vmxnet3/vmxnet3.ko
@@ -321,6 +324,7 @@ kernel/net/tls/tls.ko
 kernel/net/vmw_vsock/hv_sock.ko
 kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko
 kernel/net/vmw_vsock/vmw_vsock_vmci_transport.ko
+kernel/net/xfrm/xfrm_interface.ko
 modules.builtin
 modules.builtin.modinfo
 modules.order

@@ -5,18 +5,20 @@
 package block_test
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap"
 
 	blockctrls "github.com/siderolabs/talos/internal/app/machined/pkg/controllers/block"
 	"github.com/siderolabs/talos/internal/app/machined/pkg/controllers/ctest"
 	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
-	"github.com/siderolabs/talos/pkg/machinery/resources/storage"
 )
 
 type DiscoveredVolumesStatusSuite struct {
@@ -30,20 +32,21 @@ func TestDiscoveredVolumesStatusSuite(t *testing.T) {
 		DefaultSuite: ctest.DefaultSuite{
 			Timeout: 5 * time.Second,
 			AfterSetup: func(suite *ctest.DefaultSuite) {
-				suite.Require().NoError(suite.Runtime().RegisterController(&blockctrls.DiscoveredVolumesStatusController{}))
+				suite.Require().NoError(suite.Runtime().RegisterController(&blockctrls.DiscoveredVolumesStatusController{
+					WaitForDevices:   func(context.Context, *zap.Logger) error { return nil },
+					InactiveMDArrays: func() ([]string, error) { return nil, nil },
+				}))
 			},
 		},
 	})
 }
 
 func (suite *DiscoveredVolumesStatusSuite) TestNoDevicesStatus() {
-	suite.completeMDStartup()
 	ctest.AssertNoResource[*block.DiscoveredVolumesStatus](suite, block.DiscoveredVolumesStatusID)
 	ctest.AssertNoResource[*block.DiscoveryRefreshRequest](suite, block.RefreshID)
 }
 
 func (suite *DiscoveredVolumesStatusSuite) TestDevicesNotReady() {
-	suite.completeMDStartup()
 	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
 	devicesStatus.TypedSpec().Ready = false
 	suite.Create(devicesStatus)
@@ -53,7 +56,6 @@ func (suite *DiscoveredVolumesStatusSuite) TestDevicesNotReady() {
 }
 
 func (suite *DiscoveredVolumesStatusSuite) TestDevicesReadyRequestsRefreshButNotYetDone() {
-	suite.completeMDStartup()
 	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
 	devicesStatus.TypedSpec().Ready = true
 	suite.Create(devicesStatus)
@@ -66,7 +68,6 @@ func (suite *DiscoveredVolumesStatusSuite) TestDevicesReadyRequestsRefreshButNot
 }
 
 func (suite *DiscoveredVolumesStatusSuite) TestDiscoveryRefreshStatusMatchMakesReady() {
-	suite.completeMDStartup()
 	// Setup: create devices ready and observe the refresh request bump.
 	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
 	devicesStatus.TypedSpec().Ready = true
@@ -88,7 +89,6 @@ func (suite *DiscoveredVolumesStatusSuite) TestDiscoveryRefreshStatusMatchMakesR
 }
 
 func (suite *DiscoveredVolumesStatusSuite) TestStaleDiscoveryRefreshStatusDoesNotMarkReady() {
-	suite.completeMDStartup()
 	// Setup: create devices ready and observe the refresh request bump.
 	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
 	devicesStatus.TypedSpec().Ready = true
@@ -114,7 +114,6 @@ func (suite *DiscoveredVolumesStatusSuite) TestStaleDiscoveryRefreshStatusDoesNo
 }
 
 func (suite *DiscoveredVolumesStatusSuite) TestReadyDoesNotResetWhenDevicesBecomeNotReady() {
-	suite.completeMDStartup()
 	// Drive the full happy path to get DiscoveredVolumesStatus.Ready = true.
 	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
 	devicesStatus.TypedSpec().Ready = true
@@ -142,51 +141,135 @@ func (suite *DiscoveredVolumesStatusSuite) TestReadyDoesNotResetWhenDevicesBecom
 	})
 }
 
-func (suite *DiscoveredVolumesStatusSuite) completeMDStartup() {
-	status := storage.NewMDStartupStatus(storage.NamespaceName, storage.MDStartupID)
-	status.TypedSpec().Complete = true
-	suite.Create(status)
+// DiscoveredVolumesStatusSettleSuite checks that the discovery refresh is not requested before the storage
+// devices settle: a USB- or SD-attached system disk shows up after udevd settles, and if the refresh
+// runs without it, the volume manager declares META/STATE missing and the node drops to maintenance.
+type DiscoveredVolumesStatusSettleSuite struct {
+	ctest.DefaultSuite
+
+	devicesSettled chan struct{}
 }
 
-func (suite *DiscoveredVolumesStatusSuite) assertNoRefreshWhileMDPending() {
+func TestDiscoveredVolumesStatusSettleSuite(t *testing.T) {
+	t.Parallel()
+
+	s := &DiscoveredVolumesStatusSettleSuite{
+		devicesSettled: make(chan struct{}),
+	}
+
+	s.DefaultSuite = ctest.DefaultSuite{
+		Timeout: 5 * time.Second,
+		AfterSetup: func(suite *ctest.DefaultSuite) {
+			suite.Require().NoError(suite.Runtime().RegisterController(&blockctrls.DiscoveredVolumesStatusController{
+				WaitForDevices: func(ctx context.Context, _ *zap.Logger) error {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-s.devicesSettled:
+						return nil
+					}
+				},
+				InactiveMDArrays: func() ([]string, error) { return nil, nil },
+			}))
+		},
+	}
+
+	suite.Run(t, s)
+}
+
+func (suite *DiscoveredVolumesStatusSettleSuite) TestWaitsForDevices() {
+	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
+	devicesStatus.TypedSpec().Ready = true
+	suite.Create(devicesStatus)
+
+	// udevd settled, but the storage devices are still enumerating: no discovery refresh yet
 	ctx, st := suite.Ctx(), suite.State()
 	suite.Assert().Never(func() bool {
-		_, refreshErr := safe.StateGetByID[*block.DiscoveryRefreshRequest](ctx, st, block.RefreshID)
-		_, readyErr := safe.StateGetByID[*block.DiscoveredVolumesStatus](ctx, st, block.DiscoveredVolumesStatusID)
-		return refreshErr == nil || readyErr == nil
-	}, 200*time.Millisecond, 10*time.Millisecond)
-}
+		_, err := safe.StateGetByID[*block.DiscoveryRefreshRequest](ctx, st, block.RefreshID)
 
-func (suite *DiscoveredVolumesStatusSuite) TestMissingMDStartupBlocksDefinitiveDiscovery() {
-	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
-	devicesStatus.TypedSpec().Ready = true
-	suite.Create(devicesStatus)
-	suite.assertNoRefreshWhileMDPending()
-}
-
-func (suite *DiscoveredVolumesStatusSuite) TestMDStartupCompletionRequiresFreshRefresh() {
-	startup := storage.NewMDStartupStatus(storage.NamespaceName, storage.MDStartupID)
-	suite.Create(startup)
-	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
-	devicesStatus.TypedSpec().Ready = true
-	suite.Create(devicesStatus)
-	// A scan completed before MD startup cannot make missing volumes definitive.
-	refreshStatus := block.NewDiscoveryRefreshStatus(block.NamespaceName, block.RefreshID)
-	suite.Create(refreshStatus)
-	suite.assertNoRefreshWhileMDPending()
-
-	startup.TypedSpec().Complete = true
-	suite.Update(startup)
-	ctest.AssertResource(suite, block.RefreshID, func(request *block.DiscoveryRefreshRequest, asrt *assert.Assertions) {
-		asrt.Equal(1, request.TypedSpec().Request)
-	})
-	suite.Assert().Never(func() bool {
-		_, err := safe.StateGetByID[*block.DiscoveredVolumesStatus](suite.Ctx(), suite.State(), block.DiscoveredVolumesStatusID)
 		return err == nil
-	}, 200*time.Millisecond, 10*time.Millisecond)
-	refreshStatus.TypedSpec().Request = 1
-	suite.Update(refreshStatus)
-	ctest.AssertResource(suite, block.DiscoveredVolumesStatusID, func(status *block.DiscoveredVolumesStatus, asrt *assert.Assertions) {
-		asrt.True(status.TypedSpec().Ready)
+	}, time.Second, 100*time.Millisecond)
+
+	close(suite.devicesSettled)
+
+	ctest.AssertResource(suite, block.RefreshID, func(r *block.DiscoveryRefreshRequest, asrt *assert.Assertions) {
+		asrt.Equal(1, r.TypedSpec().Request)
 	})
+}
+
+// DiscoveredVolumesStatusMDSuite checks that the discovery refresh waits for inactive MD arrays: a degraded
+// mirrored system disk is force-run by MDLastResortController after a grace period, and if the volumes are
+// located before that, META/STATE are declared missing and the node drops to maintenance.
+type DiscoveredVolumesStatusMDSuite struct {
+	ctest.DefaultSuite
+
+	inactive    atomic.Bool
+	settleWaits atomic.Int32
+}
+
+func TestDiscoveredVolumesStatusMDSuite(t *testing.T) {
+	t.Parallel()
+
+	s := &DiscoveredVolumesStatusMDSuite{}
+
+	s.DefaultSuite = ctest.DefaultSuite{
+		Timeout: 5 * time.Second,
+		AfterSetup: func(suite *ctest.DefaultSuite) {
+			s.inactive.Store(true)
+			s.settleWaits.Store(0)
+
+			suite.Require().NoError(suite.Runtime().RegisterController(&blockctrls.DiscoveredVolumesStatusController{
+				WaitForDevices: func(context.Context, *zap.Logger) error {
+					s.settleWaits.Add(1)
+
+					return nil
+				},
+				InactiveMDArrays: func() ([]string, error) {
+					if s.inactive.Load() {
+						return []string{"/dev/md127"}, nil
+					}
+
+					return nil, nil
+				},
+				MDArrayWaitTimeout: 2 * time.Second,
+			}))
+		},
+	}
+
+	suite.Run(t, s)
+}
+
+func (suite *DiscoveredVolumesStatusMDSuite) TestWaitsForInactiveArrays() {
+	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
+	devicesStatus.TypedSpec().Ready = true
+	suite.Create(devicesStatus)
+
+	ctx, st := suite.Ctx(), suite.State()
+	suite.Assert().Never(func() bool {
+		_, err := safe.StateGetByID[*block.DiscoveryRefreshRequest](ctx, st, block.RefreshID)
+
+		return err == nil
+	}, time.Second, 100*time.Millisecond)
+
+	// force-run by MDLastResortController
+	suite.inactive.Store(false)
+
+	ctest.AssertResource(suite, block.RefreshID, func(r *block.DiscoveryRefreshRequest, asrt *assert.Assertions) {
+		asrt.Equal(1, r.TypedSpec().Request)
+	})
+
+	// devices settle again for the started array's partitions
+	suite.Assert().EqualValues(2, suite.settleWaits.Load())
+}
+
+func (suite *DiscoveredVolumesStatusMDSuite) TestInactiveArraysWaitIsBounded() {
+	devicesStatus := runtime.NewDevicesStatus(runtime.NamespaceName, runtime.DevicesID)
+	devicesStatus.TypedSpec().Ready = true
+	suite.Create(devicesStatus)
+
+	ctest.AssertResource(suite, block.RefreshID, func(r *block.DiscoveryRefreshRequest, asrt *assert.Assertions) {
+		asrt.Equal(1, r.TypedSpec().Request)
+	})
+
+	suite.Assert().EqualValues(1, suite.settleWaits.Load())
 }

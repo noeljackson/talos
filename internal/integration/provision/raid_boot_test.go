@@ -255,7 +255,7 @@ func TestRAIDProofGeneratedConfiguration(t *testing.T) {
 			require.NoError(t, err)
 			defer provider.Close() //nolint:errcheck
 			contract := config.TalosVersionCurrent.DisableEtcd().DisableKubernetes()
-			gen, options := provider.GenOptions(provision.NetworkRequest{CIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}, contract)
+			gen, options := provider.GenOptions(provision.ClusterRequest{Network: provision.NetworkRequest{CIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}}, contract)
 			docs, err := container.New(raidProofDocuments(variant, "example.invalid/test/installer:proof")...)
 			require.NoError(t, err)
 			cfgBundle, err := bundle.NewBundle(append([]bundle.Option{

@@ -112,8 +112,8 @@ verify_identity() {
 		keys == ["commitAbbreviationLength", "release", "releaseCommit", "schema", "upstreamRepository"] and
 		.schema == "codewire.talos-runtime-source-identity/v1" and
 		.upstreamRepository == "https://github.com/siderolabs/talos" and
-		.release == "v1.14.0" and
-		.releaseCommit == "9abd05af449ebf9cb1827648298291afce18d714" and
+		.release == "v1.14.4" and
+		.releaseCommit == "3fb46c3789527b32ad3382d096e23084d158df88" and
 		.commitAbbreviationLength == 9
 	' "${identity}" >/dev/null
 }
@@ -157,7 +157,7 @@ write_imager_archive_fixture() {
 
 verify_tag_independent_version() {
 	local fixture_repo fixture_release fixture_head fixture_abbreviation
-	local drift_repo drift_head unrelated_repo unrelated_head unrelated_commit empty_tree
+	local drift_repo drift_head nested_case nested_repo nested_head unrelated_repo unrelated_head unrelated_commit empty_tree
 
 	fixture_repo="${test_root}/version-fixture"
 	mkdir -p "${fixture_repo}"
@@ -211,6 +211,35 @@ EOF
 	grep -Fq 'pinned Talos release does not match the machinery module version' \
 		"${test_root}/drift.stderr"
 	[[ "${drift_head}" != "${fixture_head}" ]]
+
+	# Upstream may leave the nested machinery require line one patch behind the
+	# release (v1.14.4 requires v1.14.3). With the local nested replace an earlier
+	# patch of the same minor is accepted; another minor never is.
+	for nested_case in accept:v1.14.0 reject:v1.13.9 reject:v1.14.2; do
+		nested_repo="${test_root}/nested-${nested_case%%:*}-${nested_case##*:}"
+		cp -a "${fixture_repo}" "${nested_repo}"
+		printf 'module github.com/siderolabs/talos\n\ngo 1.26.5\n\nreplace github.com/siderolabs/talos/pkg/machinery => ./pkg/machinery\n\nrequire github.com/siderolabs/talos/pkg/machinery %s\n' \
+			"${nested_case##*:}" >"${nested_repo}/go.mod"
+		jq '.release = "v1.14.1"' "${nested_repo}/hack/codewire-confidential-storage/runtime-identity.json" \
+			>"${nested_repo}/identity.json"
+		mv "${nested_repo}/identity.json" "${nested_repo}/hack/codewire-confidential-storage/runtime-identity.json"
+		git -C "${nested_repo}" add go.mod hack
+		git -C "${nested_repo}" commit -q -m "fixture: nested machinery ${nested_case}"
+		nested_head="$(git -C "${nested_repo}" rev-parse HEAD)"
+		if [[ "${nested_case%%:*}" == accept ]]; then
+			run_fixture_preflight "${nested_repo}" >"${test_root}/nested.stdout"
+			grep -Fqx \
+				"authorized immutable linux/amd64 helper build: version=v1.14.1-2-g${nested_head:0:9} revision=${nested_head}" \
+				"${test_root}/nested.stdout"
+		else
+			if run_fixture_preflight "${nested_repo}" >"${test_root}/nested.stdout" 2>"${test_root}/nested.stderr"; then
+				printf 'nested machinery %s unexpectedly passed preflight\n' "${nested_case##*:}" >&2
+				exit 1
+			fi
+			grep -Fq 'pinned Talos release does not match the machinery module version' \
+				"${test_root}/nested.stderr"
+		fi
+	done
 
 	unrelated_repo="${test_root}/unrelated-release"
 	cp -a "${fixture_repo}" "${unrelated_repo}"
@@ -433,7 +462,7 @@ EOF
 
 verify_local_archives() {
 	local fixture_repo="${test_root}/local-fixture" fixture_bin="${test_root}/local-bin"
-	local fixture_archives="${test_root}/local-archives" fixture_release fixture_head fixture_epoch fixture_version
+	local fixture_archives="${test_root}/local-archives" fixture_release fixture_head fixture_epoch fixture_version identity_release
 	local fixture_publisher make_log="${test_root}/local-make.log" skopeo_log="${test_root}/local-skopeo.log"
 	local cases=0
 	mkdir -p "${fixture_repo}/cmd" "${fixture_repo}/selinux" "${fixture_bin}" "${fixture_archives}"
@@ -441,7 +470,8 @@ verify_local_archives() {
 	git -C "${fixture_repo}" config commit.gpgsign false
 	git -C "${fixture_repo}" config user.name 'Codewire Local Contract Test'
 	git -C "${fixture_repo}" config user.email 'codewire-local@example.invalid'
-	printf 'module fixture\nrequire github.com/siderolabs/talos/pkg/machinery v1.14.0\n' >"${fixture_repo}/go.mod"
+	identity_release="$(jq -er .release "${identity}")"
+	printf 'module fixture\nrequire github.com/siderolabs/talos/pkg/machinery %s\n' "${identity_release}" >"${fixture_repo}/go.mod"
 	printf '_out/\n*.ignored\n' >"${fixture_repo}/.gitignore"
 	cp "${repo_root}/Makefile" "${fixture_repo}/Makefile"
 	cp "${repo_root}/Dockerfile" "${fixture_repo}/Dockerfile"
@@ -457,7 +487,7 @@ verify_local_archives() {
 	git -C "${fixture_repo}" commit -qm 'fixture: local overlay'
 	fixture_head="$(git -C "${fixture_repo}" rev-parse HEAD)"
 	fixture_epoch="$(git -C "${fixture_repo}" show -s --format=%ct HEAD)"
-	fixture_version="v1.14.0-1-g${fixture_head:0:9}"
+	fixture_version="${identity_release}-1-g${fixture_head:0:9}"
 	printf 'synthetic installer-base\n' >"${fixture_archives}/installer-base.oci.tar"
 	write_imager_archive_fixture "${fixture_archives}/imager.oci.tar" \
 		sha256:2222222222222222222222222222222222222222222222222222222222222222 \
@@ -487,7 +517,7 @@ printf '%s\n' "$*" >>"${TEST_MAKE_LOG}"
 [[ "$*" == *'PUSH=false CI_ARGS= PLATFORM=linux/amd64 INSTALLER_ARCH=targetarch'* ]]
 [[ "$*" == *'BUILD=docker buildx build --builder fixture'* ]]
 [[ "$*" == *"SHA=${TEST_REVISION}"* && "$*" == *"TAG=${TEST_VERSION}"* ]]
-[[ "$*" == *'ABBREV_TAG=v1.14.0'* ]]
+[[ "$*" == *"ABBREV_TAG=${TEST_VERSION%%-*}"* ]]
 component='' target_args=''
 for arg in "$@"; do
  case "$arg" in target-installer-base|target-imager) component=${arg#target-} ;; TARGET_ARGS=*) target_args=${arg#TARGET_ARGS=} ;; esac

@@ -26,9 +26,9 @@ ARTIFACTS := _out
 EMBED_TARGET ?= embed
 
 TOOLS_PREFIX ?= ghcr.io/siderolabs/tools
-TOOLS ?= v1.14.0-5-g87316ca
+TOOLS ?= v1.14.0-9-g6b71647
 PKGS_PREFIX ?= ghcr.io/siderolabs
-PKGS ?= v1.14.0-15-g2f03590
+PKGS ?= v1.14.0-44-g2ec10eb
 GENERATE_VEX_PREFIX ?= ghcr.io/siderolabs/generate-vex
 GENERATE_VEX ?= latest
 
@@ -83,10 +83,7 @@ PKG_OPEN_VMDK ?= $(PKGS_PREFIX)/open-vmdk:$(PKGS)
 PKG_PCRE2 ?= $(PKGS_PREFIX)/pcre2:$(PKGS)
 PKG_PIGZ ?= $(PKGS_PREFIX)/pigz:$(PKGS)
 PKG_QEMU_TOOLS ?= $(PKGS_PREFIX)/qemu-tools:$(PKGS)
-# runc 1.5.2 + libpathrs 0.2.6 from the upstream Talos v1.14.4 package set:
-# fixes the runc init SIGABRT that masked execve failures (runc#5438).
-# Other packages retain the deployed upstream set.
-PKG_RUNC ?= ghcr.io/siderolabs/runc:v1.14.0-44-g2ec10eb@sha256:7975a0748debf40cd4e0d32d51e648a9f1294fac54fc345647a7821336881ff6
+PKG_RUNC ?= $(PKGS_PREFIX)/runc:$(PKGS)
 PKG_SD_BOOT ?= $(PKGS_PREFIX)/sd-boot:$(PKGS)
 PKG_SQUASHFS_TOOLS ?= $(PKGS_PREFIX)/squashfs-tools:$(PKGS)
 PKG_SYSTEMD_UDEVD ?= $(PKGS_PREFIX)/systemd-udevd:$(PKGS)
@@ -109,7 +106,7 @@ TALOSCTL_EXECUTABLE := $(PWD)/$(ARTIFACTS)/$(TALOSCTL_DEFAULT_TARGET)-$(ARCH)
 INTEGRATION_TEST := integration-test
 INTEGRATION_TEST_PROVISION_DEFAULT_TARGET := integration-test-provision-$(OPERATING_SYSTEM)
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-KUBECTL_VERSION ?= v1.37.0
+KUBECTL_VERSION ?= v1.37.1
 # renovate: datasource=github-releases depName=kastenhq/kubestr
 KUBESTR_VERSION ?= v0.4.49
 # renovate: datasource=github-releases depName=helm/helm

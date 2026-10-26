@@ -371,7 +371,7 @@ func (p *provisioner) NodeDiskBootState(ctx context.Context, cluster provision.C
 func verifyDiskBootBackingPaths(arguments []string, selected *LaunchConfig) error {
 	disks := make(map[string]bool, len(selected.DiskPaths))
 	for i, path := range selected.DiskPaths {
-		disks[fmt.Sprintf("id=virtio%d,format=raw,if=none,file=%s,cache=none", selected.diskIndexes[i], path)] = true
+		disks[fmt.Sprintf("id=virtio%d,format=raw,if=none,file=%s,cache=unsafe", selected.diskIndexes[i], path)] = true
 	}
 	// Initial boot may use only the media already bound by the original config.
 	// These are optional because the launcher chooses one applicable boot path.

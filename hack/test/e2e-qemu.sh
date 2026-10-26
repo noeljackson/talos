@@ -69,7 +69,9 @@ esac
 
 case "${WITH_BGP:-false}" in
   true)
-    QEMU_FLAGS+=("--with-bgp")
+    # The fabric NIC shares a segment with the management NIC, so ARP has to be restricted to the
+    # interface owning each address; see the patch for what breaks otherwise.
+    QEMU_FLAGS+=("--with-bgp" "--config-patch=@hack/test/patches/bgp-arp.yaml")
     ;;
 esac
 
@@ -350,6 +352,7 @@ function create_cluster {
     --controlplanes="${QEMU_CONTROLPLANES:-3}" \
     --workers="${QEMU_WORKERS:-2}" \
     --disk="${QEMU_SYSTEM_DISK_SIZE:-15360}" \
+    --disk-driver="${QEMU_SYSTEM_DISK_DRIVER:-virtio}" \
     --primary-disks="${QEMU_SYSTEM_DISKS:-1}" \
     --extra-disks="${QEMU_EXTRA_DISKS:-0}" \
     --extra-disks-size="${QEMU_EXTRA_DISKS_SIZE:-6144}" \

@@ -128,7 +128,12 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 	// static rootfs /etc) bind-mounted read-only at /etc. etcRoot is the detached writable overlay
 	// mount that controllers write managed files through; the read-only bind keeps /etc read-only
 	// at the path level.
-	etcRoot, etcOverlayUnmount, err := setupEtcOverlay(etcRootPath, etcFSOpts, ctrl.logger)
+	etcRoot, etcOverlayUnmount, err := setupEtcOverlay(
+		etcRootPath,
+		ctrl.v1alpha1Runtime.State().Platform().Mode().InContainer(),
+		etcFSOpts,
+		ctrl.logger,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to set up /etc overlay: %w", err)
 	}
@@ -158,7 +163,9 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 		&block.DevicesController{
 			V1Alpha1Mode: ctrl.v1alpha1Runtime.State().Platform().Mode(),
 		},
-		&block.DiscoveredVolumesStatusController{},
+		&block.DiscoveredVolumesStatusController{
+			V1Alpha1Mode: ctrl.v1alpha1Runtime.State().Platform().Mode(),
+		},
 		&block.DiscoveryController{},
 		&block.DisksController{},
 		&block.MountController{},
@@ -331,7 +338,6 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 		&k8s.KubeletKubeconfigController{},
 		&k8s.KubeletServiceController{
 			V1Alpha1Services: system.Services(ctrl.v1alpha1Runtime),
-			V1Alpha1Mode:     ctrl.v1alpha1Runtime.State().Platform().Mode(),
 		},
 		&k8s.KubeletSpecController{
 			V1Alpha1Mode: ctrl.v1alpha1Runtime.State().Platform().Mode(),

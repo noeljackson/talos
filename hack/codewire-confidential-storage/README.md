@@ -7,7 +7,10 @@ remains the sole owner of combining these helpers with the exact Extensions
 artifact and host profile, running the enforcing boot gate, and publishing the
 final installer.
 
-The upstreamable `downstream/confidential-storage-source` branch contains no
+The active upstreamable source branch is
+`downstream/confidential-storage-source-v1.14.4`, based on Talos v1.14.4. The
+earlier `downstream/confidential-storage-source` branch (Talos v1.14.0) is kept
+unchanged as the provenance of installers built from it. Neither contains a
 publication workflow. A pull request into `downstream/confidential-storage`
 runs only the source-free publication contract. Landing its exact head starts
 one automatic `linux/amd64` build from that event commit and publishes:
@@ -44,8 +47,8 @@ combination branch or manual helper publication is needed.
 
 ## Local archive qualification (no publication)
 
-The current release identity is Talos `v1.14.0`, peeled upstream commit
-`9abd05af449ebf9cb1827648298291afce18d714`. The full checked-out deployment
+The current release identity is Talos `v1.14.4`, peeled upstream commit
+`3fb46c3789527b32ad3382d096e23084d158df88`. The full checked-out deployment
 commit determines the version suffix and source epoch; do not hardcode the
 source-branch commit as the deployment identity. Compose the accepted source
 with the current deployment head using the ordered two-parent procedure before
@@ -142,45 +145,46 @@ Do not fake GitHub environment variables to make a local build look like an
 authorized publisher. Only the checked-in deployment workflow publishes the
 two helpers, and only Infra composes and qualifies the final host installer.
 
-## AMS/FRA kernel overlay (removed)
+## Package set
 
-The deployment head no longer selects the AMS/FRA WireGuard encrypt-batch
-kernel. `PKG_KERNEL` is back on the upstream v1.14.0 package set
-(`siderolabs/pkgs` `2f03590`, Linux 6.18.48), the same kernel the deployed
-`a8b91c97d` helpers carry. Hosts that use these helpers pair with the official
-`siderolabs/drbd:9.3.3-v1.14.0` extension, which is signed by that kernel
-build.
+The deployment head builds Talos v1.14.4 with its own upstream package set and
+tools (`siderolabs/pkgs` `v1.14.0-44-g2ec10eb`, `siderolabs/tools`
+`v1.14.0-9-g6b71647`). The overlay overrides no package. That set carries
+Linux 6.18.57, containerd 2.3.7, runc 1.5.2 and libpathrs 0.2.6, so the earlier
+runc pin is gone: it fixed the runc init panic of opencontainers/runc#5438,
+which upstream now ships. Hosts using these helpers pair with the official
+Sidero extensions from the same Talos v1.14.4 release; DRBD is `9.3.4-v1.14.4`,
+signed by this kernel build.
 
-The helpers already published from `5b15ba08c` and `d92d63d2f` (kernel source
-`noeljackson/pkgs` `63f8953b22ca4bff1dcf9cc95bb9a99dfcd1cfc3`, DRBD
-`ghcr.io/noeljackson/drbd-pkg@sha256:6e9d254b3cc3da96f270efa4f1452a3fd6700a9fc3d4b5d68ed08da0f7800bff`)
-remain valid for the profiles that pin them. They must not be mixed with
-helpers from this head. A future custom-kernel build must re-add the overlay
-deliberately: select the immutable `noeljackson/kernel` package in `Makefile`,
-bind the matching source-owned DRBD extension in Infra, and complete the
-artifact, enforcing direct-boot and staged-upgrade gates again.
+Helpers from earlier deployment heads stay published and immutable:
 
-Both helper configurations still record their kernel input as
+- `5b15ba08c` and `d92d63d2f` carry the AMS/FRA encrypt-batch kernel overlay and
+  remain valid only for the profiles that pin them. A future custom-kernel
+  build must re-add that overlay deliberately and pass the artifact, enforcing
+  direct-boot and staged-upgrade gates again.
+- `1642d7a9e` (Talos v1.14.0 with a runc 1.5.2 pin) is superseded by this head
+  and must not be pinned.
+
+Both helper configurations record their kernel input as
 `io.codewire.kernel.package`.
 
-## runc package
+## Carried source patches
 
-The deployment overlay selects the upstream `siderolabs/runc` package from the
-Talos v1.14.4 package set (`siderolabs/pkgs` release-1.14 commit `2ec10eb`):
-runc 1.5.2 with libpathrs 0.2.6, pinned by index digest in `Makefile`. Every
-other package, including the kernel, keeps its existing pin.
+Each patch below is carried only because no stable upstream release has the
+fix yet. Drop a patch as soon as a stable release contains it.
 
-runc 1.5.1 with libpathrs 0.2.5, from the v1.14.0 package set, aborts
-`runc init` with a libpathrs panic (`src/procfs.rs:349`, "cached procfs handle
-should be valid ... Bad file descriptor") whenever the container's `execve`
-fails under an SELinux process label. Talos labels every system container
-when SELinux is enabled. The deferred SELinux label reset runs after runc has
-closed all file descriptors, including libpathrs's cached procfs handle. The
-abort hides the real exec error. runc 1.5.2 removes the deferred reset
-(opencontainers/runc#5438, #5442), and libpathrs 0.2.6 tolerates a closed
-cached handle (cyphar/libpathrs#422). With this package a failed exec reports
-`exec <path>: <error>` instead of SIGABRT. It does not change whether the exec
-succeeds.
+| Patch | Status |
+| --- | --- |
+| fix(runtime): preserve enforcing extension and pod labels | upstream-ready, carried until upstream has it |
+| fix(selinux): give mdadm shared runtime map a dedicated label | upstream-ready, carried until upstream has it |
+| fix(md): deliver live mdadm stderr monitor events | upstream-ready, carried until upstream has it |
+| fix(sbom): bind complete license inputs to module checksums | upstream-ready, carried until upstream has it |
+| fix: wait for inactive MD arrays before volume discovery | upstream release-1.14 `449f82d46`, carried until v1.14.5 |
+| test(storage) and test(provision) RAID cold-boot proofs | tests for the patches above |
 
-Drop this pin when the deployment moves to a package set that already carries
-runc 1.5.2 or later.
+## CRI unpack sync
+
+`sync_fs` for the CRI containerd diff service is no longer a fork change. It
+is delivered to every bare-metal node as a `CRICustomizationConfig` machine
+configuration document, so unpacked image layers reach disk before containerd
+commits their snapshots.

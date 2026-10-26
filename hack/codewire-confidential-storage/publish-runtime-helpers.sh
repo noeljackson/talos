@@ -154,6 +154,14 @@ require_local_output_path() {
 	fi
 }
 
+machinery_is_nested() {
+	awk '
+		$1 == "replace" && $2 == "github.com/siderolabs/talos/pkg/machinery" && $3 == "=>" && $4 == "./pkg/machinery" { found = 1 }
+		$1 == "github.com/siderolabs/talos/pkg/machinery" && $2 == "=>" && $3 == "./pkg/machinery" { found = 1 }
+		END { exit !found }
+	' "${repo_root}/go.mod"
+}
+
 load_identity() {
 	local identity machinery_version resolved_revision
 	local -a machinery_versions
@@ -196,6 +204,15 @@ load_identity() {
 	[[ "${#machinery_versions[@]}" -eq 1 ]] \
 		|| die "go.mod does not contain exactly one Talos machinery release"
 	machinery_version=${machinery_versions[0]}
+	# Upstream builds machinery from the nested ./pkg/machinery module and
+	# does not always bump its require line at release (v1.14.4 still requires
+	# v1.14.3). With that local replace, the release-commit ancestry above is
+	# the source identity; accept an earlier patch of the same minor only.
+	if [[ "${machinery_version}" != "${release}" ]] && machinery_is_nested; then
+		[[ "${machinery_version%.*}" == "${release%.*}" && "${machinery_version##*.}" -le "${release##*.}" ]] \
+			|| die "pinned Talos release does not match the machinery module version"
+		machinery_version=${release}
+	fi
 	[[ "${machinery_version}" == "${release}" ]] \
 		|| die "pinned Talos release does not match the machinery module version"
 

@@ -134,7 +134,7 @@ talosctl cluster create dev [flags]
       --bad-rtc                                  launch VM with bad RTC state
       --cidr string                              CIDR of the cluster network (IPv4, ULA network for IPv6 is derived in automated way) (default "10.5.0.0/24")
       --cni-bin-path strings                     search path for CNI binaries (default [/home/user/.talos/cni/bin])
-      --cni-bundle-url string                    URL to download CNI bundle from (default "https://github.com/siderolabs/talos/releases/download/v1.14.0/talosctl-cni-bundle-${ARCH}.tar.gz")
+      --cni-bundle-url string                    URL to download CNI bundle from (default "https://github.com/siderolabs/talos/releases/download/v1.14.4/talosctl-cni-bundle-${ARCH}.tar.gz")
       --cni-cache-dir string                     CNI cache directory path (default "/home/user/.talos/cni/cache")
       --cni-conf-dir string                      CNI config directory path (default "/home/user/.talos/cni/conf.d")
       --config-injection-method string           a method to inject machine config: default is HTTP server, 'metal-iso' to mount an ISO
@@ -149,6 +149,7 @@ talosctl cluster create dev [flags]
       --disable-dhcp-hostname                    skip announcing hostname via DHCP
       --disk int                                 default limit on disk size in MB (each VM) (default 6144)
       --disk-block-size uint                     disk block size (default 512)
+      --disk-driver string                       driver for the primary (system) disks (virtio, ide, ahci, scsi, nvme, megaraid, usb, mmc) (default "virtio")
       --disk-encryption-key-types stringArray    encryption key types to use for disk encryption (uuid, kms) (default [uuid])
       --disk-image-path string                   disk image to use
       --disk-preallocate                         whether disk space should be preallocated (default true)
@@ -159,7 +160,7 @@ talosctl cluster create dev [flags]
       --endpoint string                          use endpoint instead of provider defaults
       --extra-boot-kernel-args string            add extra kernel args to the initial boot from vmlinuz and initramfs
       --extra-disks int                          number of extra disks to create for each worker VM
-      --extra-disks-drivers strings              driver for each extra disk (virtio, ide, ahci, scsi, nvme, megaraid)
+      --extra-disks-drivers strings              driver for each extra disk (virtio, ide, ahci, scsi, nvme, megaraid, usb, mmc, virtiofs)
       --extra-disks-on-controlplanes             attach the extra disks to controlplane machines as well (by default they are attached only to workers)
       --extra-disks-serials strings              serials for each extra disk
       --extra-disks-size int                     default limit on disk size in MB (each VM) (default 5120)
@@ -178,7 +179,7 @@ talosctl cluster create dev [flags]
       --ipxe-boot-script string                  iPXE boot script (URL) to use
       --iso-path string                          the ISO path to use for the initial boot
       --kubeprism-port int                       KubePrism port (set to 0 to disable) (default 7445)
-      --kubernetes-version string                desired kubernetes version to run (default "1.37.0")
+      --kubernetes-version string                desired kubernetes version to run (default "1.37.1")
       --memory string(mb,gb)                     the limit on memory usage for each control plane/VM (default 2.0GiB)
       --memory-workers string(mb,gb)             the limit on memory usage for each worker/VM (default 2.0GiB)
       --mtu int                                  MTU of the cluster network (default 1500)
@@ -262,7 +263,7 @@ talosctl cluster create docker [flags]
   -h, --help                                     help for docker
       --host-ip string                           Host IP to forward exposed ports to (default "0.0.0.0")
       --image string                             the talos image to run (default "ghcr.io/siderolabs/talos:latest")
-      --kubernetes-version string                desired kubernetes version to run (default "1.37.0")
+      --kubernetes-version string                desired kubernetes version to run (default "1.37.1")
       --memory-controlplanes string(mb,gb)       the limit on memory usage for each control plane/VM (default 2.0GiB)
       --memory-workers string(mb,gb)             the limit on memory usage for each worker/VM (default 2.0GiB)
       --mount mount                              attach a mount to the container (docker --mount syntax)
@@ -315,11 +316,11 @@ talosctl cluster create qemu [flags]
       --controlplanes int                        the number of controlplanes to create (default 1)
       --cpus-controlplanes string                the share of CPUs as fraction for each control plane/VM (default "2.0")
       --cpus-workers string                      the share of CPUs as fraction for each worker/VM (default "2.0")
-      --disks disks                              list of disks to create in format "<driver1>:<size1>" (disks after the first one are added only to worker machines) (default virtio:10GiB,virtio:6GiB)
+      --disks disks                              list of disks to create in format "<driver1>:<size1>", drivers: virtio, ide, ahci, scsi, nvme, megaraid, usb, mmc, virtiofs (disks after the first one are added only to worker machines) (default virtio:10GiB,virtio:6GiB)
   -h, --help                                     help for qemu
       --image-factory-auth string                username:password for authenticating with the Image Factory
       --image-factory-url string                 Image Factory url (default "https://factory.talos.dev/")
-      --kubernetes-version string                desired kubernetes version to run (default "1.37.0")
+      --kubernetes-version string                desired kubernetes version to run (default "1.37.1")
       --memory-controlplanes string(mb,gb)       the limit on memory usage for each control plane/VM (default 2.0GiB)
       --memory-workers string(mb,gb)             the limit on memory usage for each worker/VM (default 2.0GiB)
       --omni-api-endpoint string                 the Omni API endpoint (must include a scheme, a hostname and a join token, e.g. 'https://siderolink.omni.example?jointoken=foobar')
@@ -1843,7 +1844,7 @@ talosctl gen config <cluster name> <cluster endpoint> [flags]
   -h, --help                                     help for config
       --install-disk string                      the disk to install to (default "/dev/sda")
       --install-image string                     the image used to perform an installation (default "factory.talos.dev/metal-installer/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba:latest")
-      --kubernetes-version string                desired kubernetes version to run (default "1.37.0")
+      --kubernetes-version string                desired kubernetes version to run (default "1.37.1")
   -o, --output string                            destination to output generated files. when multiple output types are specified, it must be a directory. for a single output type, it must either be a file path, or "-" for stdout
   -t, --output-types strings                     types of outputs to be generated. valid types are: ["controlplane" "worker" "talosconfig"] (default [controlplane,worker,talosconfig])
       --registry-mirror strings                  list of registry mirrors to use in format: <registry host>=<mirror URL>
@@ -2247,7 +2248,7 @@ talosctl image cache-create [flags]
 ### Examples
 
 ```
-talosctl images cache-create --images=ghcr.io/siderolabs/kubelet:v1.37.0 --image-cache-path=/tmp/talos-image-cache
+talosctl images cache-create --images=ghcr.io/siderolabs/kubelet:v1.37.1 --image-cache-path=/tmp/talos-image-cache
 
 Alternatively, stdin can be piped to the command:
 talosctl images default | talosctl images cache-create --image-cache-path=/tmp/talos-image-cache --images=-
@@ -2335,11 +2336,11 @@ talosctl image k8s-bundle [flags]
 
 ```
       --coredns-version semver                 CoreDNS semantic version (default v1.14.7)
-      --etcd-version semver                    ETCD semantic version (default 3.7.1)
+      --etcd-version semver                    ETCD semantic version (default v3.7.2)
       --flannel-version semver                 Flannel CNI semantic version (default 0.28.9)
   -h, --help                                   help for k8s-bundle
-      --k8s-version semver                     Kubernetes semantic version (default v1.37.0)
-      --kube-network-policies-version semver   kube-network-policies semantic version (default v1.1.1)
+      --k8s-version semver                     Kubernetes semantic version (default v1.37.1)
+      --kube-network-policies-version semver   kube-network-policies semantic version (default v1.1.2)
 ```
 
 ### Options inherited from parent commands
@@ -2816,9 +2817,11 @@ talosctl meta delete key [flags]
 ### Options inherited from parent commands
 
 ```
+      --cert-fingerprint strings   list of server certificate fingerprints to accept (defaults to no check, only used with --insecure flag)
   -c, --cluster string             cluster to connect to if a proxy endpoint is used
       --context string             context to be used in command
   -e, --endpoints strings          override default endpoints in Talos configuration
+  -i, --insecure                   use the insecure (encrypted with no auth) maintenance service
   -n, --nodes strings              target the specified nodes
       --siderov1-keys-dir string   the path to the SideroV1 auth PGP keys directory, defaults to 'SIDEROV1_KEYS_DIR' env variable if set, otherwise '$HOME/.talos/keys'; only valid for Contexts that use SideroV1 auth
       --talosconfig string         the path to the Talos configuration file, defaults to 'TALOSCONFIG' env variable if set, otherwise '$HOME/.talos/config' and '/var/run/secrets/talos.dev/config' in order
@@ -2845,9 +2848,11 @@ talosctl meta write key value [flags]
 ### Options inherited from parent commands
 
 ```
+      --cert-fingerprint strings   list of server certificate fingerprints to accept (defaults to no check, only used with --insecure flag)
   -c, --cluster string             cluster to connect to if a proxy endpoint is used
       --context string             context to be used in command
   -e, --endpoints strings          override default endpoints in Talos configuration
+  -i, --insecure                   use the insecure (encrypted with no auth) maintenance service
   -n, --nodes strings              target the specified nodes
       --siderov1-keys-dir string   the path to the SideroV1 auth PGP keys directory, defaults to 'SIDEROV1_KEYS_DIR' env variable if set, otherwise '$HOME/.talos/keys'; only valid for Contexts that use SideroV1 auth
       --talosconfig string         the path to the Talos configuration file, defaults to 'TALOSCONFIG' env variable if set, otherwise '$HOME/.talos/config' and '/var/run/secrets/talos.dev/config' in order
@@ -3471,7 +3476,7 @@ talosctl upgrade [flags]
       --drain-timeout duration     timeout for draining the Kubernetes node (default 5m0s)
   -e, --endpoints strings          override default endpoints in Talos configuration
   -h, --help                       help for upgrade
-  -i, --image string               the container image to use for performing the install (default "factory.talos.dev/metal-installer/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba:v1.14.0")
+  -i, --image string               the container image to use for performing the install (default "factory.talos.dev/metal-installer/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba:v1.14.4")
       --legacy                     force use of legacy upgrade method
       --namespace string           namespace to use: "system" (etcd and kubelet images), "cri" for all Kubernetes workloads, "inmem" for in-memory containerd instance (default "system")
       --no-reboot                  do not reboot the node after upgrade (skip reboot and drain)
@@ -3523,7 +3528,7 @@ talosctl upgrade-k8s [flags]
       --scheduler-image string                 kube-scheduler image to use (default "registry.k8s.io/kube-scheduler")
       --siderov1-keys-dir string               the path to the SideroV1 auth PGP keys directory, defaults to 'SIDEROV1_KEYS_DIR' env variable if set, otherwise '$HOME/.talos/keys'; only valid for Contexts that use SideroV1 auth
       --talosconfig string                     the path to the Talos configuration file, defaults to 'TALOSCONFIG' env variable if set, otherwise '$HOME/.talos/config' and '/var/run/secrets/talos.dev/config' in order
-      --to string                              the Kubernetes control plane version to upgrade to (default "1.37.0")
+      --to string                              the Kubernetes control plane version to upgrade to (default "1.37.1")
       --upgrade-kubelet                        upgrade kubelet service (default true)
       --with-docs                              patch all machine configs adding the documentation for each field (default true)
       --with-examples                          patch all machine configs with the commented examples (default true)

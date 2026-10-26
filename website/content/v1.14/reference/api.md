@@ -685,7 +685,6 @@ description: Talos gRPC API reference.
     - [MDArraySpecSpec](#talos.resource.definitions.storage.MDArraySpecSpec)
     - [MDArrayStatusSpec](#talos.resource.definitions.storage.MDArrayStatusSpec)
     - [MDRefreshRequestSpec](#talos.resource.definitions.storage.MDRefreshRequestSpec)
-    - [MDStartupStatusSpec](#talos.resource.definitions.storage.MDStartupStatusSpec)
   
 - [resource/definitions/time/time.proto](#resource/definitions/time/time.proto)
     - [AdjtimeStatusSpec](#talos.resource.definitions.time.AdjtimeStatusSpec)
@@ -8728,12 +8727,12 @@ KubeletConfigSpec holds the source of kubelet configuration.
 <a name="talos.resource.definitions.k8s.KubeletKubeconfigSpec"></a>
 
 ### KubeletKubeconfigSpec
-KubeletKubeconfigSpec describes the current kubelet kubeconfig file.
+KubeletKubeconfigSpec describes the current kubelet client credentials.
 
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| hash | [string](#string) |  | Hash is a content digest of the kubeconfig file. It changes whenever the file contents change, which is the signal consumers use to rebuild their Kubernetes clients. |
+| hash | [string](#string) |  | Hash is a content digest of the kubeconfig file and of the certificates it references on disk (kubelet rotates its client certificate without ever touching the kubeconfig). It changes whenever the credentials change, which is the signal consumers use to rebuild their Kubernetes clients. |
 
 
 
@@ -10487,7 +10486,7 @@ LinkAliasSpecSpec describes status of rendered secrets.
 <a name="talos.resource.definitions.network.LinkRefreshSpec"></a>
 
 ### LinkRefreshSpec
-LinkRefreshSpec describes status of rendered secrets.
+LinkRefreshSpec is used to force refresh LinkStatus on link changes.
 
 
 | Field | Type | Label | Description |
@@ -11323,10 +11322,11 @@ WireguardPeer describes a single peer.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | public_key | [string](#string) |  |  |
-| preshared_key | [string](#string) |  |  |
+| preshared_key | [string](#string) |  | PresharedKey is used to configure the link, present only in the LinkSpec. |
 | endpoint | [string](#string) |  |  |
 | persistent_keepalive_interval | [google.protobuf.Duration](#google.protobuf.Duration) |  |  |
 | allowed_ips | [common.NetIPPrefix](#common.NetIPPrefix) | repeated |  |
+| preshared_key_configured | [bool](#bool) |  | PresharedKeyConfigured is only used in LinkStatus to show whether the pre-shared key is set. |
 
 
 
@@ -12145,24 +12145,6 @@ MDRefreshRequestSpec is the spec for MDRefreshRequest.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | request | [int64](#int64) |  |  |
-
-
-
-
-
-
-<a name="talos.resource.definitions.storage.MDStartupStatusSpec"></a>
-
-### MDStartupStatusSpec
-MDStartupStatusSpec survives controller restarts, but is never persisted across boots.
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| complete | [bool](#bool) |  | Complete includes no arrays, not applicable, failure and timeout outcomes. |
-| grace_deadline | [int64](#int64) |  | GraceDeadline is an absolute CLOCK_BOOTTIME deadline in nanoseconds, not wall time. |
-| attempt_deadline | [int64](#int64) |  | AttemptDeadline bounds the shared startup attempt, without renewal on restart. |
-| attempted | [bool](#bool) |  | Attempted is recorded before running mdadm; a restarted owner never repeats it. |
 
 
 

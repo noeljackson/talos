@@ -16,7 +16,7 @@ title: KubeAPIServerConfig
 {{< highlight yaml >}}
 apiVersion: v1alpha1
 kind: KubeAPIServerConfig
-image: registry.k8s.io/kube-apiserver:v1.37.0 # The container image used to run the kube-apiserver component.
+image: registry.k8s.io/kube-apiserver:v1.37.1 # The container image used to run the kube-apiserver component.
 # Extra command line arguments to supply to the kube-apiserver.
 extraArgs:
     feature-gates: ServerSideApply=true
@@ -27,7 +27,7 @@ extraArgs:
 | Field | Type | Description | Value(s) |
 |-------|------|-------------|----------|
 |`image` |string |The container image used to run the kube-apiserver component.<br><br>The image reference should contain the tag, even if it is pinned by digest.  | |
-|`extraArgs` |Args |Extra command line arguments to supply to the kube-apiserver.  | |
+|`extraArgs` |Args |Extra command line arguments to supply to the kube-apiserver.<br><br>Arguments owned by other configuration documents are rejected:<br>`anonymous-auth`, `authentication-config` and `oidc-*` are set via `KubeAuthenticationConfig`, while<br>`authorization-config`, `authorization-mode` and `authorization-webhook-*` are set via `KubeAuthorizerConfig`.<br><br>The single exception is `oidc-signing-algs`, which cannot be set at all: see `KubeAuthenticationConfig`.  | |
 |`env` |map[string]string |The `env` field allows for the addition of environment variables for the kube-apiserver.  | |
 |`resources` |<a href="#KubeAPIServerConfig.resources">ResourcesConfig</a> |Configure the kube-apiserver resources.  | |
 |`apiPort` |int |The port on which the kube-apiserver will listen for requests.<br><br>Default is 6443.  | |
