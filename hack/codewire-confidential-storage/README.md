@@ -186,6 +186,7 @@ those on `downstream/confidential-storage-source-v1.14.5`.
 | `9993966de` | test(storage): cover exact-serial mirror selection and rejoin | tests for the patches above |
 | `002f9e801` | test(provision): prove exact-serial mirrored disk cold boots | tests for the patches above |
 | `e88968763` | test(provision): run the RAID cold-boot proof on isolated Talos 1.14 fixtures | upstream-ready, test-only |
+| `b4af7a731` | feat: allow the CRI containerd's blockfile snapshotter to be configured | upstream-ready, carried until upstream has it; not opened upstream (Codewire #3718) |
 
 Upstream's `449f82d46` ("wait for inactive MD arrays before volume discovery"),
 carried on the v1.14.4 stack, is part of v1.14.5 and is no longer carried.
@@ -197,7 +198,8 @@ a rewrite.
 
 | Deployment head | Talos | Source commit (second parent) | Source branch |
 | --- | --- | --- | --- |
-| this head | v1.14.5 | `54f4012af` | `downstream/confidential-storage-source-v1.14.5` |
+| this head | v1.14.5 | `b4af7a731` | `downstream/confidential-storage-source-v1.14.5` |
+| `eb09e50a7` | v1.14.5 | `54f4012af` | `downstream/confidential-storage-source-v1.14.5` |
 | `3e7b1556b` | v1.14.4 | `f37d59689` | see below |
 | `1642d7a9e` and earlier | v1.14.0 | | `downstream/confidential-storage-source` |
 
@@ -208,6 +210,16 @@ twice, `f37d59689` to `17b914ade` and then to `90dbd051a`, folding test-only
 RAID harness changes into its RAID proof commit (the runtime tree is
 unchanged), so that branch's head no longer contains `f37d59689`. Those
 rewrites broke the append-only rule; they are recorded here and not repeated.
+
+## CRI blockfile snapshotter
+
+`b4af7a731` leaves `io.containerd.snapshotter.v1.blockfile` out of the CRI
+containerd's `disabled_plugins` (the system containerd keeps it disabled).
+containerd appends imported `disabled_plugins`, so no `CRICustomizationConfig`
+could enable it before. Unconfigured, the plugin creates its empty root
+directory and skips itself ("no scratch file generator"); a node uses it only
+when its machine configuration gives it a `scratch_file`, as Codewire's
+`kata-clh` block root filesystem test does on Dev.
 
 ## CRI unpack sync
 
