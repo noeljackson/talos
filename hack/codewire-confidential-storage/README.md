@@ -8,7 +8,7 @@ artifact and host profile, running the enforcing boot gate, and publishing the
 final installer.
 
 The active upstreamable source branch is
-`downstream/confidential-storage-source-v1.14.5`, based on Talos v1.14.5. The
+`downstream/confidential-storage-source-v1.14.6`, based on Talos v1.14.6. The
 earlier source branches are kept as the provenance of installers built from
 them (see "Source provenance" below). Neither contains a
 publication workflow. A pull request into `downstream/confidential-storage`
@@ -47,8 +47,8 @@ combination branch or manual helper publication is needed.
 
 ## Local archive qualification (no publication)
 
-The current release identity is Talos `v1.14.5`, peeled upstream commit
-`dad8d3edfe7ca381044d7cad259fdf3030efa700`. The full checked-out deployment
+The current release identity is Talos `v1.14.6`, peeled upstream commit
+`ede45c42da9b1aee0fbc6dcfda7c028c9db43954`. The full checked-out deployment
 commit determines the version suffix and source epoch; do not hardcode the
 source-branch commit as the deployment identity. Compose the accepted source
 with the current deployment head using the ordered two-parent procedure before
@@ -147,14 +147,14 @@ two helpers, and only Infra composes and qualifies the final host installer.
 
 ## Package set
 
-The deployment head builds Talos v1.14.5 with its own upstream package set and
-tools (`siderolabs/pkgs` `v1.14.0-48-gf4bda77`, `siderolabs/tools`
-`v1.14.0-11-g8dad45e`). The overlay overrides no package. That set carries
-Linux 6.18.58 with `siderolabs/pkgs` `ec119504d` ("fix: restore ACPI power
-button", siderolabs/talos#14657), containerd 2.3.7, runc 1.5.2 and libpathrs
-0.2.6. Hosts using these helpers pair with the official Sidero extensions from
-the same Talos v1.14.5 release; DRBD is `9.3.4-v1.14.5`, signed by this kernel
-build.
+The deployment head builds Talos v1.14.6 with its own upstream package set and
+tools (`siderolabs/pkgs` `v1.14.0-59-ge6ad19d`, `siderolabs/tools`
+`v1.14.0-12-g5959f76`). The overlay overrides no package. That set carries
+Linux 6.18.63, still with `siderolabs/pkgs` `ec119504d` ("fix: restore ACPI
+power button", siderolabs/talos#14657), containerd 2.3.7, runc 1.5.2 and
+libpathrs 0.2.6. Hosts using these helpers pair with the official Sidero
+extensions from the same Talos v1.14.6 release; DRBD is `9.3.4-v1.14.6`, signed
+by this kernel build.
 
 Helpers from earlier deployment heads stay published and immutable:
 
@@ -167,6 +167,8 @@ Helpers from earlier deployment heads stay published and immutable:
 - `3e7b1556b` (Talos v1.14.4, Linux 6.18.57) is superseded by this head and must
   not be pinned for new installers: 6.18.57 drops the ACPI fixed-event power
   button, so a power-button or IPMI soft-off no longer shuts Talos down.
+- `bb3518b87` (Talos v1.14.5, Linux 6.18.58) stays valid for the installers that
+  pin it; new installers are built from this head.
 
 Both helper configurations record their kernel input as
 `io.codewire.kernel.package`.
@@ -175,21 +177,24 @@ Both helper configurations record their kernel input as
 
 Each patch below is carried only because no stable upstream release has the
 fix yet. Drop a patch as soon as a stable release contains it. Commit IDs are
-those on `downstream/confidential-storage-source-v1.14.5`.
+those on `downstream/confidential-storage-source-v1.14.6`.
 
 | Commit | Patch | Status |
 | --- | --- | --- |
-| `3a8e473a1` | fix(runtime): preserve enforcing extension and pod labels on Talos 1.14 | upstream-ready, carried until upstream has it |
-| `98a4862c5` | fix(selinux): give mdadm shared runtime map a dedicated label | upstream-ready, carried until upstream has it |
-| `54f4012af` | fix(md): deliver live mdadm stderr monitor events | upstream-ready, carried until upstream has it |
-| `1a2f818d2` | fix(sbom): bind complete license inputs to module checksums | upstream-ready, carried until upstream has it |
-| `9993966de` | test(storage): cover exact-serial mirror selection and rejoin | tests for the patches above |
-| `002f9e801` | test(provision): prove exact-serial mirrored disk cold boots | tests for the patches above |
-| `e88968763` | test(provision): run the RAID cold-boot proof on isolated Talos 1.14 fixtures | upstream-ready, test-only |
-| `b4af7a731` | feat: allow the CRI containerd's blockfile snapshotter to be configured | upstream-ready, carried until upstream has it; not opened upstream (Codewire #3718) |
+| `f97542e74` | fix(runtime): preserve enforcing extension and pod labels on Talos 1.14 | upstream-ready, carried until upstream has it |
+| `125a04b2e` | test(selinux): bound the mdadm runtime map directory's policy | neverallow boundaries and fixtures for upstream's `421d1589d` |
+| `7f4e4e62c` | fix(md): deliver live mdadm stderr monitor events | upstream-ready, carried until upstream has it |
+| `d3bdea4d5` | fix(sbom): bind complete license inputs to module checksums | upstream-ready, carried until upstream has it |
+| `3503695fd` | test(storage): cover exact-serial mirror selection and rejoin | tests for the patches above |
+| `09dd04e11` | test(provision): prove exact-serial mirrored disk cold boots | tests for the patches above |
+| `ea1287901` | test(provision): run the RAID cold-boot proof on isolated Talos 1.14 fixtures | upstream-ready, test-only |
+| `77399fa6e` | feat: allow the CRI containerd's blockfile snapshotter to be configured | upstream-ready, carried until upstream has it; not opened upstream (Codewire #3718) |
 
-Upstream's `449f82d46` ("wait for inactive MD arrays before volume discovery"),
-carried on the v1.14.4 stack, is part of v1.14.5 and is no longer carried.
+Upstream's `421d1589d` ("give the mdadm runtime map directory a dedicated SELinux
+type"), carried on the v1.14.5 stack as `98a4862c5`, is part of v1.14.6; only its
+policy boundaries and fixtures are still carried, as `125a04b2e`. Upstream's
+`449f82d46` ("wait for inactive MD arrays before volume discovery"), carried on
+the v1.14.4 stack, is part of v1.14.5 and is no longer carried.
 
 ## Source provenance
 
@@ -198,7 +203,8 @@ a rewrite.
 
 | Deployment head | Talos | Source commit (second parent) | Source branch |
 | --- | --- | --- | --- |
-| this head | v1.14.5 | `b4af7a731` | `downstream/confidential-storage-source-v1.14.5` |
+| this head | v1.14.6 | `77399fa6e` | `downstream/confidential-storage-source-v1.14.6` |
+| `bb3518b87` | v1.14.5 | `b4af7a731` | `downstream/confidential-storage-source-v1.14.5` |
 | `eb09e50a7` | v1.14.5 | `54f4012af` | `downstream/confidential-storage-source-v1.14.5` |
 | `3e7b1556b` | v1.14.4 | `f37d59689` | see below |
 | `1642d7a9e` and earlier | v1.14.0 | | `downstream/confidential-storage-source` |
@@ -213,7 +219,7 @@ rewrites broke the append-only rule; they are recorded here and not repeated.
 
 ## CRI blockfile snapshotter
 
-`b4af7a731` leaves `io.containerd.snapshotter.v1.blockfile` out of the CRI
+`77399fa6e` leaves `io.containerd.snapshotter.v1.blockfile` out of the CRI
 containerd's `disabled_plugins` (the system containerd keeps it disabled).
 containerd appends imported `disabled_plugins`, so no `CRICustomizationConfig`
 could enable it before. Unconfigured, the plugin creates its empty root
