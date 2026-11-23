@@ -230,7 +230,7 @@ func (c scratchCreator) ensureDirs(dir string) error {
 	return nil
 }
 
-// create makes the image the way codewire-blockfile-scratch does: an eagerly
+// create makes the image codewire-blockfile-scratch makes: an eagerly
 // initialized ext4 file system whose root carries containerd's state label,
 // checked, then renamed into place without replacing anything there.
 func (c scratchCreator) create(ctx context.Context, dir, path string) error {
@@ -270,9 +270,22 @@ func (c scratchCreator) create(ctx context.Context, dir, path string) error {
 		return err
 	}
 
+	// mke2fs copies the source directory's own label to the image's root, and
+	// Talos ships no debugfs to set it afterwards.
+	source := tmp + ".root"
+
+	if err = os.Mkdir(source, 0o700); err != nil {
+		return err
+	}
+
+	defer os.Remove(source) //nolint:errcheck
+
+	if err = selinux.SetLabel(source, blockfileScratchLabel); err != nil {
+		return err
+	}
+
 	for _, command := range [][]string{
-		{"mkfs.ext4", "-q", "-F", "-E", "lazy_itable_init=0,lazy_journal_init=0", tmp},
-		{"debugfs", "-w", "-R", "ea_set <2> security.selinux " + blockfileScratchLabel, tmp},
+		{"mkfs.ext4", "-q", "-F", "-E", "lazy_itable_init=0,lazy_journal_init=0", "-d", source, tmp},
 		{"e2fsck", "-fn", tmp},
 	} {
 		if err = c.run(ctx, command[0], command[1:]...); err != nil {
