@@ -381,7 +381,10 @@ func loadModule(name string, parameters []string) error {
 	// aliases are not resolved (see LookupModule); the status in /proc/modules is ignored so that
 	// a module being loaded concurrently (by another helper or by machined) is waited for by the kernel
 	// rather than considered loaded while its initialization is still in progress
-	manager, err := kmod.New(kmod.SetIgnoreAlias(), kmod.SetIgnoreStatus())
+	//
+	// the parameters come from the machine config (fetchParameters), so /etc/modprobe.conf is not read:
+	// the usermode helper's SELinux domain has no access to /etc
+	manager, err := kmod.New(kmod.SetIgnoreAlias(), kmod.SetIgnoreStatus(), kmod.SetConfigFile(""))
 	if err != nil {
 		return fmt.Errorf("error initializing kmod manager: %w", err)
 	}

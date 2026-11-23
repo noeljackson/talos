@@ -46,6 +46,7 @@
 (allow init_t usermodehelper_t (dir (search getattr)))
 (allow init_t usermodehelper_t (file (read open getattr)))
 (allow init_t usermodehelper_t (lnk_file (read getattr)))
+(allow init_t usermodehelper_t (process (getattr)))
 
 ; The Go runtime: threads, signals and scheduling on itself, and /proc/self.
 (allow usermodehelper_t self (process (fork signal sigchld getsched)))
@@ -80,6 +81,6 @@
 (dontaudit usermodehelper_t sysfs_t (file (read open)))
 (dontaudit usermodehelper_t cgroup_t (dir (search)))
 ; - /etc/machine-id, read at start by a library the binary links: neither
-;   helper uses it.
+;   helper uses it, and modprobe.Main reads no /etc/modprobe.conf.
 (dontaudit usermodehelper_t etc_t (dir (search)))
 (dontaudit usermodehelper_t etc_t (file (read open getattr)))
