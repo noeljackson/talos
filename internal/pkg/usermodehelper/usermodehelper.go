@@ -16,6 +16,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -28,6 +29,21 @@ import (
 const Domain = "usermodehelper_t"
 
 // Names are the argv[0] basenames machined serves in Domain: request_module
+// LabelPath is the calling thread's own SELinux label. Not /proc/self: that is
+// the thread-group leader, and when another thread reads it the kernel checks
+// process getattr, which the helper's domain does not have, so the read fails
+// with EACCES and the helper refuses itself.
+const LabelPath = "/proc/thread-self/attr/current"
+
+// OwnLabel reads this thread's label. The thread stays locked between the open
+// and the read, since the open resolves thread-self to the thread that makes it.
+func OwnLabel() ([]byte, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	return os.ReadFile(LabelPath)
+}
+
 // (modprobe) and orderly_poweroff or orderly_reboot (poweroff, shutdown, reboot).
 var Names = []string{"modprobe", "poweroff", "shutdown", "reboot"}
 
