@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -87,7 +88,15 @@ func withoutBlockfile(config []byte) ([]byte, []string, error) {
 		delete(plugins, blockfilePlugin)
 	}
 
+	// Without blockfile there is no safe default left: the default runtime or
+	// snapshotter would put every Pod on another snapshotter, or none would start.
+	if images, _ := lookupTable(cfg, "plugins", criImagesPlugin); images != nil && images["snapshotter"] == "blockfile" {
+		return nil, nil, errors.New("the default snapshotter is blockfile")
+	}
+
 	var dropped []string
+
+	containerd, _ := lookupTable(cfg, "plugins", criRuntimePlugin, "containerd")
 
 	if runtimes, _ := lookupTable(cfg, "plugins", criRuntimePlugin, "containerd", "runtimes"); runtimes != nil {
 		for name, value := range runtimes {
@@ -96,6 +105,12 @@ func withoutBlockfile(config []byte) ([]byte, []string, error) {
 
 				dropped = append(dropped, name)
 			}
+		}
+	}
+
+	if containerd != nil {
+		if name, _ := containerd["default_runtime_name"].(string); slices.Contains(dropped, name) {
+			return nil, nil, fmt.Errorf("the default runtime %q uses blockfile", name)
 		}
 	}
 
@@ -189,7 +204,8 @@ func (c scratchCreator) ensure(ctx context.Context, path string) (bool, error) {
 }
 
 // ensureDirs checks every directory from root down to dir, creating the
-// missing ones, and refuses a symlink or a directory the owner does not own.
+// missing ones, and refuses a symlink, a directory the owner does not own and
+// one its group or others can write.
 func (c scratchCreator) ensureDirs(dir string) error {
 	root := filepath.Clean(c.root)
 
@@ -224,6 +240,12 @@ func (c scratchCreator) ensureDirs(dir string) error {
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !info.IsDir() || !ok || int(stat.Uid) != c.owner {
 			return fmt.Errorf("%q is not a directory owned by UID %d", current, c.owner)
+		}
+
+		// Anyone else who can write here could swap a name for a symlink between
+		// these checks and the path-based creation, or plant temporary files.
+		if info.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("%q is writable by its group or others (mode %#o)", current, info.Mode().Perm())
 		}
 	}
 
