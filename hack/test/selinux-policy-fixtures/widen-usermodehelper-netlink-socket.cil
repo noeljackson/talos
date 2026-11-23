@@ -1,0 +1,1 @@
+(allow usermodehelper_t self (netlink_route_socket (create)))

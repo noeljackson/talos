@@ -1,0 +1,1 @@
+(neverallow usermodehelper_t module_t (system (module_load)))
