@@ -28,7 +28,6 @@ import (
 // Domain is the SELinux type the kernel's usermode helper runs in.
 const Domain = "usermodehelper_t"
 
-// Names are the argv[0] basenames machined serves in Domain: request_module
 // LabelPath is the calling thread's own SELinux label. Not /proc/self: that is
 // the thread-group leader, and when another thread reads it the kernel checks
 // process getattr, which the helper's domain does not have, so the read fails
@@ -44,6 +43,7 @@ func OwnLabel() ([]byte, error) {
 	return os.ReadFile(LabelPath)
 }
 
+// Names are the argv[0] basenames machined serves in Domain: request_module
 // (modprobe) and orderly_poweroff or orderly_reboot (poweroff, shutdown, reboot).
 var Names = []string{"modprobe", "poweroff", "shutdown", "reboot"}
 
@@ -51,7 +51,7 @@ var Names = []string{"modprobe", "poweroff", "shutdown", "reboot"}
 type Process struct {
 	// Name is the basename of argv[0].
 	Name string
-	// Label is /proc/self/attr/current, and LabelErr the error reading it.
+	// Label is the label OwnLabel read, and LabelErr the error reading it.
 	Label    string
 	LabelErr error
 	// PID is the process ID; PID 1 is machined itself, never a helper.
