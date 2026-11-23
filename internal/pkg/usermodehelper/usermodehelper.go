@@ -13,8 +13,13 @@
 package usermodehelper
 
 import (
+	"log"
+	"os"
 	"slices"
 	"strings"
+
+	"github.com/siderolabs/go-kmsg"
+	"golang.org/x/sys/unix"
 )
 
 // Domain is the SELinux type the kernel's usermode helper runs in.
@@ -40,4 +45,20 @@ func Type(label string) string {
 	}
 
 	return fields[2]
+}
+
+// SetupLogger sends the standard logger to the kernel log, opening /dev/kmsg
+// write-only: a helper only writes the kernel log, and opening it for reading
+// as well would need CAP_SYSLOG.
+func SetupLogger(prefix string) error {
+	f, err := os.OpenFile("/dev/kmsg", os.O_WRONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
+	if err != nil {
+		return err
+	}
+
+	log.SetOutput(&kmsg.Writer{KmsgWriter: f})
+	log.SetPrefix(prefix + " ")
+	log.SetFlags(0)
+
+	return nil
 }
