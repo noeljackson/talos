@@ -35,6 +35,7 @@ import (
 const (
 	blockfilePlugin  = "io.containerd.snapshotter.v1.blockfile"
 	criRuntimePlugin = "io.containerd.cri.v1.runtime"
+	criImagesPlugin  = "io.containerd.cri.v1.images"
 
 	// BlockfileScratchSize is the size of a scratch image machined creates.
 	// Every container root filesystem on the node starts from this size.
@@ -72,8 +73,9 @@ func blockfileScratch(config []byte) (string, error) {
 }
 
 // withoutBlockfile returns the merged CRI configuration without the blockfile
-// snapshotter and without every runtime whose snapshotter is blockfile, and
-// the names of the runtimes it dropped.
+// snapshotter, without every runtime whose snapshotter is blockfile and
+// without the image platforms that unpack on it, and the names of the runtimes
+// it dropped.
 func withoutBlockfile(config []byte) ([]byte, []string, error) {
 	var cfg map[string]any
 
@@ -93,6 +95,15 @@ func withoutBlockfile(config []byte) ([]byte, []string, error) {
 				delete(runtimes, name)
 
 				dropped = append(dropped, name)
+			}
+		}
+	}
+
+	// The images plugin unpacks each runtime's images on its snapshotter.
+	if platforms, _ := lookupTable(cfg, "plugins", criImagesPlugin, "runtime_platforms"); platforms != nil {
+		for name, value := range platforms {
+			if platform, ok := value.(map[string]any); ok && platform["snapshotter"] == "blockfile" {
+				delete(platforms, name)
 			}
 		}
 	}
