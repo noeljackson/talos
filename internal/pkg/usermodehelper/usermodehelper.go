@@ -13,10 +13,12 @@
 package usermodehelper
 
 import (
+	"errors"
 	"log"
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/siderolabs/go-kmsg"
 	"golang.org/x/sys/unix"
@@ -38,16 +40,18 @@ type Process struct {
 	LabelErr error
 	// PID is the process ID; PID 1 is machined itself, never a helper.
 	PID int
-	// SELinux reports whether SELinux is enabled on the node.
-	SELinux bool
 }
 
 // Refused reports whether the process must exit before doing anything: it runs
-// in Domain under a name that is not a usermode helper, or SELinux is enabled
-// and its domain cannot be read, so it might be the helper. It fails closed.
+// in Domain under a name that is not a usermode helper, or its domain cannot be
+// read, so it might be the helper. It fails closed: only EINVAL, which means no
+// security module provides the attribute and so there is no helper domain, and
+// PID 1 are served without a label. The helper's domain can read neither
+// /proc/cmdline nor /sys/fs/selinux, so asking whether SELinux is enabled
+// would fail open in exactly that domain.
 func Refused(p Process) bool {
 	if p.LabelErr != nil {
-		return p.SELinux && p.PID != 1
+		return !errors.Is(p.LabelErr, syscall.EINVAL) && p.PID != 1
 	}
 
 	return Type(p.Label) == Domain && !slices.Contains(Names, p.Name)
