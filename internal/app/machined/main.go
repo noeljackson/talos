@@ -41,6 +41,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/trustd"
 	"github.com/siderolabs/talos/internal/pkg/containermode"
 	"github.com/siderolabs/talos/internal/pkg/mount/v3"
+	"github.com/siderolabs/talos/internal/pkg/selinux"
 	"github.com/siderolabs/talos/internal/pkg/usermodehelper"
 	"github.com/siderolabs/talos/pkg/httpdefaults"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
@@ -331,7 +332,7 @@ func runEntrypoint(ctx context.Context, c *v1alpha1runtime.Controller) (returnEr
 func main() {
 	// In the kernel's usermode helper domain only the helpers are served: a
 	// container can reach it through request_module.
-	label, labelErr := os.ReadFile("/proc/self/attr/current")
+	label, labelErr := usermodehelper.OwnLabel()
 
 	if usermodehelper.Refused(usermodehelper.Process{
 		Name:     filepath.Base(os.Args[0]),
@@ -403,6 +404,21 @@ func main() {
 		log.Printf("unknown executable name %q (args %v)", os.Args[0], os.Args[1:])
 
 		os.Exit(1) //nolint:gocritic // we don't care about defering context cancellation in this case
+	}
+
+	// Label the device nodes the kernel's usermode helper opens before udev does,
+	// so a module requested before coldplug is not refused.
+	if os.Getpid() == 1 && !containermode.InContainer() && selinux.IsEnabled() {
+		// The standard logger reaches the kernel log only once run() sets it up.
+		msg := "labelled early device nodes"
+		if err := selinux.LabelEarlyDevices(); err != nil {
+			msg = fmt.Sprintf("labelling early device nodes: %v", err)
+		}
+
+		if kmsg, err := os.OpenFile("/dev/kmsg", os.O_WRONLY, 0); err == nil {
+			fmt.Fprintf(kmsg, "[talos] selinux: %s\n", msg) //nolint:errcheck // best effort
+			kmsg.Close()                                    //nolint:errcheck
+		}
 	}
 
 	// Setup panic handler.
