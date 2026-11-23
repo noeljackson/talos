@@ -41,6 +41,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/trustd"
 	"github.com/siderolabs/talos/internal/pkg/containermode"
 	"github.com/siderolabs/talos/internal/pkg/mount/v3"
+	"github.com/siderolabs/talos/internal/pkg/selinux"
 	"github.com/siderolabs/talos/internal/pkg/usermodehelper"
 	"github.com/siderolabs/talos/pkg/httpdefaults"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
@@ -331,7 +332,21 @@ func runEntrypoint(ctx context.Context, c *v1alpha1runtime.Controller) (returnEr
 func main() {
 	// In the kernel's usermode helper domain only the helpers are served: a
 	// container can reach it through request_module.
-	if label, err := os.ReadFile("/proc/self/attr/current"); err == nil && usermodehelper.Refused(filepath.Base(os.Args[0]), string(label)) {
+	label, labelErr := os.ReadFile("/proc/self/attr/current")
+
+	self := usermodehelper.Process{
+		Name:     filepath.Base(os.Args[0]),
+		Label:    string(label),
+		LabelErr: labelErr,
+		PID:      os.Getpid(),
+	}
+
+	// Only asked when it decides: the helper's domain may not read /proc/cmdline.
+	if labelErr != nil {
+		self.SELinux = selinux.IsEnabled()
+	}
+
+	if usermodehelper.Refused(self) {
 		os.Exit(1)
 	}
 
