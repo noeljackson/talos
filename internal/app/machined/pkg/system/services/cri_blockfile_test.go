@@ -155,16 +155,21 @@ func TestScratchCreatorCreatesAMissingImage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, leftovers)
 
-	require.Len(t, *commands, 3)
-	assert.Equal(t, []string{"mkfs.ext4", "-q", "-F", "-E", "lazy_itable_init=0,lazy_journal_init=0"}, (*commands)[0][:5])
-	assert.Equal(t, []string{"debugfs", "-w", "-R", "ea_set <2> security.selinux " + blockfileScratchLabel}, (*commands)[1][:4])
-	assert.Equal(t, []string{"e2fsck", "-fn"}, (*commands)[2][:2])
+	// The image's root takes the label of mkfs's source directory, which is
+	// removed again with the temporary file.
+	require.Len(t, *commands, 2)
+	assert.Equal(t, []string{"mkfs.ext4", "-q", "-F", "-E", "lazy_itable_init=0,lazy_journal_init=0", "-d"}, (*commands)[0][:6])
+	assert.Equal(t, []string{"e2fsck", "-fn"}, (*commands)[1][:2])
+
+	leftovers, err = filepath.Glob(filepath.Join(root, "codewire-blockfile", ".scratch-*"))
+	require.NoError(t, err)
+	assert.Empty(t, leftovers, "the source directory is removed")
 
 	// An image that exists is left as it is.
 	created, err = c.ensure(t.Context(), path)
 	require.NoError(t, err)
 	assert.False(t, created)
-	assert.Len(t, *commands, 3)
+	assert.Len(t, *commands, 2)
 }
 
 func TestScratchCreatorRefuses(t *testing.T) {
