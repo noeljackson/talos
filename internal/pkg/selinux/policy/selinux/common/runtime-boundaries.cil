@@ -148,3 +148,7 @@
 (neverallow usermodehelper_t any_type_p (vsock_socket (all)))
 (neverallow usermodehelper_t any_type_p (x25_socket (all)))
 (neverallow usermodehelper_t any_type_p (xdp_socket (all)))
+
+; The CRI containerd never sets the scheduling of a kernel thread; the loop
+; worker's denial is only kept out of the log (services/cri.cil).
+(neverallow pod_containerd_t kernel_t (process (setsched)))

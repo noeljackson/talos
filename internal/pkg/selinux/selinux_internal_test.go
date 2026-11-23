@@ -733,3 +733,22 @@ func TestUsermodeHelperCompilerFixtures(t *testing.T) {
 		})
 	}
 }
+
+// Blockfile mounts set the loop worker's scheduling from containerd: the denial
+// stays out of the log, and a neverallow with its widening fixture keeps it
+// from ever becoming an allow.
+func TestContainerdLoopWorkerSetschedIsDeniedQuietly(t *testing.T) {
+	t.Parallel()
+
+	cri, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+	assert.Contains(t, string(cri), "(dontaudit pod_containerd_t kernel_t (process (setsched)))")
+
+	boundaries, err := os.ReadFile("policy/selinux/common/runtime-boundaries.cil")
+	require.NoError(t, err)
+	assert.Contains(t, string(boundaries), "(neverallow pod_containerd_t kernel_t (process (setsched)))")
+
+	fixture, err := os.ReadFile("../../../hack/test/selinux-policy-fixtures/widen-containerd-kernel-setsched.cil")
+	require.NoError(t, err)
+	assert.Equal(t, "(allow pod_containerd_t kernel_t (process (setsched)))\n", string(fixture))
+}
