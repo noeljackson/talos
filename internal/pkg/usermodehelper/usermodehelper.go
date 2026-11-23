@@ -29,11 +29,28 @@ const Domain = "usermodehelper_t"
 // (modprobe) and orderly_poweroff or orderly_reboot (poweroff, shutdown, reboot).
 var Names = []string{"modprobe", "poweroff", "shutdown", "reboot"}
 
-// Refused reports whether a process named name (the basename of argv[0]) and
-// labelled label (/proc/self/attr/current) must exit before doing anything:
-// it runs in Domain under a name that is not a usermode helper.
-func Refused(name, label string) bool {
-	return Type(label) == Domain && !slices.Contains(Names, name)
+// Process is what machined knows about itself when it starts.
+type Process struct {
+	// Name is the basename of argv[0].
+	Name string
+	// Label is /proc/self/attr/current, and LabelErr the error reading it.
+	Label    string
+	LabelErr error
+	// PID is the process ID; PID 1 is machined itself, never a helper.
+	PID int
+	// SELinux reports whether SELinux is enabled on the node.
+	SELinux bool
+}
+
+// Refused reports whether the process must exit before doing anything: it runs
+// in Domain under a name that is not a usermode helper, or SELinux is enabled
+// and its domain cannot be read, so it might be the helper. It fails closed.
+func Refused(p Process) bool {
+	if p.LabelErr != nil {
+		return p.SELinux && p.PID != 1
+	}
+
+	return Type(p.Label) == Domain && !slices.Contains(Names, p.Name)
 }
 
 // Type returns the type field of an SELinux label (user:role:type[:level]),
