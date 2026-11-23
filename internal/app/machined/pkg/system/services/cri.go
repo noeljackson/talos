@@ -39,6 +39,9 @@ var _ system.HealthcheckedService = (*CRI)(nil)
 type CRI struct {
 	// client is a lazy-initialized containerd client. It should be accessed using the Client() method.
 	client *containerd.Client
+
+	// config is the containerd configuration PreFunc chose (see prepareBlockfile).
+	config string
 }
 
 const criServiceID = "cri"
@@ -70,11 +73,19 @@ func (c *CRI) PreFunc(ctx context.Context, r runtime.Runtime) error {
 		return err
 	}
 
+	c.config = constants.CRIContainerdConfig
+
 	if r.State().Platform().Mode().InContainer() {
 		return nil
 	}
 
-	return createOverlayMountRequests(ctx, r.State().V1Alpha2().Resources())
+	if err := createOverlayMountRequests(ctx, r.State().V1Alpha2().Resources()); err != nil {
+		return err
+	}
+
+	c.config = prepareBlockfile(ctx)
+
+	return nil
 }
 
 func createOverlayMountRequests(ctx context.Context, st state.State) error {
@@ -171,7 +182,7 @@ func (c *CRI) Runner(r runtime.Runtime) (runner.Runner, error) {
 			"--address",
 			constants.CRIContainerdAddress,
 			"--config",
-			constants.CRIContainerdConfig,
+			c.config,
 		},
 	}
 
