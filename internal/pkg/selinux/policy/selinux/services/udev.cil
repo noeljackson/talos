@@ -52,6 +52,10 @@
 ; Typically client pods must not access TPM
 (type tpm_device_t)
 (call protected_device_f (tpm_device_t))
+; The kernel log: common like device_t, so every domain keeps its access, and
+; named so the kernel's usermode helper can write it without device_t.
+(type kmsg_device_t)
+(call common_device_f (kmsg_device_t))
 ; TODO: label and restrict block devices
 
 (type modprobe_exec_t)

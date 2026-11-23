@@ -360,7 +360,7 @@ func main() {
 		// usermode helper), which has no console, so set up kmsg logging to make the
 		// invocation and its result visible in `talosctl dmesg`.
 		if !containermode.InContainer() {
-			kmsg.SetupLogger(nil, filepath.Base(os.Args[0]), nil) //nolint:errcheck // best effort logging to kmsg
+			usermodehelper.SetupLogger(filepath.Base(os.Args[0])) //nolint:errcheck // best effort logging to kmsg
 		}
 
 		log.Printf("usermode helper invoked as %q (args %v)", os.Args[0], os.Args[1:])
@@ -379,7 +379,7 @@ func main() {
 		// The invocation itself is not logged, as userspace triggers requests for subsystem aliases
 		// (e.g. a socket of an unsupported family) which are refused silently, like `modprobe -q` does.
 		if !containermode.InContainer() {
-			kmsg.SetupLogger(nil, "modprobe", nil) //nolint:errcheck // best effort logging to kmsg
+			usermodehelper.SetupLogger("modprobe") //nolint:errcheck // best effort logging to kmsg
 		}
 
 		modprobe.Main(os.Args)
