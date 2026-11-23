@@ -1,0 +1,1 @@
+(neverallow kernel_t init_exec_t (file (execute)))

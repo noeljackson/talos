@@ -1,0 +1,1 @@
+(neverallow kernel_t usermodehelper_t (process (transition)))

@@ -41,6 +41,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/trustd"
 	"github.com/siderolabs/talos/internal/pkg/containermode"
 	"github.com/siderolabs/talos/internal/pkg/mount/v3"
+	"github.com/siderolabs/talos/internal/pkg/usermodehelper"
 	"github.com/siderolabs/talos/pkg/httpdefaults"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -328,6 +329,12 @@ func runEntrypoint(ctx context.Context, c *v1alpha1runtime.Controller) (returnEr
 
 //nolint:gocyclo
 func main() {
+	// In the kernel's usermode helper domain only the helpers are served: a
+	// container can reach it through request_module.
+	if label, err := os.ReadFile("/proc/self/attr/current"); err == nil && usermodehelper.Refused(filepath.Base(os.Args[0]), string(label)) {
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

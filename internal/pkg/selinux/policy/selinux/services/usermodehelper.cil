@@ -1,0 +1,36 @@
+; The kernel's static usermode helper. With CONFIG_STATIC_USERMODEHELPER every
+; kernel usermode helper (request_module, orderly_poweroff, orderly_reboot) runs
+; /sbin/init, labelled init_exec_t, with argv[0] naming the helper. machined
+; dispatches on argv[0]; in this domain it accepts only modprobe, poweroff,
+; shutdown and reboot (internal/app/machined/main.go).
+;
+; A container can make the kernel call request_module with a name it partly
+; chooses, so Sandboxes reach this domain. It holds no type attribute, and only
+; the rights below; common/runtime-boundaries.cil bounds it.
+(type usermodehelper_t)
+(roletype system_r usermodehelper_t)
+
+; Entered only by the kernel executing init_exec_t.
+(typetransition kernel_t init_exec_t process usermodehelper_t)
+(allow kernel_t init_exec_t (file (execute)))
+(allow kernel_t usermodehelper_t (process (transition)))
+; init_exec_t is on the rootfs squashfs, mounted nosuid.
+(allow kernel_t usermodehelper_t (process2 (nosuid_transition)))
+(allow usermodehelper_t init_exec_t (file (entrypoint execute map read open getattr)))
+(allow usermodehelper_t kernel_t (fd (use)))
+
+; modprobe.Main: look the module up and load it (kmod, finit_module).
+(allow usermodehelper_t module_t (fs_classes (ro)))
+(allow usermodehelper_t module_t (system (module_load module_request)))
+(allow usermodehelper_t self (capability (sys_module)))
+
+; modprobe.Main: the parent must be a kernel thread (/proc/<ppid>/stat).
+(allow usermodehelper_t kernel_t (dir (search getattr)))
+(allow usermodehelper_t kernel_t (file (read open getattr)))
+
+; modprobe.Main reads the module parameters (COSI list of KernelModuleSpec)
+; and poweroff.Main calls Shutdown or Reboot, both as Operator on machined's
+; local socket. dashboard_t holds the same grant.
+(allow usermodehelper_t machine_socket_t (sock_file (write getattr)))
+(allow usermodehelper_t init_t (unix_stream_socket (connectto)))
+(allow usermodehelper_t self (unix_stream_socket (create connect read write getattr getopt setopt shutdown)))
