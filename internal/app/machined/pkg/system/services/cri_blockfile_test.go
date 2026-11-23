@@ -217,6 +217,19 @@ func TestScratchCreatorRefuses(t *testing.T) {
 		assert.Empty(t, *commands)
 	})
 
+	t.Run("a directory others can write", func(t *testing.T) {
+		t.Parallel()
+
+		c, root, commands := testCreator(t)
+		dir := filepath.Join(root, "codewire-blockfile")
+		require.NoError(t, os.Mkdir(dir, 0o700))
+		require.NoError(t, os.Chmod(dir, 0o777))
+
+		_, err := c.ensure(t.Context(), filepath.Join(dir, "scratch.ext4"))
+		assert.ErrorContains(t, err, "is writable by its group or others")
+		assert.Empty(t, *commands)
+	})
+
 	t.Run("a directory of another owner", func(t *testing.T) {
 		t.Parallel()
 
@@ -265,4 +278,22 @@ func TestBlockfileScratchSize(t *testing.T) {
 	t.Parallel()
 
 	assert.EqualValues(t, 12<<30, BlockfileScratchSize)
+}
+
+// Without blockfile a default that names it would leave no safe CRI: refuse,
+// rather than put every Pod on another snapshotter.
+func TestWithoutBlockfileRefusesABlockfileDefault(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := withoutBlockfile([]byte(mergedWithBlockfile + `
+[plugins."io.containerd.cri.v1.runtime".containerd]
+default_runtime_name = "kata-clh"
+`))
+	assert.ErrorContains(t, err, `the default runtime "kata-clh" uses blockfile`)
+
+	_, _, err = withoutBlockfile([]byte(mergedWithBlockfile + `
+[plugins."io.containerd.cri.v1.images"]
+snapshotter = "blockfile"
+`))
+	assert.ErrorContains(t, err, "the default snapshotter is blockfile")
 }
