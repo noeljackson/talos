@@ -1,0 +1,1 @@
+(allow usermodehelper_t module_t (file (write)))

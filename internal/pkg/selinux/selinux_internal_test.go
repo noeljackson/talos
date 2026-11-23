@@ -9,11 +9,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/siderolabs/talos/internal/pkg/usermodehelper"
 )
 
 func TestLookupFileContextForPersistentOverlays(t *testing.T) {
@@ -669,4 +672,83 @@ func TestRestoreFileContextsWrapsErrors(t *testing.T) {
 
 	require.ErrorIs(t, err, sentinel)
 	assert.ErrorContains(t, err, root)
+}
+
+// The kernel's static usermode helper domain is reachable from containers
+// through request_module: it ships enforcing, with no type attribute, named
+// as machined's argv[0] guard names it.
+func TestUsermodeHelperDomainShipsEnforcingWithoutAttributes(t *testing.T) {
+	t.Parallel()
+
+	permissive := regexp.MustCompile(`\(typepermissive\s+usermodehelper_t\s*\)`)
+	attribute := regexp.MustCompile(`\(typeattributeset\s+\S+\s+[^)]*\busermodehelper_t\b`)
+	declared := 0
+
+	require.NoError(t, filepath.WalkDir("policy/selinux", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Ext(path) != ".cil" {
+			return err
+		}
+
+		source, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+
+		assert.False(t, permissive.Match(source), "%s makes usermodehelper_t permissive", path)
+		assert.False(t, attribute.Match(source), "%s gives usermodehelper_t a type attribute", path)
+		declared += strings.Count(string(source), "(type usermodehelper_t)")
+
+		return nil
+	}))
+
+	assert.Equal(t, 1, declared)
+	assert.Equal(t, "usermodehelper_t", usermodehelper.Domain)
+}
+
+func TestUsermodeHelperCompilerFixtures(t *testing.T) {
+	t.Parallel()
+
+	fixtures := map[string]string{
+		"require-usermodehelper-entrypoint":        "(neverallow usermodehelper_t init_exec_t (file (entrypoint)))",
+		"require-usermodehelper-kernel-execute":    "(neverallow kernel_t init_exec_t (file (execute)))",
+		"require-usermodehelper-kernel-transition": "(neverallow kernel_t usermodehelper_t (process (transition)))",
+		"require-usermodehelper-machined-connect":  "(neverallow usermodehelper_t init_t (unix_stream_socket (connectto)))",
+		"require-usermodehelper-module-load":       "(neverallow usermodehelper_t module_t (system (module_load)))",
+		"widen-usermodehelper-capability":          "(allow usermodehelper_t self (capability (sys_admin)))",
+		"widen-usermodehelper-init-transition":     "(allow usermodehelper_t init_t (process (transition)))",
+		"widen-usermodehelper-module-write":        "(allow usermodehelper_t module_t (file (write)))",
+		"widen-usermodehelper-netlink-socket":      "(allow usermodehelper_t self (netlink_route_socket (create)))",
+		"widen-usermodehelper-other-connect":       "(allow usermodehelper_t pod_containerd_t (unix_stream_socket (connectto)))",
+		"widen-usermodehelper-other-entrypoint":    "(allow usermodehelper_t bin_exec_t (file (entrypoint)))",
+		"widen-usermodehelper-pod-attribute":       "(typeattributeset pod_p usermodehelper_t)",
+		"widen-usermodehelper-pod-transition":      "(allow pod_t usermodehelper_t (process (transition)))",
+		"widen-usermodehelper-tcp-socket":          "(allow usermodehelper_t self (tcp_socket (create)))",
+	}
+
+	for name, statement := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			fixture, readErr := os.ReadFile(filepath.Join("../../../hack/test/selinux-policy-fixtures", name+".cil"))
+			require.NoError(t, readErr)
+			assert.Equal(t, statement+"\n", string(fixture))
+		})
+	}
+}
+
+// Blockfile mounts set the loop worker's scheduling from containerd: the denial
+// stays out of the log, and a neverallow with its widening fixture keeps it
+// from ever becoming an allow.
+func TestContainerdLoopWorkerSetschedIsDeniedQuietly(t *testing.T) {
+	t.Parallel()
+
+	cri, err := os.ReadFile("policy/selinux/services/cri.cil")
+	require.NoError(t, err)
+	assert.Contains(t, string(cri), "(dontaudit pod_containerd_t kernel_t (process (setsched)))")
+
+	boundaries, err := os.ReadFile("policy/selinux/common/runtime-boundaries.cil")
+	require.NoError(t, err)
+	assert.Contains(t, string(boundaries), "(neverallow pod_containerd_t kernel_t (process (setsched)))")
+
+	fixture, err := os.ReadFile("../../../hack/test/selinux-policy-fixtures/widen-containerd-kernel-setsched.cil")
+	require.NoError(t, err)
+	assert.Equal(t, "(allow pod_containerd_t kernel_t (process (setsched)))\n", string(fixture))
 }

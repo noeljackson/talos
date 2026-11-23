@@ -1,0 +1,1 @@
+(allow usermodehelper_t bin_exec_t (file (entrypoint)))

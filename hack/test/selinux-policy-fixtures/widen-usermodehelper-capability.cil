@@ -1,0 +1,1 @@
+(allow usermodehelper_t self (capability (sys_admin)))

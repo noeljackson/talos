@@ -41,6 +41,7 @@ import (
 	"github.com/siderolabs/talos/internal/app/trustd"
 	"github.com/siderolabs/talos/internal/pkg/containermode"
 	"github.com/siderolabs/talos/internal/pkg/mount/v3"
+	"github.com/siderolabs/talos/internal/pkg/usermodehelper"
 	"github.com/siderolabs/talos/pkg/httpdefaults"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -328,6 +329,19 @@ func runEntrypoint(ctx context.Context, c *v1alpha1runtime.Controller) (returnEr
 
 //nolint:gocyclo
 func main() {
+	// In the kernel's usermode helper domain only the helpers are served: a
+	// container can reach it through request_module.
+	label, labelErr := os.ReadFile("/proc/self/attr/current")
+
+	if usermodehelper.Refused(usermodehelper.Process{
+		Name:     filepath.Base(os.Args[0]),
+		Label:    string(label),
+		LabelErr: labelErr,
+		PID:      os.Getpid(),
+	}) {
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -353,7 +367,7 @@ func main() {
 		// usermode helper), which has no console, so set up kmsg logging to make the
 		// invocation and its result visible in `talosctl dmesg`.
 		if !containermode.InContainer() {
-			kmsg.SetupLogger(nil, filepath.Base(os.Args[0]), nil) //nolint:errcheck // best effort logging to kmsg
+			usermodehelper.SetupLogger(filepath.Base(os.Args[0])) //nolint:errcheck // best effort logging to kmsg
 		}
 
 		log.Printf("usermode helper invoked as %q (args %v)", os.Args[0], os.Args[1:])
@@ -372,7 +386,7 @@ func main() {
 		// The invocation itself is not logged, as userspace triggers requests for subsystem aliases
 		// (e.g. a socket of an unsupported family) which are refused silently, like `modprobe -q` does.
 		if !containermode.InContainer() {
-			kmsg.SetupLogger(nil, "modprobe", nil) //nolint:errcheck // best effort logging to kmsg
+			usermodehelper.SetupLogger("modprobe") //nolint:errcheck // best effort logging to kmsg
 		}
 
 		modprobe.Main(os.Args)

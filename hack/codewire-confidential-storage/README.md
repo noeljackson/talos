@@ -189,6 +189,19 @@ those on `downstream/confidential-storage-source-v1.14.6`.
 | `09dd04e11` | test(provision): prove exact-serial mirrored disk cold boots | tests for the patches above |
 | `ea1287901` | test(provision): run the RAID cold-boot proof on isolated Talos 1.14 fixtures | upstream-ready, test-only |
 | `77399fa6e` | feat: allow the CRI containerd's blockfile snapshotter to be configured | upstream-ready, carried until upstream has it; not opened upstream (Codewire #3718) |
+| `9b2cb8ac7` | fix(selinux): run the kernel's static usermode helper in its own domain | carried; the domain and its rights were found by an enforcing proof run, not opened upstream |
+| `e2580dfb8` | fix(selinux): give the usermode helper the rights a proof run used | as above |
+| `8080dd465` | fix(selinux): let the usermode helper verify module signatures and reach machined | as above |
+| `dc87b1ff1` | fix(modprobe): load modules without /etc/modprobe.conf, and let machined stat the helper | as above |
+| `071577e5c` | docs(selinux): say what guards the usermode helper's unlogged /etc denial | as above |
+| `2da995d88` | fix(machined): refuse to start when SELinux is on and the domain is unreadable | as above; superseded in part by the next |
+| `1e3648139` | fix(machined): decide the usermode helper gate from the label read's errno | as above |
+| `dc77eda79` | fix(cri): create a missing blockfile scratch image, and start without blockfile when it can't be made | carried with `77399fa6e`, not opened upstream |
+| `db743eb5f` | fix(cri): drop the image platforms on blockfile from the fallback configuration | as above |
+| `98ff81a2b` | fix(cri): label the blockfile scratch image's root through mkfs, not debugfs | as above |
+| `51850f4cc` | test(cri): a blockfile scratch creation that fails partway leaves nothing behind, and pin its size | tests for the patches above |
+| `6e7eb03c4` | fix(selinux): keep blockfile mounts' loop worker scheduling denial out of the log | carried with `77399fa6e` |
+| `97a2a03a6` | fix(cri): refuse a writable directory on the scratch path, and a blockfile default | carried with `77399fa6e` |
 
 Upstream's `421d1589d` ("give the mdadm runtime map directory a dedicated SELinux
 type"), carried on the v1.14.5 stack as `98a4862c5`, is part of v1.14.6; only its
@@ -203,7 +216,8 @@ a rewrite.
 
 | Deployment head | Talos | Source commit (second parent) | Source branch |
 | --- | --- | --- | --- |
-| this head | v1.14.6 | `77399fa6e` | `downstream/confidential-storage-source-v1.14.6` |
+| this head | v1.14.6 | `97a2a03a6` | `downstream/confidential-storage-source-v1.14.6` |
+| `faf5926ae` | v1.14.6 | `77399fa6e` | `downstream/confidential-storage-source-v1.14.6` |
 | `bb3518b87` | v1.14.5 | `b4af7a731` | `downstream/confidential-storage-source-v1.14.5` |
 | `eb09e50a7` | v1.14.5 | `54f4012af` | `downstream/confidential-storage-source-v1.14.5` |
 | `3e7b1556b` | v1.14.4 | `f37d59689` | see below |
@@ -225,7 +239,17 @@ containerd appends imported `disabled_plugins`, so no `CRICustomizationConfig`
 could enable it before. Unconfigured, the plugin creates its empty root
 directory and skips itself ("no scratch file generator"); a node uses it only
 when its machine configuration gives it a `scratch_file`, as Codewire's
-`kata-clh` block root filesystem test does on Dev.
+`kata-clh` block root filesystem does.
+
+A configured `scratch_file` that is missing does not skip the plugin: every
+plugin behind it fails to load and the whole CRI containerd is down. Since
+`dc77eda79` machined creates a missing image before the CRI containerd starts
+(a 12 GiB ext4 image whose root carries containerd's state label, under
+`/var/lib/` only, through no symlink or writable directory). When it cannot,
+the CRI containerd starts without blockfile and without the runtimes and image
+platforms on it, so their workloads are refused rather than run on another
+snapshotter; a blockfile default runtime or snapshotter is refused instead.
+Both outcomes are logged to the kernel log as `blockfile: …`.
 
 ## CRI unpack sync
 

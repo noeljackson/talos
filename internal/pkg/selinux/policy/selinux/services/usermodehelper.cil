@@ -1,0 +1,89 @@
+; The kernel's static usermode helper. With CONFIG_STATIC_USERMODEHELPER every
+; kernel usermode helper (request_module, orderly_poweroff, orderly_reboot) runs
+; /sbin/init, labelled init_exec_t, with argv[0] naming the helper. machined
+; dispatches on argv[0]; in this domain it accepts only modprobe, poweroff,
+; shutdown and reboot (internal/app/machined/main.go).
+;
+; A container can make the kernel call request_module with a name it partly
+; chooses, so Sandboxes reach this domain. It holds no type attribute, and only
+; the rights below; common/runtime-boundaries.cil bounds it.
+(type usermodehelper_t)
+(roletype system_r usermodehelper_t)
+
+; Entered only by the kernel executing init_exec_t.
+(typetransition kernel_t init_exec_t process usermodehelper_t)
+(allow kernel_t init_exec_t (file (execute)))
+(allow kernel_t usermodehelper_t (process (transition)))
+; init_exec_t is on the rootfs squashfs, mounted nosuid.
+(allow kernel_t usermodehelper_t (process2 (nosuid_transition)))
+(allow usermodehelper_t init_exec_t (file (entrypoint execute map read open getattr)))
+(allow usermodehelper_t kernel_t (fd (use)))
+
+; modprobe.Main: look the module up and load it (kmod, finit_module).
+(allow usermodehelper_t module_t (fs_classes (ro)))
+(allow usermodehelper_t module_t (system (module_load module_request)))
+(allow usermodehelper_t self (capability (sys_module)))
+; finit_module checks the module's signature against the kernel's keyrings in
+; the loader's context (udev_t holds the same).
+(allow usermodehelper_t kernel_t (key (search)))
+
+; modprobe.Main: the parent must be a kernel thread (/proc/<ppid>/stat).
+(allow usermodehelper_t kernel_t (dir (search getattr)))
+(allow usermodehelper_t kernel_t (file (read open getattr)))
+
+; modprobe.Main reads the module parameters (COSI list of KernelModuleSpec)
+; and poweroff.Main calls Shutdown or Reboot, both as Operator on machined's
+; local socket. dashboard_t holds the same grant.
+(allow usermodehelper_t machine_socket_t (sock_file (write getattr)))
+(allow usermodehelper_t init_t (unix_stream_socket (connectto)))
+(allow usermodehelper_t self (unix_stream_socket (create connect read write getattr getopt setopt shutdown)))
+; machine.sock belongs to the dashboard's user (uid 50, mode 0755), so root
+; connects only past DAC. Type enforcement still bounds it to the objects above.
+(allow usermodehelper_t self (capability (dac_override)))
+
+; machined authorizes the helper on its socket by peer credentials: it reads the
+; peer's /proc/<pid>/exe and ns/mnt (pkg/grpc/middleware/auth/unix).
+(allow init_t usermodehelper_t (dir (search getattr)))
+(allow init_t usermodehelper_t (file (read open getattr)))
+(allow init_t usermodehelper_t (lnk_file (read getattr)))
+(allow init_t usermodehelper_t (process (getattr)))
+
+; The Go runtime: threads, signals and scheduling on itself, and /proc/self.
+(allow usermodehelper_t self (process (fork signal sigchld getsched)))
+(allow usermodehelper_t self (dir (search getattr)))
+(allow usermodehelper_t self (file (read open getattr)))
+(allow usermodehelper_t self (lnk_file (read getattr)))
+(allow usermodehelper_t procfs_t (dir (search getattr)))
+(allow usermodehelper_t procfs_t (lnk_file (read getattr)))
+(allow usermodehelper_t procfs_t (filesystem (getattr)))
+; Exec under AT_SECURE (below): the runtime opens /dev/null for any of fds 0-2
+; the kernel left closed.
+(allow usermodehelper_t device_t (dir (search)))
+(allow usermodehelper_t null_device_t (chr_file (open read write getattr ioctl lock)))
+; Its log, written to the kernel log only (usermodehelper.SetupLogger).
+(allow usermodehelper_t kmsg_device_t (chr_file (open write append getattr)))
+; Path walks to /usr/lib/modules, /sbin and machined's socket.
+(allow usermodehelper_t rootfs_t (dir (search)))
+(allow usermodehelper_t usr_t (dir (search)))
+(allow usermodehelper_t lib_t (dir (search)))
+(allow usermodehelper_t lib_t (lnk_file (read)))
+(allow usermodehelper_t bin_exec_t (dir (search)))
+(allow usermodehelper_t system_t (dir (search)))
+(allow usermodehelper_t system_run_t (dir (search)))
+
+; Denied on purpose, and not logged:
+; - entering from kernel_t: the helper runs with AT_SECURE, and its rlimits and
+;   signal state reset, which is the safe outcome;
+; - the runtime's optional probes of the transparent huge page size and its
+;   cgroup limits, which it does without.
+(dontaudit kernel_t usermodehelper_t (process (noatsecure rlimitinh siginh)))
+(dontaudit usermodehelper_t sysfs_t (dir (search)))
+(dontaudit usermodehelper_t sysfs_t (file (read open)))
+(dontaudit usermodehelper_t cgroup_t (dir (search)))
+; - /etc/machine-id, read at start by a library the binary links: neither
+;   helper uses it, and modprobe.Main reads no /etc/modprobe.conf.
+;   Not logging this hid kmod's /etc/modprobe.conf read once: the enforcing
+;   proof's functional check, a request_module that must load its module,
+;   caught it, and has to stay part of that proof for every change here.
+(dontaudit usermodehelper_t etc_t (dir (search)))
+(dontaudit usermodehelper_t etc_t (file (read open getattr)))
