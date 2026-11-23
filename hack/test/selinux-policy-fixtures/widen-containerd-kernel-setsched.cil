@@ -1,0 +1,1 @@
+(allow pod_containerd_t kernel_t (process (setsched)))
