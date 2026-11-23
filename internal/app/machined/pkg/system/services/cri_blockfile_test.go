@@ -29,6 +29,15 @@ runtime_type = "io.containerd.runc.v2"
 runtime_type = "io.containerd.kata-clh.v2"
 snapshotter = "blockfile"
 
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.kata-clh.options]
+ConfigPath = "/etc/kata-clh/configuration.toml"
+
+[plugins."io.containerd.cri.v1.images".runtime_platforms.kata-clh]
+snapshotter = "blockfile"
+
+[plugins."io.containerd.cri.v1.images".runtime_platforms.runc]
+snapshotter = "overlayfs"
+
 [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.kata-qemu-snp]
 runtime_type = "io.containerd.kata-qemu-snp.v2"
 snapshotter = "blockfile"
@@ -70,6 +79,11 @@ func TestWithoutBlockfile(t *testing.T) {
 	assert.Contains(t, runtimes, "runc")
 	assert.NotContains(t, runtimes, "kata-clh")
 	assert.NotContains(t, runtimes, "kata-qemu-snp")
+
+	platforms, ok := lookupTable(cfg, "plugins", criImagesPlugin, "runtime_platforms")
+	require.True(t, ok)
+	assert.Contains(t, platforms, "runc")
+	assert.NotContains(t, platforms, "kata-clh")
 }
 
 func TestWriteBlockfileFallback(t *testing.T) {
