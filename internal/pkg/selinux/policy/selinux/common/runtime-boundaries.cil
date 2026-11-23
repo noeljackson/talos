@@ -65,7 +65,8 @@
 ; The kernel's static usermode helper (services/usermodehelper.cil) is reachable
 ; from containers through request_module. Only the kernel enters it; it enters
 ; no other domain, writes no module or root file, holds no capability but
-; sys_module, and opens no socket but the unix one it connects to machined with.
+; sys_module and dac_override, and opens no socket but the unix one it connects
+; to machined with.
 (typeattribute not_kernel_p)
 (typeattributeset not_kernel_p (not kernel_t))
 (typeattribute any_type_p)
@@ -78,7 +79,7 @@
 (typeattributeset not_init_exec_p (not init_exec_t))
 (neverallow usermodehelper_t not_init_exec_p (file (entrypoint)))
 (neverallow usermodehelper_t any_type_p (file (execute_no_trans)))
-(neverallow usermodehelper_t self (capability (not (sys_module))))
+(neverallow usermodehelper_t self (capability (not (sys_module dac_override))))
 (neverallow usermodehelper_t self (cap_userns (all)))
 (neverallow usermodehelper_t module_t (file (write append create unlink rename setattr relabelfrom relabelto)))
 (neverallow usermodehelper_t module_t (dir (write add_name remove_name create rmdir rename reparent setattr relabelfrom relabelto)))

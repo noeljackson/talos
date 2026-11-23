@@ -23,6 +23,9 @@
 (allow usermodehelper_t module_t (fs_classes (ro)))
 (allow usermodehelper_t module_t (system (module_load module_request)))
 (allow usermodehelper_t self (capability (sys_module)))
+; finit_module checks the module's signature against the kernel's keyrings in
+; the loader's context (udev_t holds the same).
+(allow usermodehelper_t kernel_t (key (search)))
 
 ; modprobe.Main: the parent must be a kernel thread (/proc/<ppid>/stat).
 (allow usermodehelper_t kernel_t (dir (search getattr)))
@@ -34,6 +37,9 @@
 (allow usermodehelper_t machine_socket_t (sock_file (write getattr)))
 (allow usermodehelper_t init_t (unix_stream_socket (connectto)))
 (allow usermodehelper_t self (unix_stream_socket (create connect read write getattr getopt setopt shutdown)))
+; machine.sock belongs to the dashboard's user (uid 50, mode 0755), so root
+; connects only past DAC. Type enforcement still bounds it to the objects above.
+(allow usermodehelper_t self (capability (dac_override)))
 
 ; machined authorizes the helper on its socket by peer credentials: it reads the
 ; peer's /proc/<pid>/exe and ns/mnt (pkg/grpc/middleware/auth/unix).
@@ -59,6 +65,7 @@
 (allow usermodehelper_t rootfs_t (dir (search)))
 (allow usermodehelper_t usr_t (dir (search)))
 (allow usermodehelper_t lib_t (dir (search)))
+(allow usermodehelper_t lib_t (lnk_file (read)))
 (allow usermodehelper_t bin_exec_t (dir (search)))
 (allow usermodehelper_t system_t (dir (search)))
 (allow usermodehelper_t system_run_t (dir (search)))
@@ -72,3 +79,7 @@
 (dontaudit usermodehelper_t sysfs_t (dir (search)))
 (dontaudit usermodehelper_t sysfs_t (file (read open)))
 (dontaudit usermodehelper_t cgroup_t (dir (search)))
+; - /etc/machine-id, read at start by a library the binary links: neither
+;   helper uses it.
+(dontaudit usermodehelper_t etc_t (dir (search)))
+(dontaudit usermodehelper_t etc_t (file (read open getattr)))
