@@ -6,6 +6,8 @@ package services
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -225,4 +227,42 @@ func TestScratchCreatorRefuses(t *testing.T) {
 		assert.ErrorContains(t, err, "is not a directory owned by")
 		assert.Empty(t, *commands)
 	})
+}
+
+// A creation that fails partway (mkfs out of space) leaves no image, no
+// temporary file and no source directory, and returns the error that sends
+// the CRI to its fallback configuration.
+func TestScratchCreatorFailurePartway(t *testing.T) {
+	t.Parallel()
+
+	c, root, _ := testCreator(t)
+	c.run = func(_ context.Context, name string, _ ...string) error {
+		if name == "mkfs.ext4" {
+			return errors.New("mkfs.ext4: No space left on device")
+		}
+
+		return nil
+	}
+
+	path := filepath.Join(root, "codewire-blockfile", "scratch.ext4")
+
+	created, err := c.ensure(t.Context(), path)
+	assert.ErrorContains(t, err, "No space left on device")
+	assert.True(t, created)
+
+	_, statErr := os.Lstat(path)
+	assert.ErrorIs(t, statErr, fs.ErrNotExist)
+
+	leftovers, err := filepath.Glob(filepath.Join(root, "codewire-blockfile", ".scratch-*"))
+	require.NoError(t, err)
+	assert.Empty(t, leftovers)
+}
+
+// The size is pinned on both sides: the image a node creates for itself and the
+// one an operator replaces by hand must give container roots the same size.
+// Change it only together with the hand-made image's size.
+func TestBlockfileScratchSize(t *testing.T) {
+	t.Parallel()
+
+	assert.EqualValues(t, 12<<30, BlockfileScratchSize)
 }
