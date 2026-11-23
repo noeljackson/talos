@@ -82,5 +82,8 @@
 (dontaudit usermodehelper_t cgroup_t (dir (search)))
 ; - /etc/machine-id, read at start by a library the binary links: neither
 ;   helper uses it, and modprobe.Main reads no /etc/modprobe.conf.
+;   Not logging this hid kmod's /etc/modprobe.conf read once: the enforcing
+;   proof's functional check, a request_module that must load its module,
+;   caught it, and has to stay part of that proof for every change here.
 (dontaudit usermodehelper_t etc_t (dir (search)))
 (dontaudit usermodehelper_t etc_t (file (read open getattr)))
