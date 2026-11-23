@@ -68,3 +68,11 @@ func TestType(t *testing.T) {
 	assert.Empty(t, usermodehelper.Type("unconfined"))
 	assert.Empty(t, usermodehelper.Type(""))
 }
+
+// The guard reads the calling thread's own label: /proc/self names the leader,
+// whose label another thread may not read in the helper's domain.
+func TestLabelPathIsThreadSelf(t *testing.T) {
+	if usermodehelper.LabelPath != "/proc/thread-self/attr/current" {
+		t.Fatalf("label path is %q, not the calling thread's own", usermodehelper.LabelPath)
+	}
+}

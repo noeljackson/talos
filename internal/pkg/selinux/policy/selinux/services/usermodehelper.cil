@@ -47,6 +47,11 @@
 (allow init_t usermodehelper_t (file (read open getattr)))
 (allow init_t usermodehelper_t (lnk_file (read getattr)))
 (allow init_t usermodehelper_t (process (getattr)))
+; Falco reads a helper's /proc entries to describe its events, as it does for
+; other domains: read-only, with no process access.
+(allow falco_t usermodehelper_t (dir (search getattr)))
+(allow falco_t usermodehelper_t (file (open read getattr)))
+(allow falco_t usermodehelper_t (lnk_file (read getattr)))
 
 ; The Go runtime: threads, signals and scheduling on itself, and /proc/self.
 (allow usermodehelper_t self (process (fork signal sigchld getsched)))

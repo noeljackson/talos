@@ -202,6 +202,8 @@ those on `downstream/confidential-storage-source-v1.14.6`.
 | `51850f4cc` | test(cri): a blockfile scratch creation that fails partway leaves nothing behind, and pin its size | tests for the patches above |
 | `6e7eb03c4` | fix(selinux): keep blockfile mounts' loop worker scheduling denial out of the log | carried with `77399fa6e` |
 | `97a2a03a6` | fix(cri): refuse a writable directory on the scratch path, and a blockfile default | carried with `77399fa6e` |
+| `4769c53ab` | fix(selinux): label the usermode helper's device nodes before udev does | carried with `9b2cb8ac7`, not opened upstream |
+| `40af88ad9` | docs(usermodehelper): keep Names' comment with Names, and say where Label comes from | as above |
 
 Upstream's `421d1589d` ("give the mdadm runtime map directory a dedicated SELinux
 type"), carried on the v1.14.5 stack as `98a4862c5`, is part of v1.14.6; only its
@@ -216,7 +218,8 @@ a rewrite.
 
 | Deployment head | Talos | Source commit (second parent) | Source branch |
 | --- | --- | --- | --- |
-| this head | v1.14.6 | `97a2a03a6` | `downstream/confidential-storage-source-v1.14.6` |
+| this head | v1.14.6 | `40af88ad9` | `downstream/confidential-storage-source-v1.14.6` |
+| `2507839e1` | v1.14.6 | `97a2a03a6` | `downstream/confidential-storage-source-v1.14.6` |
 | `faf5926ae` | v1.14.6 | `77399fa6e` | `downstream/confidential-storage-source-v1.14.6` |
 | `bb3518b87` | v1.14.5 | `b4af7a731` | `downstream/confidential-storage-source-v1.14.5` |
 | `eb09e50a7` | v1.14.5 | `54f4012af` | `downstream/confidential-storage-source-v1.14.5` |
