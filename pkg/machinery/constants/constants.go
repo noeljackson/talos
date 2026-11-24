@@ -20,7 +20,7 @@ var SupportedArchitectures = []string{
 
 const (
 	// DefaultKernelVersion is the default Linux kernel version.
-	DefaultKernelVersion = "6.18.63-talos"
+	DefaultKernelVersion = "6.18.65-talos"
 
 	// KernelParamConfig is the kernel parameter name for specifying the URL.
 	// to the config.
@@ -449,7 +449,7 @@ const (
 
 	// DefaultEtcdVersion is the default target version of etcd.
 	// renovate: datasource=docker depName=registry.k8s.io/etcd
-	DefaultEtcdVersion = "v3.7.3"
+	DefaultEtcdVersion = "v3.7.4"
 
 	// EtcdRootTalosKey is the root etcd key for Talos-specific storage.
 	EtcdRootTalosKey = "talos:v1"
@@ -1353,7 +1353,7 @@ const (
 	// And sign the image using image-signer.
 	//
 	// renovate: datasource=github-releases depName=flannel-io/flannel
-	FlannelVersion = "v0.28.10"
+	FlannelVersion = "v0.28.11"
 
 	// FlannelDefaultBackend is the default backend for flannel.
 	FlannelDefaultBackend = "vxlan"

@@ -435,7 +435,7 @@ func TestActualRootLicenseClosureIsPinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modules) != 408 || !reflect.DeepEqual(locals, []localReplacement{{Path: "github.com/siderolabs/talos/pkg/machinery", Directory: "./pkg/machinery"}}) {
+	if len(modules) != 409 || !reflect.DeepEqual(locals, []localReplacement{{Path: "github.com/siderolabs/talos/pkg/machinery", Directory: "./pkg/machinery"}}) {
 		t.Fatalf("unexpected real manifest scope: public=%d local=%v", len(modules), locals)
 	}
 }

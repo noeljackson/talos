@@ -112,8 +112,8 @@ verify_identity() {
 		keys == ["commitAbbreviationLength", "release", "releaseCommit", "schema", "upstreamRepository"] and
 		.schema == "codewire.talos-runtime-source-identity/v1" and
 		.upstreamRepository == "https://github.com/siderolabs/talos" and
-		.release == "v1.14.6" and
-		.releaseCommit == "ede45c42da9b1aee0fbc6dcfda7c028c9db43954" and
+		.release == "v1.14.7" and
+		.releaseCommit == "55021d7c274f6bc207bf18efa2a684a31a35cd9f" and
 		.commitAbbreviationLength == 9
 	' "${identity}" >/dev/null
 }

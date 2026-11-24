@@ -8,7 +8,7 @@ artifact and host profile, running the enforcing boot gate, and publishing the
 final installer.
 
 The active upstreamable source branch is
-`downstream/confidential-storage-source-v1.14.6`, based on Talos v1.14.6. The
+`downstream/confidential-storage-source-v1.14.7`, based on Talos v1.14.7. The
 earlier source branches are kept as the provenance of installers built from
 them (see "Source provenance" below). Neither contains a
 publication workflow. A pull request into `downstream/confidential-storage`
@@ -47,8 +47,8 @@ combination branch or manual helper publication is needed.
 
 ## Local archive qualification (no publication)
 
-The current release identity is Talos `v1.14.6`, peeled upstream commit
-`ede45c42da9b1aee0fbc6dcfda7c028c9db43954`. The full checked-out deployment
+The current release identity is Talos `v1.14.7`, peeled upstream commit
+`55021d7c274f6bc207bf18efa2a684a31a35cd9f`. The full checked-out deployment
 commit determines the version suffix and source epoch; do not hardcode the
 source-branch commit as the deployment identity. Compose the accepted source
 with the current deployment head using the ordered two-parent procedure before
@@ -147,13 +147,13 @@ two helpers, and only Infra composes and qualifies the final host installer.
 
 ## Package set
 
-The deployment head builds Talos v1.14.6 with its own upstream package set and
-tools (`siderolabs/pkgs` `v1.14.0-59-ge6ad19d`, `siderolabs/tools`
+The deployment head builds Talos v1.14.7 with its own upstream package set and
+tools (`siderolabs/pkgs` `v1.14.0-66-ga1a4897`, `siderolabs/tools`
 `v1.14.0-12-g5959f76`). The overlay overrides no package. That set carries
-Linux 6.18.63, still with `siderolabs/pkgs` `ec119504d` ("fix: restore ACPI
+Linux 6.18.65, still with `siderolabs/pkgs` `ec119504d` ("fix: restore ACPI
 power button", siderolabs/talos#14657), containerd 2.3.7, runc 1.5.2 and
 libpathrs 0.2.6. Hosts using these helpers pair with the official Sidero
-extensions from the same Talos v1.14.6 release; DRBD is `9.3.4-v1.14.6`, signed
+extensions from the same Talos v1.14.7 release; DRBD is `9.3.5-v1.14.7`, signed
 by this kernel build.
 
 Helpers from earlier deployment heads stay published and immutable:
@@ -168,7 +168,9 @@ Helpers from earlier deployment heads stay published and immutable:
   not be pinned for new installers: 6.18.57 drops the ACPI fixed-event power
   button, so a power-button or IPMI soft-off no longer shuts Talos down.
 - `bb3518b87` (Talos v1.14.5, Linux 6.18.58) stays valid for the installers that
-  pin it; new installers are built from this head.
+  pin it.
+- `faf5926ae` through `ab0020109` (Talos v1.14.6, Linux 6.18.63) stay valid for
+  the installers that pin them; new installers are built from this head.
 
 Both helper configurations record their kernel input as
 `io.codewire.kernel.package`.
@@ -177,40 +179,40 @@ Both helper configurations record their kernel input as
 
 Each patch below is carried only because no stable upstream release has the
 fix yet. Drop a patch as soon as a stable release contains it. Commit IDs are
-those on `downstream/confidential-storage-source-v1.14.6`.
+those on `downstream/confidential-storage-source-v1.14.7`.
 
 | Commit | Patch | Status |
 | --- | --- | --- |
-| `f97542e74` | fix(runtime): preserve enforcing extension and pod labels on Talos 1.14 | upstream-ready, carried until upstream has it |
-| `125a04b2e` | test(selinux): bound the mdadm runtime map directory's policy | neverallow boundaries and fixtures for upstream's `421d1589d` |
-| `7f4e4e62c` | fix(md): deliver live mdadm stderr monitor events | upstream-ready, carried until upstream has it |
-| `d3bdea4d5` | fix(sbom): bind complete license inputs to module checksums | upstream-ready, carried until upstream has it |
-| `3503695fd` | test(storage): cover exact-serial mirror selection and rejoin | tests for the patches above |
-| `09dd04e11` | test(provision): prove exact-serial mirrored disk cold boots | tests for the patches above |
-| `ea1287901` | test(provision): run the RAID cold-boot proof on isolated Talos 1.14 fixtures | upstream-ready, test-only |
-| `77399fa6e` | feat: allow the CRI containerd's blockfile snapshotter to be configured | upstream-ready, carried until upstream has it; not opened upstream (Codewire #3718) |
-| `9b2cb8ac7` | fix(selinux): run the kernel's static usermode helper in its own domain | carried; the domain and its rights were found by an enforcing proof run, not opened upstream |
-| `e2580dfb8` | fix(selinux): give the usermode helper the rights a proof run used | as above |
-| `8080dd465` | fix(selinux): let the usermode helper verify module signatures and reach machined | as above |
-| `dc87b1ff1` | fix(modprobe): load modules without /etc/modprobe.conf, and let machined stat the helper | as above |
-| `071577e5c` | docs(selinux): say what guards the usermode helper's unlogged /etc denial | as above |
-| `2da995d88` | fix(machined): refuse to start when SELinux is on and the domain is unreadable | as above; superseded in part by the next |
-| `1e3648139` | fix(machined): decide the usermode helper gate from the label read's errno | as above |
-| `dc77eda79` | fix(cri): create a missing blockfile scratch image, and start without blockfile when it can't be made | carried with `77399fa6e`, not opened upstream |
-| `db743eb5f` | fix(cri): drop the image platforms on blockfile from the fallback configuration | as above |
-| `98ff81a2b` | fix(cri): label the blockfile scratch image's root through mkfs, not debugfs | as above |
-| `51850f4cc` | test(cri): a blockfile scratch creation that fails partway leaves nothing behind, and pin its size | tests for the patches above |
-| `6e7eb03c4` | fix(selinux): keep blockfile mounts' loop worker scheduling denial out of the log | carried with `77399fa6e` |
-| `97a2a03a6` | fix(cri): refuse a writable directory on the scratch path, and a blockfile default | carried with `77399fa6e` |
-| `4769c53ab` | fix(selinux): label the usermode helper's device nodes before udev does | carried with `9b2cb8ac7`, not opened upstream |
-| `40af88ad9` | docs(usermodehelper): keep Names' comment with Names, and say where Label comes from | as above |
-| `e6a851e7f` | fix(selinux): let Falco list the usermode helper's fd directory | as above |
-| `09e3aa3e0` | fix(selinux): let Falco open the usermode helper's fd directory too | as above |
-| `27d8a3553` | fix(lvm): keep the host's LVM off DRBD, loop and LINSTOR crypt devices | carried, not opened upstream |
+| `013df9b19` | fix(runtime): preserve enforcing extension and pod labels on Talos 1.14 | upstream-ready, carried until upstream has it |
+| `1f6fb37f5` | test(selinux): bound the mdadm runtime map directory's policy | neverallow boundaries and fixtures for upstream's `421d1589d` |
+| `19de16ee0` | fix(md): deliver live mdadm stderr monitor events | upstream-ready, carried until upstream has it |
+| `32a3a85e6` | fix(sbom): bind complete license inputs to module checksums | upstream-ready, carried until upstream has it |
+| `19971fd36` | test(storage): cover exact-serial mirror selection and rejoin | tests for the patches above |
+| `180111ca4` | test(provision): prove exact-serial mirrored disk cold boots | tests for the patches above |
+| `6d58acb40` | test(provision): run the RAID cold-boot proof on isolated Talos 1.14 fixtures | upstream-ready, test-only |
+| `b4eb3aaca` | feat: allow the CRI containerd's blockfile snapshotter to be configured | upstream-ready, carried until upstream has it; not opened upstream (Codewire #3718) |
+| `93b1f4e4d` | fix(selinux): run the kernel's static usermode helper in its own domain | carried; the domain and its rights were found by an enforcing proof run, not opened upstream |
+| `e6bb719ec` | fix(selinux): give the usermode helper the rights a proof run used | as above |
+| `dd3051bbc` | fix(selinux): let the usermode helper verify module signatures and reach machined | as above |
+| `eabf48bec` | fix(modprobe): load modules without /etc/modprobe.conf, and let machined stat the helper | as above |
+| `a79d4b8d5` | docs(selinux): say what guards the usermode helper's unlogged /etc denial | as above |
+| `f389c2a78` | fix(machined): refuse to start when SELinux is on and the domain is unreadable | as above; superseded in part by the next |
+| `209108f63` | fix(machined): decide the usermode helper gate from the label read's errno | as above |
+| `00103e457` | fix(cri): create a missing blockfile scratch image, and start without blockfile when it can't be made | carried with `b4eb3aaca`, not opened upstream |
+| `7e5ccd4f1` | fix(cri): drop the image platforms on blockfile from the fallback configuration | as above |
+| `c2af31490` | fix(cri): label the blockfile scratch image's root through mkfs, not debugfs | as above |
+| `c4e4f12f1` | test(cri): a blockfile scratch creation that fails partway leaves nothing behind, and pin its size | tests for the patches above |
+| `2284e09ff` | fix(selinux): keep blockfile mounts' loop worker scheduling denial out of the log | carried with `b4eb3aaca` |
+| `26ec1e20a` | fix(cri): refuse a writable directory on the scratch path, and a blockfile default | carried with `b4eb3aaca` |
+| `41ed730cd` | fix(selinux): label the usermode helper's device nodes before udev does | carried with `93b1f4e4d`, not opened upstream |
+| `c10c5608c` | docs(usermodehelper): keep Names' comment with Names, and say where Label comes from | as above |
+| `fd4f4a0cb` | fix(selinux): let Falco list the usermode helper's fd directory | as above |
+| `6f4539b7b` | fix(selinux): let Falco open the usermode helper's fd directory too | as above |
+| `a978b6054` | fix(lvm): keep the host's LVM off DRBD, loop and LINSTOR crypt devices | carried, not opened upstream |
 
 Upstream's `421d1589d` ("give the mdadm runtime map directory a dedicated SELinux
 type"), carried on the v1.14.5 stack as `98a4862c5`, is part of v1.14.6; only its
-policy boundaries and fixtures are still carried, as `125a04b2e`. Upstream's
+policy boundaries and fixtures are still carried, as `1f6fb37f5`. Upstream's
 `449f82d46` ("wait for inactive MD arrays before volume discovery"), carried on
 the v1.14.4 stack, is part of v1.14.5 and is no longer carried.
 
@@ -221,7 +223,8 @@ a rewrite.
 
 | Deployment head | Talos | Source commit (second parent) | Source branch |
 | --- | --- | --- | --- |
-| this head | v1.14.6 | `27d8a3553` | `downstream/confidential-storage-source-v1.14.6` |
+| this head | v1.14.7 | `a978b6054` | `downstream/confidential-storage-source-v1.14.7` |
+| `ab0020109` | v1.14.6 | `27d8a3553` | `downstream/confidential-storage-source-v1.14.6` |
 | `954558567` | v1.14.6 | `09e3aa3e0` | `downstream/confidential-storage-source-v1.14.6` |
 | `6dd8c6620` | v1.14.6 | `e6a851e7f` | `downstream/confidential-storage-source-v1.14.6` |
 | `2acb9ebd0` | v1.14.6 | `40af88ad9` | `downstream/confidential-storage-source-v1.14.6` |
