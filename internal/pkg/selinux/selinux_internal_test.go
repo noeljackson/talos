@@ -709,6 +709,7 @@ func TestUsermodeHelperCompilerFixtures(t *testing.T) {
 	t.Parallel()
 
 	fixtures := map[string]string{
+		"require-falco-usermodehelper-proc-read":   "(neverallow falco_t usermodehelper_t (dir (read)))",
 		"require-usermodehelper-entrypoint":        "(neverallow usermodehelper_t init_exec_t (file (entrypoint)))",
 		"require-usermodehelper-kernel-execute":    "(neverallow kernel_t init_exec_t (file (execute)))",
 		"require-usermodehelper-kernel-transition": "(neverallow kernel_t usermodehelper_t (process (transition)))",
@@ -732,6 +733,37 @@ func TestUsermodeHelperCompilerFixtures(t *testing.T) {
 			assert.Equal(t, statement+"\n", string(fixture))
 		})
 	}
+}
+
+// Falco may read a helper's /proc entries and nothing more: no process access,
+// and no rule that hides what it is denied.
+func TestFalcoReadsTheUsermodeHelperOnly(t *testing.T) {
+	t.Parallel()
+
+	statement := regexp.MustCompile(`\((allow|dontaudit)\s+falco_t\s+usermodehelper_t\s[^\n]*`)
+
+	var found []string
+
+	require.NoError(t, filepath.WalkDir("policy/selinux", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Ext(path) != ".cil" {
+			return err
+		}
+
+		source, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+
+		found = append(found, statement.FindAllString(string(source), -1)...)
+
+		return nil
+	}))
+
+	assert.ElementsMatch(t, []string{
+		"(allow falco_t usermodehelper_t (dir (search getattr read)))",
+		"(allow falco_t usermodehelper_t (file (open read getattr)))",
+		"(allow falco_t usermodehelper_t (lnk_file (read getattr)))",
+	}, found)
 }
 
 // Blockfile mounts set the loop worker's scheduling from containerd: the denial
