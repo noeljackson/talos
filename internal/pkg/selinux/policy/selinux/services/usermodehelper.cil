@@ -50,7 +50,7 @@
 ; Falco reads a helper's /proc entries to describe its events, as it does for
 ; other domains, listing its fd directory included: read-only, with no process
 ; access.
-(allow falco_t usermodehelper_t (dir (search getattr read)))
+(allow falco_t usermodehelper_t (dir (search getattr open read)))
 (allow falco_t usermodehelper_t (file (open read getattr)))
 (allow falco_t usermodehelper_t (lnk_file (read getattr)))
 

@@ -709,6 +709,7 @@ func TestUsermodeHelperCompilerFixtures(t *testing.T) {
 	t.Parallel()
 
 	fixtures := map[string]string{
+		"require-falco-usermodehelper-proc-open":   "(neverallow falco_t usermodehelper_t (dir (open)))",
 		"require-falco-usermodehelper-proc-read":   "(neverallow falco_t usermodehelper_t (dir (read)))",
 		"require-usermodehelper-entrypoint":        "(neverallow usermodehelper_t init_exec_t (file (entrypoint)))",
 		"require-usermodehelper-kernel-execute":    "(neverallow kernel_t init_exec_t (file (execute)))",
@@ -760,7 +761,7 @@ func TestFalcoReadsTheUsermodeHelperOnly(t *testing.T) {
 	}))
 
 	assert.ElementsMatch(t, []string{
-		"(allow falco_t usermodehelper_t (dir (search getattr read)))",
+		"(allow falco_t usermodehelper_t (dir (search getattr open read)))",
 		"(allow falco_t usermodehelper_t (file (open read getattr)))",
 		"(allow falco_t usermodehelper_t (lnk_file (read getattr)))",
 	}, found)
