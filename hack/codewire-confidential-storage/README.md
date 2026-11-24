@@ -206,6 +206,7 @@ those on `downstream/confidential-storage-source-v1.14.6`.
 | `40af88ad9` | docs(usermodehelper): keep Names' comment with Names, and say where Label comes from | as above |
 | `e6a851e7f` | fix(selinux): let Falco list the usermode helper's fd directory | as above |
 | `09e3aa3e0` | fix(selinux): let Falco open the usermode helper's fd directory too | as above |
+| `27d8a3553` | fix(lvm): keep the host's LVM off DRBD, loop and LINSTOR crypt devices | carried, not opened upstream |
 
 Upstream's `421d1589d` ("give the mdadm runtime map directory a dedicated SELinux
 type"), carried on the v1.14.5 stack as `98a4862c5`, is part of v1.14.6; only its
@@ -220,7 +221,8 @@ a rewrite.
 
 | Deployment head | Talos | Source commit (second parent) | Source branch |
 | --- | --- | --- | --- |
-| this head | v1.14.6 | `09e3aa3e0` | `downstream/confidential-storage-source-v1.14.6` |
+| this head | v1.14.6 | `27d8a3553` | `downstream/confidential-storage-source-v1.14.6` |
+| `954558567` | v1.14.6 | `09e3aa3e0` | `downstream/confidential-storage-source-v1.14.6` |
 | `6dd8c6620` | v1.14.6 | `e6a851e7f` | `downstream/confidential-storage-source-v1.14.6` |
 | `2acb9ebd0` | v1.14.6 | `40af88ad9` | `downstream/confidential-storage-source-v1.14.6` |
 | `2507839e1` | v1.14.6 | `97a2a03a6` | `downstream/confidential-storage-source-v1.14.6` |
